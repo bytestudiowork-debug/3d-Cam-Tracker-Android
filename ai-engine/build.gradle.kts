@@ -23,5 +23,6 @@ android {
 }
 
 dependencies {
+    implementation("org.tensorflow:tensorflow-lite:2.14.0")
     testImplementation("junit:junit:4.13.2")
 }
