@@ -18,7 +18,7 @@ class OnDeviceFeatureDetector(
     context: Context,
     modelAssetPath: String = "ai/feature_model.tflite",
     private val confidenceThreshold: Float = 0.015f,
-    private val maximumFeatures: Int = 1_500,
+    private val maximumFeatures: Int = 500,
     threadCount: Int = 2
 ) : FeatureDetector, AutoCloseable {
 
