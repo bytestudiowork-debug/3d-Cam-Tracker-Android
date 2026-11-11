@@ -9,12 +9,10 @@ import java.nio.ByteOrder
 import java.nio.channels.FileChannel
 
 /**
- * Runs the packaged SuperPoint TFLite model.
+ * Runs the packaged dense local-feature TFLite model.
  *
- * Supports the Qualcomm AI Hub export (two RGB inputs and four dense outputs)
- * as well as the original single-input dense 65-channel model contract.
- * For the pair model, the same frame is supplied to both image inputs and
- * only the first image's score/descriptor outputs are consumed.
+ * Supports a single-frame dense model and a paired-input export. When the
+ * latter is used, the same frame is supplied to both image inputs.
  */
 class OnDeviceFeatureDetector(
     context: Context,
