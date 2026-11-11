@@ -36,7 +36,7 @@ class DenseFeatureDecoderTest {
     }
 
     @Test
-    fun decodesSuperPointPixelScoresAndChannelFirstDescriptors() {
+    fun decodesDensePixelScoresAndChannelFirstDescriptors() {
         val scores = FloatArray(16 * 16)
         scores[5 * 16 + 6] = 0.9f
         val descriptors = FloatArray(2 * 2 * 256)
