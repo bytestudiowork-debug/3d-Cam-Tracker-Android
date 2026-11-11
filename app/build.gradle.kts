@@ -86,6 +86,7 @@ android {
 }
 
 dependencies {
+    implementation(project(":ai-engine"))
     implementation("androidx.core:core-ktx:1.12.0")
     implementation("androidx.lifecycle:lifecycle-runtime-ktx:2.7.0")
     implementation("androidx.lifecycle:lifecycle-viewmodel-ktx:2.7.0")
