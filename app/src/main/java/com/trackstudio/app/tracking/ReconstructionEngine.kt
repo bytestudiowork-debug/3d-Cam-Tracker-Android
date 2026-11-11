@@ -11,7 +11,8 @@ import org.opencv.core.Mat
  */
 enum class ReconstructionMode(val label: String) {
     CUSTOM("Custom"),
-    GLOBAL("Global")
+    GLOBAL("Global"),
+    AI("AI Engine")
 }
 
 interface ReconstructionEngine {
