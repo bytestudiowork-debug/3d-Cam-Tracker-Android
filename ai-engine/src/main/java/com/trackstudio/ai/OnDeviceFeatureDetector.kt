@@ -97,8 +97,8 @@ class OnDeviceFeatureDetector(
             .order(ByteOrder.nativeOrder())
         scoreValues = FloatArray(cellHeight * cellWidth * 65)
         descriptorValues = FloatArray(cellHeight * cellWidth * descriptorSize)
-        modelInputs = arrayOf(inputBuffer)
-        modelOutputs = hashMapOf(
+        modelInputs = arrayOf<Any>(inputBuffer)
+        modelOutputs = hashMapOf<Int, Any>(
             0 to scoreOutputBuffer,
             1 to descriptorOutputBuffer
         )
