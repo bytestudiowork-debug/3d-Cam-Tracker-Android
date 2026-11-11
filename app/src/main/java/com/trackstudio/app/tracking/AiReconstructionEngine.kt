@@ -55,22 +55,22 @@ private class AiFeatureFrameAdapter(
         require(!source.empty()) { "Cannot extract features from an empty frame." }
         require(source.depth() == CvType.CV_8U) { "AI feature extraction requires 8-bit image frames." }
 
-        val gray = Mat()
+        val rgb = Mat()
         try {
             when (source.channels()) {
-                1 -> source.copyTo(gray)
-                3 -> Imgproc.cvtColor(source, gray, Imgproc.COLOR_BGR2GRAY)
-                4 -> Imgproc.cvtColor(source, gray, Imgproc.COLOR_RGBA2GRAY)
+                1 -> Imgproc.cvtColor(source, rgb, Imgproc.COLOR_GRAY2RGB)
+                3 -> Imgproc.cvtColor(source, rgb, Imgproc.COLOR_BGR2RGB)
+                4 -> Imgproc.cvtColor(source, rgb, Imgproc.COLOR_BGRA2RGB)
                 else -> throw IllegalArgumentException(
                     "Unsupported frame channel count: ${source.channels()}"
                 )
             }
 
-            val width = gray.cols()
-            val height = gray.rows()
-            val pixels = ByteArray(width * height)
-            check(gray.get(0, 0, pixels) == pixels.size) {
-                "Unable to read the grayscale frame pixels."
+            val width = rgb.cols()
+            val height = rgb.rows()
+            val pixels = ByteArray(width * height * 3)
+            check(rgb.get(0, 0, pixels) == pixels.size) {
+                "Unable to read the RGB frame pixels."
             }
             val observations = detector.detect(
                 TrackingFrame(
@@ -79,7 +79,7 @@ private class AiFeatureFrameAdapter(
                     width = width,
                     height = height,
                     pixels = pixels,
-                    channels = 1
+                    channels = 3
                 )
             )
 
@@ -129,7 +129,7 @@ private class AiFeatureFrameAdapter(
                 throw failure
             }
         } finally {
-            gray.release()
+            rgb.release()
         }
     }
 
