@@ -136,10 +136,13 @@ class OnDeviceFeatureDetector(
 
     @Synchronized
     override fun detect(frame: TrackingFrame): List<FeatureObservation> {
-        inputBuffers.forEach { buffer ->
-            buffer.clear()
-            fillInput(frame, buffer)
-            buffer.rewind()
+        inputBuffers[0].clear()
+        fillInput(frame, inputBuffers[0])
+        inputBuffers[0].rewind()
+        for (index in 1 until inputBuffers.size) {
+            inputBuffers[index].clear()
+            inputBuffers[index].put(inputBuffers[0].duplicate())
+            inputBuffers[index].rewind()
         }
         outputBuffers.forEach { it.clear() }
         interpreter.runForMultipleInputsOutputs(modelInputs, modelOutputs)
