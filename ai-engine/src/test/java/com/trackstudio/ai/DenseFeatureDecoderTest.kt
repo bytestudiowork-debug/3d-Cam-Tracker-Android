@@ -40,8 +40,10 @@ class DenseFeatureDecoderTest {
         val scores = FloatArray(16 * 16)
         scores[5 * 16 + 6] = 0.9f
         val descriptors = FloatArray(2 * 2 * 256)
-        descriptors[0 * 4 + 0] = 3f
-        descriptors[1 * 4 + 0] = 4f
+        for (index in 0 until 4) {
+            descriptors[index] = 3f
+            descriptors[4 + index] = 4f
+        }
 
         val result = DenseFeatureDecoder.decodePixelScores(
             frameIndex = 3,
