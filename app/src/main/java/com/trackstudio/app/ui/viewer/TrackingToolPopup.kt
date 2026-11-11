@@ -5,6 +5,7 @@ import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.gestures.detectDragGestures
 import androidx.compose.foundation.interaction.MutableInteractionSource
+import androidx.compose.foundation.interaction.collectIsDraggedAsState
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -29,6 +30,7 @@ import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -77,7 +79,7 @@ internal fun TrackingToolPopup(
     markerOutline: Boolean,
     markerOpacity: Float,
     popupTransparency: Float,
-    onPopupTransparencyChanged: (Float) -> Unit,
+    onPopupTransparencyChanged: (Boolean) -> Unit,
     onMarkerColorChanged: (Int) -> Unit,
     onMarkerSizeChanged: (Float) -> Unit,
     onMarkerOutlineChanged: (Boolean) -> Unit,
@@ -120,12 +122,6 @@ internal fun TrackingToolPopup(
                 Modifier.fillMaxWidth().verticalScroll(rememberScrollState()).padding(14.dp),
                 verticalArrangement = Arrangement.spacedBy(12.dp)
             ) {
-                Text("Popup transparency · ${(popupTransparency * 100).toInt()}%", color = TextPrimary, fontSize = 12.sp)
-                Slider(
-                    value = popupTransparency.coerceIn(0f, 0.85f),
-                    onValueChange = onPopupTransparencyChanged,
-                    valueRange = 0f..0.85f
-                )
                 if (title == "Anchor") {
                     PopupSwitch("Show world anchor", showAnchor, onAnchorChanged)
                     Text("WORLD POSITION", color = TextSecondary, fontSize = 11.sp)
@@ -166,17 +162,19 @@ internal fun TrackingToolPopup(
                     }
                     Text("Axis length · ${String.format(java.util.Locale.US, "%.3f", anchorAxisLength)} units",
                         color = TextPrimary, fontSize = 12.sp)
-                    Slider(
+                    PopupSlider(
                         value = anchorAxisLength.toFloat().coerceIn(0.001f, 1f),
                         onValueChange = { onAnchorAxisLengthChanged(it.toDouble()) },
-                        valueRange = 0.001f..1f
+                        valueRange = 0.001f..1f,
+                        onDraggingChanged = onPopupTransparencyChanged
                     )
                     Text("Axis thickness · ${String.format(java.util.Locale.US, "%.1f", anchorLineWidthDp)} dp",
                         color = TextPrimary, fontSize = 12.sp)
-                    Slider(
+                    PopupSlider(
                         value = anchorLineWidthDp.coerceIn(1f, 5f),
                         onValueChange = onAnchorLineWidthChanged,
-                        valueRange = 1f..5f
+                        valueRange = 1f..5f,
+                        onDraggingChanged = onPopupTransparencyChanged
                     )
                     Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
                         Text("X red · Y green · Z blue", color = TextSecondary, fontSize = 11.sp, modifier = Modifier.weight(1f))
@@ -193,10 +191,11 @@ internal fun TrackingToolPopup(
                         color = TextSecondary, fontSize = 11.sp
                     )
                     Text("Marker opacity · ${(markerOpacity * 100).toInt()}%", color = TextPrimary, fontSize = 12.sp)
-                    Slider(
+                    PopupSlider(
                         value = markerOpacity.coerceIn(0.15f, 1f),
                         onValueChange = onMarkerOpacityChanged,
-                        valueRange = 0.15f..1f
+                        valueRange = 0.15f..1f,
+                        onDraggingChanged = onPopupTransparencyChanged
                     )
                 } else {
                     PopupSwitch("Show feature tracks", showTracks, onTracksChanged)
@@ -206,10 +205,11 @@ internal fun TrackingToolPopup(
                         Text("Marker size", color = TextPrimary, fontSize = 12.sp, modifier = Modifier.weight(1f))
                         Text("${String.format(java.util.Locale.US, "%.1f", markerSizeDp)} dp", color = AccentPrimary, fontSize = 11.sp)
                     }
-                    Slider(
+                    PopupSlider(
                         value = markerSizeDp.coerceIn(2f, 5.5f),
                         onValueChange = onMarkerSizeChanged,
-                        valueRange = 2f..5.5f
+                        valueRange = 2f..5.5f,
+                        onDraggingChanged = onPopupTransparencyChanged
                     )
                     PopupSwitch("Dark outline", markerOutline, onMarkerOutlineChanged)
                     Text("Overlay opacity · ${(markerOpacity * 100).toInt()}%", color = TextPrimary, fontSize = 12.sp)
@@ -228,6 +228,20 @@ internal fun TrackingToolPopup(
             }
         }
     }
+}
+
+
+@Composable
+private fun PopupSlider(
+    value: Float,
+    onValueChange: (Float) -> Unit,
+    valueRange: ClosedFloatingPointRange<Float>,
+    onDraggingChanged: (Boolean) -> Unit
+) {
+    val interactionSource = remember { MutableInteractionSource() }
+    val isDragged by interactionSource.collectIsDraggedAsState()
+    LaunchedEffect(isDragged) { onDraggingChanged(isDragged) }
+    Slider(value = value, onValueChange = onValueChange, valueRange = valueRange, interactionSource = interactionSource)
 }
 
 @Composable

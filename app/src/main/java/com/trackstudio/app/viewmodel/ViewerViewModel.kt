@@ -284,20 +284,19 @@ class ViewerViewModel(
         projectId: String
     ) {
         val viewerOutputDir = FileUtils.proxyDir(appContext, projectId, "proxy_cache")
-        val trackingOutputDir = FileUtils.proxyDir(appContext, projectId, "tracking_proxy_cache")
         val viewerScale = VideoProxyPolicy.recommendedViewerScale(sourceVideoWidth, sourceVideoHeight, scale)
         _uiState.update { it.copy(proxyGenerationProgress = 0 to frameCount, proxyGenerationError = null) }
         videoProxyJob = viewModelScope.launch {
             try {
-                VideoProxyGenerator(appContext).generateDual(
+                // Editor-only preview cache. The tracking engine opens its own
+                // sequential decoder and never consumes these proxy files.
+                VideoProxyGenerator(appContext).generate(
                     uri = uri,
                     frameCount = frameCount,
                     rotationDegrees = rotationDegrees,
-                    viewerScale = viewerScale,
-                    trackingScale = scale,
+                    scale = viewerScale,
                     jpegQuality = quality,
-                    viewerOutputDir = viewerOutputDir,
-                    trackingOutputDir = trackingOutputDir
+                    outputDir = viewerOutputDir
                 ).collect { progress ->
                     when (progress) {
                         is ProxyProgress.Generating ->
@@ -306,12 +305,8 @@ class ViewerViewModel(
                             val viewerProxies = (0 until frameCount).map { index ->
                                 Uri.fromFile(File(viewerOutputDir, "proxy_%05d.jpg".format(index)))
                             }
-                            val trackingProxies = (0 until frameCount).map { index ->
-                                Uri.fromFile(File(trackingOutputDir, "proxy_%05d.jpg".format(index)))
-                            }
                             val viewerReady = viewerProxies.all { File(it.path ?: "").isFile }
-                            val trackingReady = trackingProxies.all { File(it.path ?: "").isFile }
-                            if (viewerReady && trackingReady) {
+                            if (viewerReady) {
                                 // Stop source-decoder requests before swapping to the
                                 // completed proxy sequence, avoiding stale-frame races.
                                 requestJob?.cancel()
@@ -319,7 +314,6 @@ class ViewerViewModel(
                                 inFlight.values.forEach { it.cancel() }
                                 inFlight.clear()
                                 frameUris = viewerProxies
-                                videoTrackingFrameUris = trackingProxies
                                 bitmapCache.evictAll()
                                 frameBytes = 0
                                 videoPreviewDecoder?.close()
@@ -331,13 +325,12 @@ class ViewerViewModel(
                                 _uiState.update {
                                     it.copy(
                                         proxyGenerationProgress = null,
-                                        proxyGenerationError = "A proxy sequence is incomplete; the source decoder will be used as a fallback."
+                                        proxyGenerationError = "The editor preview cache is incomplete; the original video decoder will be used."
                                     )
                                 }
                             }
                         }
                         is ProxyProgress.Failed -> {
-                            videoTrackingFrameUris = emptyList()
                             _uiState.update { it.copy(proxyGenerationProgress = null, proxyGenerationError = progress.reason) }
                         }
                     }
@@ -345,8 +338,7 @@ class ViewerViewModel(
             } catch (cancelled: CancellationException) {
                 throw cancelled
             } catch (failure: Exception) {
-                videoTrackingFrameUris = emptyList()
-                _uiState.update { it.copy(proxyGenerationProgress = null, proxyGenerationError = failure.message ?: "Video proxy generation failed.") }
+                _uiState.update { it.copy(proxyGenerationProgress = null, proxyGenerationError = failure.message ?: "Video preview cache generation failed.") }
             }
         }
     }
@@ -440,6 +432,12 @@ class ViewerViewModel(
             return
         }
         playbackController.pause()
+        // Stop optional preview-cache decoding while the reconstruction engine runs.
+        if (videoUri != null) {
+            videoProxyJob?.cancel()
+            videoProxyJob = null
+            _uiState.update { it.copy(proxyGenerationProgress = null) }
+        }
         trackingJob?.cancel()
         _uiState.update {
             it.copy(
@@ -457,15 +455,13 @@ class ViewerViewModel(
             var uris: List<Uri> = emptyList()
             var decodeLimit = maxDecodeDimension
             try {
-                // Avoid competing video decode pipelines. Prefer the dedicated
-                // low-resolution tracking proxy, with sequential source decoding
-                // as a fallback if proxy creation fails.
+                // Tracking owns its own decoder and never waits for editor preview
+                // proxy generation. Import/playback cache work cannot feed the solver.
                 if (videoUri != null) {
                     _uiState.update {
-                        it.copy(trackingProgress = CameraTrackingProgress(0, totalFrames, "Preparing tracking proxy", 0.01f, 0, totalFrames))
+                        it.copy(trackingProgress = CameraTrackingProgress(0, totalFrames, "Opening tracking decoder", 0.01f, 0, totalFrames))
                     }
-                    videoProxyJob?.join()
-                    uris = videoTrackingFrameUris.takeIf { it.size == totalFrames }.orEmpty()
+                    uris = emptyList()
                 } else {
                     uris = (if (useOriginals) trackingFrameUris else frameUris).toList()
                 }

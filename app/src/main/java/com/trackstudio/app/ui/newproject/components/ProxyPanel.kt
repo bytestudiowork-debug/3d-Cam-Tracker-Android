@@ -57,10 +57,10 @@ fun ProxyPanel(
             text = if (state.isVideoSource) {
                 "Playback uses a clear, reduced-size preview copy. Tracking uses a separate working-resolution copy with its own high JPEG quality to preserve features. The original video remains untouched."
             } else {
-                "Image-sequence import and proxy behaviour are unchanged. Original image frames remain untouched."
+                "Optional preview proxies are only for editor playback. Tracking reads the original image sequence independently; proxy generation never feeds or controls the reconstruction engine."
             },
             style = MaterialTheme.typography.bodyMedium,
-            color = TextSecondary
+            color = TextPrimary
         )
 
         Spacer(Modifier.height(14.dp))
@@ -119,7 +119,7 @@ fun ProxyPanel(
 
                 Column {
                     LabeledValueRow(
-                        if (state.isVideoSource) "Tracking Resolution" else "Proxy Resolution",
+                        if (state.isVideoSource) "Preview Resolution" else "Preview Proxy Resolution",
                         "$w x $h"
                     )
 
@@ -136,7 +136,7 @@ fun ProxyPanel(
             Text(
                 if (total > 0) "Generating proxies: $done / $total" else "Preparing proxies...",
                 style = MaterialTheme.typography.bodyMedium,
-                color = TextSecondary
+                color = TextPrimary
             )
             LinearProgressIndicator(
                 progress = { if (total <= 0) 0f else (done.toFloat() / total).coerceIn(0f, 1f) },
@@ -224,7 +224,7 @@ private fun ProxyEnableControl(
                     "Original frames will be used directly."
                 },
                 style = MaterialTheme.typography.bodyMedium,
-                color = TextSecondary
+                color = TextPrimary
             )
         }
     }

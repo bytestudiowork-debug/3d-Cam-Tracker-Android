@@ -223,11 +223,11 @@ class NewProjectViewModel(
                     }
                 is ImportProgress.Done -> {
                     selectedFolderUri = folderUri
-                    val suggestProxy = progress.footage.requiresProxyByDefault
+                    // Image-sequence preview proxies are opt-in. Import and
+                    // validation complete without waiting for editor cache generation.
                     _uiState.update {
                         it.copy(importPhase = ImportPhase.PROBED, isVideoSource = false, footage = progress.footage,
-                            proxySettings = it.proxySettings.copy(
-                                enabled = suggestProxy || it.proxySettings.enabled))
+                            proxySettings = it.proxySettings.copy(enabled = false))
                     }
                 }
                 is ImportProgress.Failed ->

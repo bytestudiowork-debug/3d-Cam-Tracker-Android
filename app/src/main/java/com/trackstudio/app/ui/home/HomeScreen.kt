@@ -53,7 +53,7 @@ fun HomeScreen(
                         append("Studio")
                     }
                 },
-                style = MaterialTheme.typography.titleLarge.copy(fontSize = 36.sp, fontWeight = FontWeight.SemiBold),
+                style = MaterialTheme.typography.titleLarge.copy(fontSize = 44.sp, fontWeight = FontWeight.SemiBold),
                 color = com.trackstudio.app.ui.theme.TextPrimary
             )
 

@@ -319,7 +319,7 @@ fun ViewerScreen(
                 markerOutline = markerOutline,
                 markerOpacity = markerOpacity,
                 popupTransparency = popupTransparency,
-                onPopupTransparencyChanged = { popupTransparency = it },
+                onPopupTransparencyChanged = { dragging -> popupTransparency = if (dragging) 0.68f else 0f },
                 onMarkerOpacityChanged = { markerOpacity = it },
                 onMarkerColorChanged = { markerColorArgb = it },
                 onMarkerSizeChanged = { markerSizeDp = it },

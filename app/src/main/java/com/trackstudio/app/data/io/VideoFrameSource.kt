@@ -8,6 +8,7 @@ import android.media.MediaCodec
 import android.media.MediaExtractor
 import android.media.MediaFormat
 import android.media.MediaMetadataRetriever
+import android.os.Build
 import android.media.Image
 import android.net.Uri
 import android.provider.OpenableColumns
@@ -144,19 +145,27 @@ class VideoPreviewDecoder(
     fun frameAt(index: Int, fps: Double, maxDimension: Int): Bitmap {
         check(!closed) { "Video preview decoder is closed." }
         val timeUs = (index.coerceAtLeast(0) * 1_000_000.0 / fps.coerceAtLeast(1.0)).toLong()
-        val decoded = retriever.getFrameAtTime(timeUs, MediaMetadataRetriever.OPTION_CLOSEST)
+        val sourceWidth = retriever.extractMetadata(MediaMetadataRetriever.METADATA_KEY_VIDEO_WIDTH)?.toIntOrNull() ?: maxDimension
+        val sourceHeight = retriever.extractMetadata(MediaMetadataRetriever.METADATA_KEY_VIDEO_HEIGHT)?.toIntOrNull() ?: maxDimension
+        val rotated = rotationDegrees % 180 != 0
+        val orientedWidth = if (rotated) sourceHeight else sourceWidth
+        val orientedHeight = if (rotated) sourceWidth else sourceHeight
+        val scale = (maxDimension.toFloat() / max(orientedWidth, orientedHeight).coerceAtLeast(1)).coerceAtMost(1f)
+        val targetWidth = (sourceWidth * scale).toInt().coerceAtLeast(1)
+        val targetHeight = (sourceHeight * scale).toInt().coerceAtLeast(1)
+        val decoded = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O_MR1 && scale < 0.999f) {
+            runCatching {
+                retriever.getScaledFrameAtTime(timeUs, MediaMetadataRetriever.OPTION_CLOSEST, targetWidth, targetHeight)
+            }.getOrNull()
+        } else null
+        val sourceFrame = decoded ?: retriever.getFrameAtTime(timeUs, MediaMetadataRetriever.OPTION_CLOSEST)
             ?: error("Unable to decode video preview frame ${index + 1}.")
-        val rotated = rotateIfNeeded(decoded, rotationDegrees)
-        val longest = max(rotated.width, rotated.height)
-        if (longest <= maxDimension) return rotated
-        val scale = maxDimension.toFloat() / longest
-        val scaled = Bitmap.createScaledBitmap(
-            rotated,
-            (rotated.width * scale).toInt().coerceAtLeast(1),
-            (rotated.height * scale).toInt().coerceAtLeast(1),
-            true
-        )
-        if (scaled !== rotated) rotated.recycle()
+        val oriented = rotateIfNeeded(sourceFrame, rotationDegrees)
+        val longest = max(oriented.width, oriented.height)
+        if (longest <= maxDimension) return oriented
+        val finalScale = maxDimension.toFloat() / longest
+        val scaled = Bitmap.createScaledBitmap(oriented, (oriented.width * finalScale).toInt().coerceAtLeast(1), (oriented.height * finalScale).toInt().coerceAtLeast(1), true)
+        if (scaled !== oriented) oriented.recycle()
         return scaled
     }
 
