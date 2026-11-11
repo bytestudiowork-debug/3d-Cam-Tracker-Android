@@ -1,6 +1,7 @@
 package com.trackstudio.ai
 
 import android.content.Context
+import org.tensorflow.lite.DataType
 import org.tensorflow.lite.Interpreter
 import java.io.FileInputStream
 import java.nio.ByteBuffer
@@ -8,16 +9,17 @@ import java.nio.ByteOrder
 import java.nio.channels.FileChannel
 
 /**
- * Runs a compact dense local-feature model packaged in the module assets.
+ * Runs the packaged SuperPoint TFLite model.
  *
- * Input: float32 grayscale [1, height, width, 1].
- * Outputs: float32 scores [1, height/8, width/8, 65] and
- * descriptors [1, height/8, width/8, 256].
+ * Supports the Qualcomm AI Hub export (two RGB inputs and four dense outputs)
+ * as well as the original single-input dense 65-channel model contract.
+ * For the pair model, the same frame is supplied to both image inputs and
+ * only the first image's score/descriptor outputs are consumed.
  */
 class OnDeviceFeatureDetector(
     context: Context,
     modelAssetPath: String = "ai/feature_model.tflite",
-    private val confidenceThreshold: Float = 0.015f,
+    private val confidenceThreshold: Float = 0.001f,
     private val maximumFeatures: Int = 500,
     threadCount: Int = 2
 ) : FeatureDetector, AutoCloseable {
@@ -25,19 +27,21 @@ class OnDeviceFeatureDetector(
     private val interpreter: Interpreter
     private val inputWidth: Int
     private val inputHeight: Int
+    private val inputChannels: Int
+    private val inputChannelsFirst: Boolean
     private val cellWidth: Int
     private val cellHeight: Int
-    private val descriptorSize: Int
-    private val inputBuffer: ByteBuffer
-    private val scoreOutputBuffer: ByteBuffer
-    private val descriptorOutputBuffer: ByteBuffer
-    private val scoreValues: FloatArray
-    private val descriptorValues: FloatArray
+    private val legacyCellScores: Boolean
+    private val descriptorChannelsFirst: Boolean
+    private val inputBuffers: Array<ByteBuffer>
+    private val outputBuffers: Array<ByteBuffer>
+    private val outputValues: Array<FloatArray>
     private val modelInputs: Array<Any>
     private val modelOutputs: MutableMap<Int, Any>
 
     init {
         require(threadCount > 0)
+        require(confidenceThreshold in 0f..1f && maximumFeatures > 0)
         val modelBuffer = context.assets.openFd(modelAssetPath).use { descriptor ->
             FileInputStream(descriptor.fileDescriptor).channel.use { channel ->
                 channel.map(
@@ -49,16 +53,21 @@ class OnDeviceFeatureDetector(
         }
         interpreter = Interpreter(modelBuffer, Interpreter.Options().setNumThreads(threadCount))
 
-        val inputTensor = interpreter.getInputTensor(0)
-        val inputShape = inputTensor.shape()
-        require(inputTensor.dataType() == org.tensorflow.lite.DataType.FLOAT32) {
+        require(interpreter.inputTensorCount in 1..2) {
+            "The feature model must have one or two image inputs."
+        }
+        val inputShape = interpreter.getInputTensor(0).shape()
+        require(interpreter.getInputTensor(0).dataType() == DataType.FLOAT32) {
             "The feature model input must use float32 values."
         }
-        require(inputShape.size == 4 && inputShape[0] == 1 && inputShape[3] == 1) {
-            "The feature model input must use [1, height, width, 1] layout."
+        require(inputShape.size == 4 && inputShape[0] == 1) {
+            "The feature model input must have a fixed batch-one image shape."
         }
-        inputHeight = inputShape[1]
-        inputWidth = inputShape[2]
+        inputChannelsFirst = inputShape[1] in 1..4
+        inputChannels = if (inputChannelsFirst) inputShape[1] else inputShape[3]
+        require(inputChannels in 1..4) { "Unsupported feature model input channel count." }
+        inputHeight = if (inputChannelsFirst) inputShape[2] else inputShape[1]
+        inputWidth = if (inputChannelsFirst) inputShape[3] else inputShape[2]
         require(inputHeight > 0 && inputWidth > 0 &&
             inputHeight % 8 == 0 && inputWidth % 8 == 0) {
             "The feature model input dimensions must be positive multiples of eight."
@@ -66,71 +75,105 @@ class OnDeviceFeatureDetector(
         cellHeight = inputHeight / 8
         cellWidth = inputWidth / 8
 
+        require(interpreter.outputTensorCount in 2..4) {
+            "The feature model must expose two dense outputs or a two-image output pair."
+        }
         val scoreTensor = interpreter.getOutputTensor(0)
         val descriptorTensor = interpreter.getOutputTensor(1)
+        require(scoreTensor.dataType() == DataType.FLOAT32 &&
+            descriptorTensor.dataType() == DataType.FLOAT32) {
+            "The feature model score and descriptor outputs must use float32 values."
+        }
         val scoreShape = scoreTensor.shape()
         val descriptorShape = descriptorTensor.shape()
-        require(scoreTensor.dataType() == org.tensorflow.lite.DataType.FLOAT32 &&
-            descriptorTensor.dataType() == org.tensorflow.lite.DataType.FLOAT32) {
-            "The feature model outputs must use float32 values."
+        legacyCellScores = scoreShape.contentEquals(intArrayOf(1, cellHeight, cellWidth, 65))
+        if (legacyCellScores) {
+            require(descriptorShape.contentEquals(intArrayOf(1, cellHeight, cellWidth, 256))) {
+                "The legacy descriptor output must have [1, height/8, width/8, 256] layout."
+            }
+            descriptorChannelsFirst = false
+        } else {
+            val validScoreShape =
+                scoreShape.contentEquals(intArrayOf(1, inputHeight, inputWidth)) ||
+                    scoreShape.contentEquals(intArrayOf(1, inputHeight, inputWidth, 1)) ||
+                    scoreShape.contentEquals(intArrayOf(1, 1, inputHeight, inputWidth))
+            require(validScoreShape) {
+                "The SuperPoint score output must contain one full-resolution score per pixel."
+            }
+            descriptorChannelsFirst = descriptorShape.contentEquals(
+                intArrayOf(1, 256, cellHeight, cellWidth)
+            )
+            val descriptorChannelsLast = descriptorShape.contentEquals(
+                intArrayOf(1, cellHeight, cellWidth, 256)
+            )
+            require(descriptorChannelsFirst || descriptorChannelsLast) {
+                "The SuperPoint descriptor output must have 256 channels at 1/8 resolution."
+            }
         }
-        require(scoreShape.contentEquals(intArrayOf(1, cellHeight, cellWidth, 65))) {
-            "The feature model score output has an unsupported shape."
-        }
-        require(descriptorShape.size == 4 &&
-            descriptorShape[0] == 1 &&
-            descriptorShape[1] == cellHeight &&
-            descriptorShape[2] == cellWidth &&
-            descriptorShape[3] == 256) {
-            "The feature model descriptor output has an unsupported shape."
-        }
-        descriptorSize = descriptorShape[3]
-        require(confidenceThreshold in 0f..1f && maximumFeatures > 0)
 
-        // Reuse direct buffers and output arrays across frames. Detection is
-        // synchronized, so one set is sufficient and avoids per-frame churn.
-        inputBuffer = ByteBuffer.allocateDirect(inputWidth * inputHeight * 4)
-            .order(ByteOrder.nativeOrder())
-        scoreOutputBuffer = ByteBuffer.allocateDirect(cellHeight * cellWidth * 65 * 4)
-            .order(ByteOrder.nativeOrder())
-        descriptorOutputBuffer = ByteBuffer.allocateDirect(cellHeight * cellWidth * descriptorSize * 4)
-            .order(ByteOrder.nativeOrder())
-        scoreValues = FloatArray(cellHeight * cellWidth * 65)
-        descriptorValues = FloatArray(cellHeight * cellWidth * descriptorSize)
-        modelInputs = arrayOf<Any>(inputBuffer)
-        modelOutputs = hashMapOf<Int, Any>(
-            0 to scoreOutputBuffer,
-            1 to descriptorOutputBuffer
-        )
+        inputBuffers = Array(interpreter.inputTensorCount) { index ->
+            val tensor = interpreter.getInputTensor(index)
+            require(tensor.dataType() == DataType.FLOAT32 && tensor.shape().contentEquals(inputShape)) {
+                "All feature model image inputs must have the same float32 shape."
+            }
+            ByteBuffer.allocateDirect(tensor.numBytes()).order(ByteOrder.nativeOrder())
+        }
+        outputBuffers = Array(interpreter.outputTensorCount) { index ->
+            val tensor = interpreter.getOutputTensor(index)
+            require(tensor.dataType() == DataType.FLOAT32) {
+                "All feature model outputs must use float32 values."
+            }
+            ByteBuffer.allocateDirect(tensor.numBytes()).order(ByteOrder.nativeOrder())
+        }
+        outputValues = Array(2) { index ->
+            FloatArray(interpreter.getOutputTensor(index).numBytes() / Float.SIZE_BYTES)
+        }
+        modelInputs = Array<Any>(inputBuffers.size) { inputBuffers[it] }
+        modelOutputs = HashMap<Int, Any>(outputBuffers.size).apply {
+            outputBuffers.forEachIndexed { index, buffer -> put(index, buffer) }
+        }
     }
 
     @Synchronized
     override fun detect(frame: TrackingFrame): List<FeatureObservation> {
-        inputBuffer.clear()
-        fillInput(frame, inputBuffer)
-        inputBuffer.rewind()
-        scoreOutputBuffer.clear()
-        descriptorOutputBuffer.clear()
-
+        inputBuffers.forEach { buffer ->
+            buffer.clear()
+            fillInput(frame, buffer)
+            buffer.rewind()
+        }
+        outputBuffers.forEach { it.clear() }
         interpreter.runForMultipleInputsOutputs(modelInputs, modelOutputs)
+        outputBuffers[0].rewind()
+        outputBuffers[1].rewind()
+        outputBuffers[0].asFloatBuffer().get(outputValues[0])
+        outputBuffers[1].asFloatBuffer().get(outputValues[1])
 
-        scoreOutputBuffer.rewind()
-        descriptorOutputBuffer.rewind()
-        scoreOutputBuffer.asFloatBuffer().get(scoreValues)
-        descriptorOutputBuffer.asFloatBuffer().get(descriptorValues)
-
-        val decoded = DenseFeatureDecoder.decode(
-            frameIndex = frame.frameIndex,
-            imageWidth = frame.width,
-            imageHeight = frame.height,
-            cellHeight = cellHeight,
-            cellWidth = cellWidth,
-            scores = scoreValues,
-            descriptors = descriptorValues,
-            descriptorSize = descriptorSize,
-            confidenceThreshold = confidenceThreshold,
-            maximumFeatures = maximumFeatures
-        )
+        val decoded = if (legacyCellScores) {
+            DenseFeatureDecoder.decode(
+                frameIndex = frame.frameIndex,
+                imageWidth = frame.width,
+                imageHeight = frame.height,
+                cellHeight = cellHeight,
+                cellWidth = cellWidth,
+                scores = outputValues[0],
+                descriptors = outputValues[1],
+                confidenceThreshold = confidenceThreshold,
+                maximumFeatures = maximumFeatures
+            )
+        } else {
+            DenseFeatureDecoder.decodePixelScores(
+                frameIndex = frame.frameIndex,
+                imageWidth = minOf(frame.width, inputWidth),
+                imageHeight = minOf(frame.height, inputHeight),
+                cellHeight = cellHeight,
+                cellWidth = cellWidth,
+                scores = outputValues[0],
+                descriptors = outputValues[1],
+                confidenceThreshold = confidenceThreshold,
+                maximumFeatures = maximumFeatures,
+                descriptorChannelsFirst = descriptorChannelsFirst
+            )
+        }
         return ObservationFilter.filter(
             decoded,
             frameWidth = frame.width,
@@ -140,33 +183,58 @@ class OnDeviceFeatureDetector(
     }
 
     private fun fillInput(frame: TrackingFrame, target: ByteBuffer) {
-        for (y in 0 until inputHeight) {
-            val sourceY = ((y + 0.5f) * frame.height / inputHeight - 0.5f)
-                .coerceIn(0f, (frame.height - 1).toFloat())
-            val y0 = sourceY.toInt()
-            val y1 = minOf(y0 + 1, frame.height - 1)
-            val fy = sourceY - y0
-
-            for (x in 0 until inputWidth) {
-                val sourceX = ((x + 0.5f) * frame.width / inputWidth - 0.5f)
-                    .coerceIn(0f, (frame.width - 1).toFloat())
-                val x0 = sourceX.toInt()
-                val x1 = minOf(x0 + 1, frame.width - 1)
-                val fx = sourceX - x0
-                val top = gray(frame, x0, y0) * (1f - fx) + gray(frame, x1, y0) * fx
-                val bottom = gray(frame, x0, y1) * (1f - fx) + gray(frame, x1, y1) * fx
-                target.putFloat((top * (1f - fy) + bottom * fy) / 255f)
+        if (inputChannelsFirst) {
+            for (channel in 0 until inputChannels) {
+                for (y in 0 until inputHeight) {
+                    for (x in 0 until inputWidth) {
+                        target.putFloat(sample(frame, x, y, channel))
+                    }
+                }
+            }
+        } else {
+            for (y in 0 until inputHeight) {
+                for (x in 0 until inputWidth) {
+                    for (channel in 0 until inputChannels) {
+                        target.putFloat(sample(frame, x, y, channel))
+                    }
+                }
             }
         }
     }
 
-    private fun gray(frame: TrackingFrame, x: Int, y: Int): Float {
+    private fun sample(frame: TrackingFrame, x: Int, y: Int, channel: Int): Float {
+        val sourceX = ((x + 0.5f) * frame.width / inputWidth - 0.5f)
+            .coerceIn(0f, (frame.width - 1).toFloat())
+        val sourceY = ((y + 0.5f) * frame.height / inputHeight - 0.5f)
+            .coerceIn(0f, (frame.height - 1).toFloat())
+        val x0 = sourceX.toInt()
+        val y0 = sourceY.toInt()
+        val x1 = minOf(x0 + 1, frame.width - 1)
+        val y1 = minOf(y0 + 1, frame.height - 1)
+        val fx = sourceX - x0
+        val fy = sourceY - y0
+        val top = color(frame, x0, y0, channel) * (1f - fx) +
+            color(frame, x1, y0, channel) * fx
+        val bottom = color(frame, x0, y1, channel) * (1f - fx) +
+            color(frame, x1, y1, channel) * fx
+        return (top * (1f - fy) + bottom * fy) / 255f
+    }
+
+    private fun color(frame: TrackingFrame, x: Int, y: Int, channel: Int): Float {
         val offset = (y * frame.width + x) * frame.channels
-        val red = frame.pixels[offset].toInt() and 0xff
-        if (frame.channels <= 2) return red.toFloat()
-        val green = frame.pixels[offset + 1].toInt() and 0xff
-        val blue = frame.pixels[offset + 2].toInt() and 0xff
-        return 0.299f * red + 0.587f * green + 0.114f * blue
+        if (inputChannels == 1) {
+            val red = frame.pixels[offset].toInt() and 0xff
+            if (frame.channels == 1) return red.toFloat()
+            val green = frame.pixels[offset + 1].toInt() and 0xff
+            val blue = frame.pixels[offset + 2].toInt() and 0xff
+            return 0.299f * red + 0.587f * green + 0.114f * blue
+        }
+        val sourceChannel = when {
+            frame.channels == 1 -> 0
+            channel < frame.channels -> channel
+            else -> 0
+        }
+        return (frame.pixels[offset + sourceChannel].toInt() and 0xff).toFloat()
     }
 
     @Synchronized
