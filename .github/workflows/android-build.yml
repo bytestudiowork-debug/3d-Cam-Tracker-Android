@@ -4,7 +4,7 @@ run-name: Build optimized release APK
 
 on:
   push:
-    branches: ["main", "master", "global-reconstruction-engine"]
+    branches: ["main", "master", "global-reconstruction-engine", "feature/ai-engine"]
   pull_request:
     branches: ["main", "master"]
   workflow_dispatch:
