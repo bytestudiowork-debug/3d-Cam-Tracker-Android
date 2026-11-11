@@ -86,7 +86,7 @@ private class AiFeatureFrameAdapter(
             val valid = observations.asSequence()
                 .filter { observation ->
                     val descriptor = observation.descriptor
-                    descriptor != null && descriptor.size == DESCRIPTOR_SIZE &&
+                    descriptor != null && descriptor.size == detector.descriptorSize &&
                         observation.x.isFinite() && observation.y.isFinite() &&
                         descriptor.all { it.isFinite() }
                 }
@@ -99,17 +99,18 @@ private class AiFeatureFrameAdapter(
                 )
             }
 
-            val descriptorValues = FloatArray(valid.size * DESCRIPTOR_SIZE)
+            val descriptorSize = detector.descriptorSize
+            val descriptorValues = FloatArray(valid.size * descriptorSize)
             valid.forEachIndexed { index, observation ->
                 System.arraycopy(
                     observation.descriptor!!,
                     0,
                     descriptorValues,
-                    index * DESCRIPTOR_SIZE,
-                    DESCRIPTOR_SIZE
+                    index * descriptorSize,
+                    descriptorSize
                 )
             }
-            val descriptors = Mat(valid.size, DESCRIPTOR_SIZE, CvType.CV_32F)
+            val descriptors = Mat(valid.size, descriptorSize, CvType.CV_32F)
             try {
                 check(descriptors.put(0, 0, descriptorValues) == descriptorValues.size) {
                     "Unable to pack learned feature descriptors."
@@ -133,7 +134,4 @@ private class AiFeatureFrameAdapter(
         }
     }
 
-    private companion object {
-        const val DESCRIPTOR_SIZE = 256
-    }
 }
