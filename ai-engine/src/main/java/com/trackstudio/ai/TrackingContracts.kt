@@ -28,7 +28,8 @@ data class FeatureObservation(
     val x: Float,
     val y: Float,
     val confidence: Float,
-    val trackId: Long? = null
+    val trackId: Long? = null,
+    val descriptor: FloatArray? = null
 )
 
 data class FeatureMatch(
