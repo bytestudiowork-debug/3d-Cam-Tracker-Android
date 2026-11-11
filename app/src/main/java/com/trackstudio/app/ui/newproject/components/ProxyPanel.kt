@@ -241,7 +241,7 @@ private fun ResolutionDropdown(
 
     Column {
         Text(
-            text = if (state.isVideoSource) "Tracking Resolution" else "Proxy Resolution",
+            text = if (state.isVideoSource) "Preview Resolution" else "Preview Proxy Resolution",
             style = MaterialTheme.typography.bodyLarge,
             color = TextPrimary
         )
