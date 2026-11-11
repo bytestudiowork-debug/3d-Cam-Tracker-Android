@@ -2,10 +2,13 @@ name: Ceres Android EigenSparse Smoke
 
 on:
   push:
-    branches: ["main", "native/ceres-eigensparse-smoke"]
+    branches: ["main", "native/ceres-eigensparse-smoke", "feature/ai-engine"]
     paths:
       - ".github/workflows/ceres-android-smoke.yml"
       - "native/ceres-smoke/**"
+      - "app/src/main/cpp/CMakeLists.txt"
+      - "app/src/main/cpp/glomap_*.cpp"
+      - "app/src/main/cpp/glomap_progress_callback.h"
   workflow_dispatch:
 
 permissions:
