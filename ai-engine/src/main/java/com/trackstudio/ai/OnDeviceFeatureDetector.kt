@@ -81,7 +81,8 @@ class OnDeviceFeatureDetector(
         require(confidenceThreshold in 0f..1f && maximumFeatures > 0)
     }
 
-    @Synchronized\n    override fun detect(frame: TrackingFrame): List<FeatureObservation> {
+    @Synchronized
+    override fun detect(frame: TrackingFrame): List<FeatureObservation> {
         val input = ByteBuffer.allocateDirect(inputWidth * inputHeight * 4)
             .order(ByteOrder.nativeOrder())
         fillInput(frame, input)
@@ -154,7 +155,8 @@ class OnDeviceFeatureDetector(
         return 0.299f * red + 0.587f * green + 0.114f * blue
     }
 
-    @Synchronized\n    override fun close() {
+    @Synchronized
+    override fun close() {
         interpreter.close()
     }
 }
