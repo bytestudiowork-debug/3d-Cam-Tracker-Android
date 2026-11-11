@@ -151,8 +151,8 @@ class OnDeviceFeatureDetector(
         val decoded = if (legacyCellScores) {
             DenseFeatureDecoder.decode(
                 frameIndex = frame.frameIndex,
-                imageWidth = frame.width,
-                imageHeight = frame.height,
+                imageWidth = inputWidth,
+                imageHeight = inputHeight,
                 cellHeight = cellHeight,
                 cellWidth = cellWidth,
                 scores = outputValues[0],
@@ -163,8 +163,8 @@ class OnDeviceFeatureDetector(
         } else {
             DenseFeatureDecoder.decodePixelScores(
                 frameIndex = frame.frameIndex,
-                imageWidth = minOf(frame.width, inputWidth),
-                imageHeight = minOf(frame.height, inputHeight),
+                imageWidth = inputWidth,
+                imageHeight = inputHeight,
                 cellHeight = cellHeight,
                 cellWidth = cellWidth,
                 scores = outputValues[0],
@@ -174,8 +174,18 @@ class OnDeviceFeatureDetector(
                 descriptorChannelsFirst = descriptorChannelsFirst
             )
         }
+        val sourceScaled = if (frame.width == inputWidth && frame.height == inputHeight) {
+            decoded
+        } else {
+            decoded.map { observation ->
+                observation.copy(
+                    x = observation.x * frame.width / inputWidth,
+                    y = observation.y * frame.height / inputHeight
+                )
+            }
+        }
         return ObservationFilter.filter(
-            decoded,
+            sourceScaled,
             frameWidth = frame.width,
             frameHeight = frame.height,
             maximumCount = maximumFeatures
