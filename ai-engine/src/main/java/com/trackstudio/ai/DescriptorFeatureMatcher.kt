@@ -79,8 +79,9 @@ class DescriptorFeatureMatcher(
             } else {
                 2f
             }
-            if (secondDistance > 1e-6f &&
-                bestDistance / secondDistance > maximumDistanceRatio) continue
+            if (secondSimilarity.isFinite() &&
+                (secondDistance <= 1e-6f ||
+                    bestDistance / secondDistance > maximumDistanceRatio)) continue
 
             matches += FeatureMatch(
                 firstFeatureIndex = left[i].index,
