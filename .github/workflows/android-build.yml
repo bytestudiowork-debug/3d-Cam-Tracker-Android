@@ -65,7 +65,10 @@ jobs:
           echo "Android SDK installation failed after 3 attempts (sdkmanager exit: ${install_status})."
           exit 1
 
-      - name: Fetch pinned SuperPoint TFLite model
+      - name: Fetch optional AI feature model asset
+        if: ${{ vars.AI_FEATURE_MODEL_ARCHIVE_URL != '' }}
+        env:
+          AI_FEATURE_MODEL_ARCHIVE_URL: ${{ vars.AI_FEATURE_MODEL_ARCHIVE_URL }}
         run: bash scripts/fetch_ai_feature_model.sh
 
       - name: Set up Gradle
