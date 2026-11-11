@@ -35,6 +35,17 @@ class DescriptorFeatureMatcherTest {
         assertEquals(0, DescriptorFeatureMatcher().match(first, second).size)
     }
 
+    @Test
+    fun rejectsAmbiguousNearestDescriptors() {
+        val first = listOf(feature(0, floatArrayOf(1f, 0f)))
+        val second = listOf(
+            feature(0, floatArrayOf(1f, 0f)),
+            feature(1, floatArrayOf(1f, 0f))
+        )
+
+        assertEquals(0, DescriptorFeatureMatcher().match(first, second).size)
+    }
+
     private fun feature(index: Int, descriptor: FloatArray) =
         FeatureObservation(
             frameIndex = 0,
