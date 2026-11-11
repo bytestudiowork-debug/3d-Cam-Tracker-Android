@@ -36,6 +36,34 @@ class DenseFeatureDecoderTest {
     }
 
     @Test
+    fun decodesSuperPointPixelScoresAndChannelFirstDescriptors() {
+        val scores = FloatArray(16 * 16)
+        scores[5 * 16 + 6] = 0.9f
+        val descriptors = FloatArray(2 * 2 * 256)
+        descriptors[0 * 4 + 0] = 3f
+        descriptors[1 * 4 + 0] = 4f
+
+        val result = DenseFeatureDecoder.decodePixelScores(
+            frameIndex = 3,
+            imageWidth = 16,
+            imageHeight = 16,
+            cellHeight = 2,
+            cellWidth = 2,
+            scores = scores,
+            descriptors = descriptors,
+            confidenceThreshold = 0.5f,
+            nmsRadius = 4,
+            descriptorChannelsFirst = true
+        )
+
+        assertEquals(1, result.size)
+        assertEquals(6f, result.single().x, 0f)
+        assertEquals(5f, result.single().y, 0f)
+        assertEquals(0.6f, result.single().descriptor!![0], 0.0001f)
+        assertEquals(0.8f, result.single().descriptor!![1], 0.0001f)
+    }
+
+    @Test
     fun suppressesNearbyLowerScoringPoints() {
         val scores = FloatArray(65 * 2) { -10f }
         scores[0] = 10f
