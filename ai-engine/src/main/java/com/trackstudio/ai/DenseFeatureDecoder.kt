@@ -18,7 +18,7 @@ internal object DenseFeatureDecoder {
         descriptorSize: Int = 256,
         confidenceThreshold: Float = 0.015f,
         nmsRadius: Int = 4,
-        maximumFeatures: Int = 1_500
+        maximumFeatures: Int = 500
     ): List<FeatureObservation> {
         require(imageWidth > 0 && imageHeight > 0)
         require(cellHeight > 0 && cellWidth > 0)
