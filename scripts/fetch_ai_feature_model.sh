@@ -17,11 +17,11 @@ command -v unzip >/dev/null || { echo "unzip is required." >&2; exit 1; }
 
 echo "Downloading the configured AI feature model archive..."
 curl --fail --location --retry 3 --retry-delay 2 \
-  --output "${TEMP_DIR}/superpoint.zip" "${MODEL_URL}"
+  --output "${TEMP_DIR}/feature-model.zip" "${MODEL_URL}"
 
 mapfile -t MODEL_ENTRIES < <(unzip -Z1 "${TEMP_DIR}/superpoint.zip" | grep -Ei '\.tflite$' || true)
 if [[ "${#MODEL_ENTRIES[@]}" -ne 1 ]]; then
-  echo "Expected exactly one TFLite model in the pinned archive; found ${#MODEL_ENTRIES[@]}." >&2
+  echo "Expected exactly one TFLite model in the configured archive; found ${#MODEL_ENTRIES[@]}." >&2
   unzip -Z1 "${TEMP_DIR}/superpoint.zip" >&2
   exit 1
 fi
