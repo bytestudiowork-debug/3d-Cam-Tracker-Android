@@ -399,6 +399,7 @@ class ViewerViewModel(
         reconstructionEngine = when (mode) {
             ReconstructionMode.CUSTOM -> customEngine
             ReconstructionMode.GLOBAL -> GlobalReconstructionEngine()
+            ReconstructionMode.AI -> customEngine
         }
         _uiState.update {
             it.copy(
@@ -415,7 +416,13 @@ class ViewerViewModel(
         if (_uiState.value.isAutoTracking) return
         trackingResumeSignal = CompletableDeferred(Unit)
         anchorProjectionContext = null
-        val useOriginals = _uiState.value.reconstructionMode == ReconstructionMode.GLOBAL
+        if (_uiState.value.reconstructionMode == ReconstructionMode.AI) {
+            _uiState.update {
+                it.copy(trackingError = "AI Engine is selected but is not ready to process footage yet. The existing engines remain available.")
+            }
+            return
+        }
+        val useOriginals = _uiState.value.reconstructionMode != ReconstructionMode.CUSTOM
         val videoUri = sourceVideoUri
         if (videoUri != null && !useOriginals) {
             _uiState.update { it.copy(trackingError = "Direct video tracking currently uses the Global engine. Import an image sequence to use Custom Tracker.") }
