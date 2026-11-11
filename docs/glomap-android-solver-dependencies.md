@@ -59,9 +59,13 @@ backend; do not silently switch to `ITERATIVE_SCHUR` or another solver.
 
 ## Android and upstream build constraints
 
-The app currently has NDK 27.0.12077973, CMake 3.22.1, C++17, and two ABIs:
-`arm64-v8a` and `armeabi-v7a`. Its native target currently builds only the
-proxy engine.
+The app has NDK 27.0.12077973, CMake 3.22.1, C++17, and two ABIs:
+`arm64-v8a` and `armeabi-v7a`. Its current native CMake configuration
+builds Eigen 3.4.0 and Ceres 2.2.0, with SuiteSparse/CUDA/LAPACK disabled
+and EigenSparse enabled. It also builds a JNI target containing a focused
+ONLY_POINTS positioner and a fixed-rotation reprojection optimizer. These
+are partial native implementations; they are not the upstream GLOMAP or
+COLMAP libraries.
 
 Ceres 2.3 is a candidate baseline: it requires CMake 3.22+, Eigen and
 Abseil, supports Android NDK r20+, and can use the same `c++_shared` STL
