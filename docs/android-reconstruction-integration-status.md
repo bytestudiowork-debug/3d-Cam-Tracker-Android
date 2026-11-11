@@ -21,17 +21,27 @@ The current Android native implementation is a partial fallback, not a complete 
 - The current feature adapter can pass learned observations into the existing geometry path, but actual model assets and device validation are still outstanding.
 - Existing native code must not be presented as a direct upstream implementation.
 
-## Upstream source audit
+## Upstream source baseline
 
-The current upstream source tree exposes separate global and incremental reconstruction pipelines.
+- Initial source baseline: release 4.2.1, tag commit `bd1fcf6`.
+- Preserve the original upstream source files and their algorithm behavior.
+- The full source revision and all transitive dependency revisions must be recorded in the third-party inventory before the production port begins.
 
-- The global pipeline estimates camera rotations over the view graph, filters inconsistent edges, establishes tracks and performs global positioning and refinement. It depends on a sufficiently connected, reliable match graph and good camera focal-length priors. It can be faster on large well-connected datasets but is more sensitive to outliers.
-- The incremental pipeline registers cameras progressively, triangulates observations, performs local and global bundle adjustment, and supports iterative refinement. It is the more robust, established candidate for an ordered video sequence.
-- The final pipeline choice must be based on the app's actual video footage and deterministic comparisons, not assumptions. The incremental path is the first candidate for sequential VFX footage; the global path remains a candidate when matching-graph quality and calibration are strong.
+### Reconstruction path decision
+
+Use the incremental reconstruction pipeline as the primary path for ordered video footage.
+
+Reasons:
+- It registers cameras progressively, which fits ordered frame sequences.
+- It triangulates observations and performs local as well as global bundle adjustment.
+- It is the more robust, established option when matches contain outliers or camera calibration is imperfect.
+- The global alternative can be faster for large, well-connected match graphs, but is more sensitive to outliers and depends on reliable focal-length priors.
+
+The global path is not part of the initial production integration. Reconsider it only if repeatable tests on the app's own footage show a material advantage without sacrificing camera accuracy or tracking continuity.
 
 ### Source target dependencies observed
 
-The current upstream build separates the relevant code into core target groups:
+The selected reconstruction code is organized into core target groups:
 
 - Reconstruction pipeline code depends on scene data, estimators and utility code.
 - Estimators depend on geometry, math, feature types, sensors, scene structures, optimization helpers, cost functions, solver implementations, Eigen, Ceres and PoseLib.
@@ -41,12 +51,12 @@ The current upstream build separates the relevant code into core target groups:
 
 This is a dependency map, not permission to remove libraries. In particular, the sparse backend and any libraries exposed through public headers must remain until the exact Android target closure proves they can be excluded without changing upstream algorithms or ABI layout.
 
-## Required next steps
+## Required implementation sequence
 
-1. Pin one exact upstream revision and record its licence and dependency revisions.
-2. Compare the global and incremental paths on the same representative video sequences.
-3. Select the reconstruction path using tracking continuity, recovered camera poses, reprojection error, completeness, CPU time and memory.
-4. Build the selected upstream source targets for arm64-v8a and armeabi-v7a.
+1. Pin the full source commit and record its licence and dependency revisions.
+2. Build the selected core source targets for arm64-v8a and armeabi-v7a.
+3. Connect both feature profiles to the same upstream feature/match data contract.
+4. Feed the resulting database/scene graph into the unchanged incremental reconstruction pipeline.
 5. Keep upstream algorithm files unchanged. Make only narrowly scoped Android build and platform integration changes.
 6. Add deterministic parity fixtures that run against both the upstream reference build and the Android build.
 7. Verify dependency licences before shipping and retain all required third-party notices.
