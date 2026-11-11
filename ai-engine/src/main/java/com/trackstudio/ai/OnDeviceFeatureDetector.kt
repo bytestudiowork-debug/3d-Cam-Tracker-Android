@@ -96,7 +96,7 @@ class OnDeviceFeatureDetector(
                     scoreShape.contentEquals(intArrayOf(1, inputHeight, inputWidth, 1)) ||
                     scoreShape.contentEquals(intArrayOf(1, 1, inputHeight, inputWidth))
             require(validScoreShape) {
-                "The SuperPoint score output must contain one full-resolution score per pixel."
+                "The dense score output must contain one full-resolution score per pixel."
             }
             descriptorChannelsFirst = descriptorShape.contentEquals(
                 intArrayOf(1, 256, cellHeight, cellWidth)
@@ -105,7 +105,7 @@ class OnDeviceFeatureDetector(
                 intArrayOf(1, cellHeight, cellWidth, 256)
             )
             require(descriptorChannelsFirst || descriptorChannelsLast) {
-                "The SuperPoint descriptor output must have 256 channels at 1/8 resolution."
+                "The dense descriptor output must have 256 channels at 1/8 resolution."
             }
         }
 
