@@ -102,7 +102,7 @@ internal object SfMTriangulator {
             val projection1 = projectionMatrix(cameraMatrix, firstPose)
             val projection2 = projectionMatrix(cameraMatrix, lastPose)
 
-            try {
+            val initialPoint = try {
                 val projection1Values = DoubleArray(12)
                 val projection2Values = DoubleArray(12)
                 if (projection1.get(0, 0, projection1Values) != projection1Values.size ||
@@ -111,7 +111,7 @@ internal object SfMTriangulator {
                     rejectedGeometry++
                     continue
                 }
-                val point = UpstreamTriangulation.triangulate(
+                UpstreamTriangulation.triangulate(
                     projection1Values,
                     projection2Values,
                     firstObservation.x,
@@ -119,52 +119,68 @@ internal object SfMTriangulator {
                     lastObservation.x,
                     lastObservation.y
                 )
-                if (point == null) {
-                    rejectedGeometry++
-                    continue
-                }
-                val x = point[0]
-                val y = point[1]
-                val z = point[2]
-                val reprojectionErrors = mutableListOf<Double>()
-                for ((observation, pose) in validObservations) {
-                    val cameraPoint = transform(pose, point)
-                    if (cameraPoint[2] <= 1e-6) continue
-                    val error = reprojectionError(cameraMatrix, cameraPoint, observation)
-                    if (error.isFinite()) reprojectionErrors += error
-                }
-
-                if (reprojectionErrors.size < 2) {
-                    rejectedGeometry++
-                    continue
-                }
-                val inlierErrors = reprojectionErrors.filter { it <= maximumReprojectionErrorPx }
-                val inlierRatio = inlierErrors.size.toDouble() / validObservations.size
-                if (inlierErrors.size < 2 || inlierRatio < minimumObservationInlierRatio) {
-                    rejectedReprojection++
-                    continue
-                }
-
-                // Median is robust to a small number of bad observations;
-                // mean inlier error remains useful as a familiar diagnostic.
-                val medianError = median(inlierErrors)
-                if (!medianError.isFinite() || medianError > maximumReprojectionErrorPx) {
-                    rejectedReprojection++
-                    continue
-                }
-                val meanInlierError = inlierErrors.average()
-
-                landmarks += CameraLandmark(
-                    trackId = track.id,
-                    position = Point3(x, y, z),
-                    observationCount = inlierErrors.size,
-                    meanReprojectionErrorPx = meanInlierError,
-                    triangulationAngleDegrees = bestParallax
-                )
             } finally {
                 projection1.release()
                 projection2.release()
             }
+            if (initialPoint == null) {
+                rejectedGeometry++
+                continue
+            }
+
+            // The strongest-parallax pair supplies a stable seed. Reprojection
+            // filtering then selects observations for the multi-view solve.
+            val initialInliers = validObservations.filter { (observation, pose) ->
+                val cameraPoint = transform(pose, initialPoint)
+                cameraPoint[2] > 1e-6 &&
+                    reprojectionError(cameraMatrix, cameraPoint, observation)
+                        .let { it.isFinite() && it <= maximumReprojectionErrorPx }
+            }
+            val initialInlierRatio = initialInliers.size.toDouble() / validObservations.size
+            if (initialInliers.size < 2 ||
+                initialInlierRatio < minimumObservationInlierRatio
+            ) {
+                rejectedReprojection++
+                continue
+            }
+
+            // Bound native work for very long tracks while using multiple
+            // geometrically consistent views instead of only the seed pair.
+            val triangulationViews = sampleObservations(initialInliers, 32)
+            val point = triangulateMultiView(triangulationViews, cameraMatrix)
+            if (point == null) {
+                rejectedGeometry++
+                continue
+            }
+
+            val inlierErrors = validObservations.mapNotNull { (observation, pose) ->
+                val cameraPoint = transform(pose, point)
+                if (cameraPoint[2] <= 1e-6) return@mapNotNull null
+                val error = reprojectionError(cameraMatrix, cameraPoint, observation)
+                error.takeIf { it.isFinite() && it <= maximumReprojectionErrorPx }
+            }
+            val inlierRatio = inlierErrors.size.toDouble() / validObservations.size
+            if (inlierErrors.size < 2 || inlierRatio < minimumObservationInlierRatio) {
+                rejectedReprojection++
+                continue
+            }
+
+            // Median is robust to a small number of bad observations;
+            // mean inlier error remains useful as a familiar diagnostic.
+            val medianError = median(inlierErrors)
+            if (!medianError.isFinite() || medianError > maximumReprojectionErrorPx) {
+                rejectedReprojection++
+                continue
+            }
+            val meanInlierError = inlierErrors.average()
+
+            landmarks += CameraLandmark(
+                trackId = track.id,
+                position = Point3(point[0], point[1], point[2]),
+                observationCount = inlierErrors.size,
+                meanReprojectionErrorPx = meanInlierError,
+                triangulationAngleDegrees = bestParallax
+            )
         }
 
         return TriangulationResult(
@@ -181,6 +197,46 @@ internal object SfMTriangulator {
                 meanTriangulationAngleDegrees = if (landmarks.isEmpty()) 0.0
                     else landmarks.map { it.triangulationAngleDegrees }.average()
             )
+        )
+    }
+
+    private fun triangulateMultiView(
+        observations: List<Pair<CameraFeatureObservation, CameraPose>>,
+        cameraMatrix: Mat
+    ): DoubleArray? {
+        if (observations.size < 2) return null
+        val fx = cameraMatrix.get(0, 0)[0]
+        val skew = cameraMatrix.get(0, 1)[0]
+        val cx = cameraMatrix.get(0, 2)[0]
+        val fy = cameraMatrix.get(1, 1)[0]
+        val cy = cameraMatrix.get(1, 2)[0]
+        if (!fx.isFinite() || !fy.isFinite() || fx <= 1e-12 || fy <= 1e-12) {
+            return null
+        }
+
+        val projections = DoubleArray(observations.size * 12)
+        val rays = DoubleArray(observations.size * 3)
+        observations.forEachIndexed { index, (observation, pose) ->
+            val projectionOffset = index * 12
+            for (row in 0..2) {
+                for (column in 0..2) {
+                    projections[projectionOffset + row * 4 + column] =
+                        pose.rotation[row * 3 + column]
+                }
+                projections[projectionOffset + row * 4 + 3] = pose.translation[row]
+            }
+
+            val normalizedY = (observation.y - cy) / fy
+            val normalizedX = (observation.x - cx - skew * normalizedY) / fx
+            val norm = sqrt(normalizedX * normalizedX + normalizedY * normalizedY + 1.0)
+            if (!norm.isFinite() || norm <= 1e-12) return null
+            val rayOffset = index * 3
+            rays[rayOffset] = normalizedX / norm
+            rays[rayOffset + 1] = normalizedY / norm
+            rays[rayOffset + 2] = 1.0 / norm
+        }
+        return UpstreamTriangulation.triangulateMultiView(
+            projections, rays, observations.size
         )
     }
 

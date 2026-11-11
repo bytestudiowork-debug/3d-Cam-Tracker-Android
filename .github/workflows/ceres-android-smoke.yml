@@ -9,6 +9,10 @@ on:
       - "app/src/main/cpp/CMakeLists.txt"
       - "app/src/main/cpp/glomap_*.cpp"
       - "app/src/main/cpp/glomap_progress_callback.h"
+      - "app/src/main/cpp/upstream_triangulation.cpp"
+      - "app/src/main/cpp/upstream_triangulation_core.h"
+      - "app/src/main/java/com/trackstudio/app/tracking/SfMTriangulator.kt"
+      - "app/src/main/java/com/trackstudio/app/tracking/UpstreamTriangulation.kt"
   workflow_dispatch:
 
 permissions:
@@ -49,6 +53,7 @@ jobs:
             -DCMAKE_PREFIX_PATH="$RUNNER_TEMP/ceres-host-install"
           cmake --build "$RUNNER_TEMP/ceres-smoke-host" --parallel 2
           LD_LIBRARY_PATH="$RUNNER_TEMP/ceres-host-install/lib:$LD_LIBRARY_PATH" "$RUNNER_TEMP/ceres-smoke-host/ceres_sparse_smoke"
+          "$RUNNER_TEMP/ceres-smoke-host/triangulation_smoke"
 
   android-abi-build:
     runs-on: ubuntu-latest

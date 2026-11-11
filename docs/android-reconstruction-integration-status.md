@@ -19,6 +19,7 @@ The current Android native implementation is a partial fallback, not a complete 
 - The position solver is a focused direction-constraint implementation.
 - The bundle-adjustment implementation optimizes camera centres and 3D points while holding camera rotations fixed.
 - The current feature adapter can pass learned observations into the existing geometry path, but actual model assets and device validation are still outstanding.
+- The first native geometry slice now includes the upstream two-view DLT and multi-view bearing-DLT triangulation algorithms. The incremental diagnostic triangulator seeds from a high-parallax pair, selects reprojection-consistent observations, and solves from up to 32 views. It is not yet the full robust multi-view RANSAC estimator or production incremental mapper.
 - Existing native code must not be presented as a direct upstream implementation.
 
 ## Upstream source baseline
