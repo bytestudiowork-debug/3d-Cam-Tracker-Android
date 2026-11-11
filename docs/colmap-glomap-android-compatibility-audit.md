@@ -91,9 +91,10 @@ This is a partial Android implementation, not a build of the upstream
 COLMAP/GLOMAP libraries. The positioner implements the ONLY_POINTS
 direction-constraint solve. The bundle-adjustment JNI path currently holds
 camera rotations fixed and jointly refines camera centres and 3D points.
-The Kotlin global reconstruction path still obtains features through its
-existing OpenCV implementation. The separate AI module is not connected to
-that geometry path yet, and it has no packaged model weights.
+The Kotlin global reconstruction path still defaults to its existing OpenCV
+feature implementation. A separate adapter now accepts learned feature
+observations as an alternate input, but no model weights are packaged and
+learned inference has not yet been device-validated.
 
 The successful release workflow on 2026-11-11 built the Android app with
 the native target. A dedicated Ceres sparse-solver smoke workflow has now
