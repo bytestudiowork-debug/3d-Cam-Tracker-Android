@@ -2,8 +2,11 @@
 set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-MODEL_VERSION="v0.66.0"
-MODEL_URL="https://qaihub-public-assets.s3.us-west-2.amazonaws.com/qai-hub-models/models/superpoint/releases/${MODEL_VERSION}/superpoint-tflite-float.zip"
+MODEL_URL="${AI_FEATURE_MODEL_ARCHIVE_URL:-}"
+if [[ -z "${MODEL_URL}" ]]; then
+  echo "Set AI_FEATURE_MODEL_ARCHIVE_URL to the approved model archive URL." >&2
+  exit 2
+fi
 ASSET_DIR="${ROOT_DIR}/app/src/main/assets/ai"
 ASSET_PATH="${ASSET_DIR}/feature_model.tflite"
 TEMP_DIR="$(mktemp -d)"
@@ -12,7 +15,7 @@ trap 'rm -rf "${TEMP_DIR}"' EXIT
 command -v curl >/dev/null || { echo "curl is required." >&2; exit 1; }
 command -v unzip >/dev/null || { echo "unzip is required." >&2; exit 1; }
 
-echo "Downloading the pinned SuperPoint TFLite release (${MODEL_VERSION})..."
+echo "Downloading the configured AI feature model archive..."
 curl --fail --location --retry 3 --retry-delay 2 \
   --output "${TEMP_DIR}/superpoint.zip" "${MODEL_URL}"
 
