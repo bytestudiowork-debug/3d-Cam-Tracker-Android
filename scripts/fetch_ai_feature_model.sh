@@ -19,15 +19,15 @@ echo "Downloading the configured AI feature model archive..."
 curl --fail --location --retry 3 --retry-delay 2 \
   --output "${TEMP_DIR}/feature-model.zip" "${MODEL_URL}"
 
-mapfile -t MODEL_ENTRIES < <(unzip -Z1 "${TEMP_DIR}/superpoint.zip" | grep -Ei '\.tflite$' || true)
+mapfile -t MODEL_ENTRIES < <(unzip -Z1 "${TEMP_DIR}/feature-model.zip" | grep -Ei '\.tflite$' || true)
 if [[ "${#MODEL_ENTRIES[@]}" -ne 1 ]]; then
   echo "Expected exactly one TFLite model in the configured archive; found ${#MODEL_ENTRIES[@]}." >&2
-  unzip -Z1 "${TEMP_DIR}/superpoint.zip" >&2
+  unzip -Z1 "${TEMP_DIR}/feature-model.zip" >&2
   exit 1
 fi
 
 mkdir -p "${ASSET_DIR}"
-unzip -p "${TEMP_DIR}/superpoint.zip" "${MODEL_ENTRIES[0]}" > "${ASSET_PATH}"
+unzip -p "${TEMP_DIR}/feature-model.zip" "${MODEL_ENTRIES[0]}" > "${ASSET_PATH}"
 if [[ ! -s "${ASSET_PATH}" ]]; then
   echo "Downloaded TFLite model is empty." >&2
   exit 1
