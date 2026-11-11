@@ -70,6 +70,10 @@ endif()
 find_library(log-lib log)
 find_library(jnigraphics-lib jnigraphics)
 
+add_library(trackstudio_reconstruction SHARED upstream_triangulation.cpp)
+target_include_directories(trackstudio_reconstruction PRIVATE ${eigen_SOURCE_DIR})
+target_compile_options(trackstudio_reconstruction PRIVATE -O3 -fno-fast-math)
+
 add_library(trackstudio_glomap SHARED glomap_positioner.cpp glomap_bundle_adjuster.cpp)
 target_link_libraries(trackstudio_glomap PRIVATE Ceres::ceres ${log-lib})
 target_compile_options(trackstudio_glomap PRIVATE -O3 -fno-fast-math)

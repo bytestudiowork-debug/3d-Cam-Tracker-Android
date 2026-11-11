@@ -1,12 +1,9 @@
 package com.trackstudio.app.tracking
 
-import org.opencv.calib3d.Calib3d
 import org.opencv.core.CvType
 import org.opencv.core.Mat
-import org.opencv.core.Point
 import org.opencv.core.Point3
 import org.opencv.core.Core
-import org.opencv.core.MatOfPoint2f
 import kotlin.math.acos
 import kotlin.math.cos
 import kotlin.math.max
@@ -104,35 +101,31 @@ internal object SfMTriangulator {
             val (lastObservation, lastPose) = pair.second
             val projection1 = projectionMatrix(cameraMatrix, firstPose)
             val projection2 = projectionMatrix(cameraMatrix, lastPose)
-            val image1 = MatOfPoint2f(Point(firstObservation.x, firstObservation.y))
-            val image2 = MatOfPoint2f(Point(lastObservation.x, lastObservation.y))
-            val homogeneous = Mat()
 
             try {
-                Calib3d.triangulatePoints(projection1, projection2, image1, image2, homogeneous)
-                if (homogeneous.rows() != 4 || homogeneous.cols() != 1) {
+                val projection1Values = DoubleArray(12)
+                val projection2Values = DoubleArray(12)
+                if (projection1.get(0, 0, projection1Values) != projection1Values.size ||
+                    projection2.get(0, 0, projection2Values) != projection2Values.size
+                ) {
                     rejectedGeometry++
                     continue
                 }
-                val wData = homogeneous.get(3, 0)
-                if (wData == null || wData.isEmpty()) {
+                val point = UpstreamTriangulation.triangulate(
+                    projection1Values,
+                    projection2Values,
+                    firstObservation.x,
+                    firstObservation.y,
+                    lastObservation.x,
+                    lastObservation.y
+                )
+                if (point == null) {
                     rejectedGeometry++
                     continue
                 }
-                val w = wData[0]
-                if (!w.isFinite() || kotlin.math.abs(w) < 1e-9) {
-                    rejectedGeometry++
-                    continue
-                }
-                val x = (homogeneous.get(0, 0)?.get(0) ?: Double.NaN) / w
-                val y = (homogeneous.get(1, 0)?.get(0) ?: Double.NaN) / w
-                val z = (homogeneous.get(2, 0)?.get(0) ?: Double.NaN) / w
-                if (!x.isFinite() || !y.isFinite() || !z.isFinite()) {
-                    rejectedGeometry++
-                    continue
-                }
-
-                val point = doubleArrayOf(x, y, z)
+                val x = point[0]
+                val y = point[1]
+                val z = point[2]
                 val reprojectionErrors = mutableListOf<Double>()
                 for ((observation, pose) in validObservations) {
                     val cameraPoint = transform(pose, point)
@@ -171,9 +164,6 @@ internal object SfMTriangulator {
             } finally {
                 projection1.release()
                 projection2.release()
-                image1.release()
-                image2.release()
-                homogeneous.release()
             }
         }
 
