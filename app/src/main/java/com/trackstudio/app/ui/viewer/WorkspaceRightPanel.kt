@@ -253,6 +253,13 @@ private fun TrackingToolsCard(
                     }
                 }
             }
+            if (reconstructionMode == ReconstructionMode.AI) {
+                Text(
+                    "Experimental selection · tracking is not enabled yet.",
+                    color = TextSecondary,
+                    fontSize = 10.sp
+                )
+            }
             Box(
                 modifier = Modifier.fillMaxWidth().height(48.dp).clip(RoundedCornerShape(8.dp))
                     .background(if (isAutoTracking) PanelSurfaceRaised else AccentPrimary)
