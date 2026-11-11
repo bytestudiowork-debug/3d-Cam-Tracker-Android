@@ -1,51 +1,46 @@
-# GLOMAP Android port status
+# Android geometry port status
 
-Pinned upstream revisions:
-- GLOMAP: `99806d0869f802fad218516a2e027793e7ca687d`
-- COLMAP: `e6644e744488a13f3aba82958500db9066341205`
+Status date: 2026-11-11.
 
-## Global positioning: random initialization and point-to-camera assembly
+## Implemented in the app
 
-Upstream initialization source: `GlobalPositioner::InitializeRandomPositions` and the random-point initialization in `AddPointToCameraConstraints` in `glomap/estimators/global_positioning.cc`.
+- The Kotlin global-positioning initializer, seeded random generator and
+  ONLY_POINTS problem builder are present.
+- Android CMake builds Eigen 3.4.0 and Ceres 2.2.0 for the app's supported
+  ABIs. SuiteSparse, CUDA and LAPACK are disabled; EigenSparse is enabled.
+- The JNI target `trackstudio_glomap` contains a point-to-camera global
+  positioning solve using direction residuals, per-observation scales,
+  robust loss, sparse Schur solving and a scale gauge constraint.
+- The JNI bundle-adjustment path jointly refines camera centres and 3D
+  points using reprojection residuals while holding camera rotations fixed.
+- The existing global reconstruction engine uses its current OpenCV feature
+  extraction and matching path, then runs the global geometry stages.
 
-Android implementation:
-- `tracking/glomap/GlomapMt19937.kt`: MT19937 engine seeded with the upstream default (1), plus the 53-bit canonical uniform sampling used by the pinned reference build.
-- `tracking/glomap/GlomapGlobalPositioningInitializer.kt`: constrained-frame discovery from valid image pairs and sufficiently long tracks, camera-center initialization, and random 3D point initialization.
+## Not yet complete
 
-Preserved initialization behavior:
-- Valid image pairs constrain both endpoint frames.
-- Tracks shorter than 3 observations do not constrain frames or receive random points.
-- Only registered images in eligible tracks add constrained frames.
-- With random position generation and position optimization enabled, constrained frame centers and eligible track points use `100 * uniform[-1,1]` per coordinate; unconstrained frames use their camera center from the existing pose.
-- When random positions are disabled or positions are not optimized, only constrained frames are converted to camera centers.
-- Camera positions and track points consume one shared seeded MT19937 stream in source call order.
-- Input lists preserve caller-provided traversal order. Upstream uses unordered maps, so exact assignment of random samples to IDs requires matching that upstream container iteration order.
+- The native solver files are focused Android implementations, not a direct
+  build of the upstream COLMAP/GLOMAP libraries.
+- The current bundle-adjustment path is not the full upstream optimizer:
+  rotations and camera intrinsics are held fixed.
+- The native solvers still need deterministic numerical parity tests against
+  the pinned upstream implementation.
+- The AI feature module is not yet connected to the global reconstruction
+  input path. No model weights are packaged, so learned inference is not
+  available in the app.
+- Loop-closure scoring from learned frame signatures and complete device
+  validation remain outstanding.
 
-## Global positioning: point-to-camera problem assembly
+## Build validation
 
-Upstream sources:
-- `glomap/estimators/global_positioning.h`
-- `glomap/estimators/global_positioning.cc`
-- `glomap/estimators/cost_function.h`
+The release APK workflow completed successfully on commit
+`a588ab5f0cf1d278da1d9da83c48d3b95e1e42fd` on 2026-11-11. The dedicated
+Ceres sparse-solver smoke workflow has been enabled for
+`feature/ai-engine`; its host and Android ABI checks are tracked by GitHub
+Actions.
 
-Android implementation:
-- `tracking/glomap/BataDirectionResidual.kt`: BATA residual, analytic Jacobians and scale initialization.
-- `tracking/glomap/GlomapGlobalPositioningProblemBuilder.kt`: constructs ONLY_POINTS point-to-camera residual inputs from undistorted feature directions and camera-from-world rotations.
+## Architecture boundary
 
-Preserved details:
-- Default minimum track observations: 3.
-- Observation translation: inverse camera rotation multiplied by the undistorted feature direction.
-- Auxiliary scale initial value: 1.0 when scale generation is enabled.
-- When scale generation is disabled and a point is initialized, scale uses max(1e-5, translation dot (point - camera center) / squaredNorm(point - camera center)).
-- BATA residual remains translation observation minus scale times (point - camera center).
-- Scale lower bound: 1e-5.
-- No pairwise camera constraints are added in ONLY_POINTS mode.
-
-Not yet ported:
-- Ceres problem/parameter-block ownership and Schur ordering.
-- GLOMAP random initialization using its mt19937 seed and 100 * uniform[-1,1] vectors.
-- Huber loss execution and calibrated/uncalibrated scaled-loss objects.
-- Ceres trust-region solve, gauge fixing, and conversion back to camera poses.
-- The assembled problem is not yet wired into a standalone GlomapReconstructionEngine.
-
-The builder intentionally stops before optimization. It does not substitute a different optimizer or claim to produce camera positions. See [glomap-android-solver-dependencies.md](glomap-android-solver-dependencies.md) for the pinned Ceres Android dependency requirements and the next implementation sequence.
+The Custom and Global engines remain separate from the AI Engine. The next
+integration stage should allow learned feature observations to enter the
+existing geometry stages through a stable adapter, without replacing the
+existing OpenCV path or changing the Custom engine.
