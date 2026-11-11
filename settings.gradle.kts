@@ -14,4 +14,4 @@ dependencyResolutionManagement {
 }
 
 rootProject.name = "TrackStudio"
-include(":app")
+include(":app", ":ai-engine")
