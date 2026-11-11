@@ -92,4 +92,32 @@ class DenseFeatureDecoderTest {
         assertEquals(1, result.size)
         assertTrue(result.single().confidence > 0.9f)
     }
+    @Test
+    fun decodesCompactChannelFirstDescriptors() {
+        val scores = FloatArray(8 * 8)
+        scores[3 * 8 + 2] = 0.95f
+        val descriptors = FloatArray(64)
+        descriptors[0] = 3f
+        descriptors[1] = 4f
+
+        val result = DenseFeatureDecoder.decodePixelScores(
+            frameIndex = 9,
+            imageWidth = 8,
+            imageHeight = 8,
+            cellHeight = 1,
+            cellWidth = 1,
+            scores = scores,
+            descriptors = descriptors,
+            descriptorSize = 64,
+            confidenceThreshold = 0.5f,
+            nmsRadius = 1,
+            descriptorChannelsFirst = true
+        )
+
+        assertEquals(1, result.size)
+        assertEquals(64, result.single().descriptor!!.size)
+        assertEquals(0.6f, result.single().descriptor!![0], 0.0001f)
+        assertEquals(0.8f, result.single().descriptor!![1], 0.0001f)
+    }
+
 }
