@@ -28,6 +28,13 @@ class OnDeviceFeatureDetector(
     private val cellWidth: Int
     private val cellHeight: Int
     private val descriptorSize: Int
+    private val inputBuffer: ByteBuffer
+    private val scoreOutputBuffer: ByteBuffer
+    private val descriptorOutputBuffer: ByteBuffer
+    private val scoreValues: FloatArray
+    private val descriptorValues: FloatArray
+    private val modelInputs: Array<Any>
+    private val modelOutputs: MutableMap<Int, Any>
 
     init {
         require(threadCount > 0)
@@ -79,31 +86,38 @@ class OnDeviceFeatureDetector(
         }
         descriptorSize = descriptorShape[3]
         require(confidenceThreshold in 0f..1f && maximumFeatures > 0)
+
+        // Reuse direct buffers and output arrays across frames. Detection is
+        // synchronized, so one set is sufficient and avoids per-frame churn.
+        inputBuffer = ByteBuffer.allocateDirect(inputWidth * inputHeight * 4)
+            .order(ByteOrder.nativeOrder())
+        scoreOutputBuffer = ByteBuffer.allocateDirect(cellHeight * cellWidth * 65 * 4)
+            .order(ByteOrder.nativeOrder())
+        descriptorOutputBuffer = ByteBuffer.allocateDirect(cellHeight * cellWidth * descriptorSize * 4)
+            .order(ByteOrder.nativeOrder())
+        scoreValues = FloatArray(cellHeight * cellWidth * 65)
+        descriptorValues = FloatArray(cellHeight * cellWidth * descriptorSize)
+        modelInputs = arrayOf(inputBuffer)
+        modelOutputs = hashMapOf(
+            0 to scoreOutputBuffer,
+            1 to descriptorOutputBuffer
+        )
     }
 
     @Synchronized
     override fun detect(frame: TrackingFrame): List<FeatureObservation> {
-        val input = ByteBuffer.allocateDirect(inputWidth * inputHeight * 4)
-            .order(ByteOrder.nativeOrder())
-        fillInput(frame, input)
-        input.rewind()
+        inputBuffer.clear()
+        fillInput(frame, inputBuffer)
+        inputBuffer.rewind()
+        scoreOutputBuffer.clear()
+        descriptorOutputBuffer.clear()
 
-        val scoreOutput = ByteBuffer.allocateDirect(cellHeight * cellWidth * 65 * 4)
-            .order(ByteOrder.nativeOrder())
-        val descriptorOutput = ByteBuffer.allocateDirect(cellHeight * cellWidth * descriptorSize * 4)
-            .order(ByteOrder.nativeOrder())
+        interpreter.runForMultipleInputsOutputs(modelInputs, modelOutputs)
 
-        interpreter.runForMultipleInputsOutputs(
-            arrayOf(input),
-            mapOf(0 to scoreOutput, 1 to descriptorOutput)
-        )
-
-        val scoreValues = FloatArray(cellHeight * cellWidth * 65)
-        val descriptorValues = FloatArray(cellHeight * cellWidth * descriptorSize)
-        scoreOutput.rewind()
-        descriptorOutput.rewind()
-        scoreOutput.asFloatBuffer().get(scoreValues)
-        descriptorOutput.asFloatBuffer().get(descriptorValues)
+        scoreOutputBuffer.rewind()
+        descriptorOutputBuffer.rewind()
+        scoreOutputBuffer.asFloatBuffer().get(scoreValues)
+        descriptorOutputBuffer.asFloatBuffer().get(descriptorValues)
 
         val decoded = DenseFeatureDecoder.decode(
             frameIndex = frame.frameIndex,
