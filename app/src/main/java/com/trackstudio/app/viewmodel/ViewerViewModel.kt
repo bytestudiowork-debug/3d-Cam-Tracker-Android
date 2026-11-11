@@ -12,6 +12,7 @@ import com.trackstudio.app.playback.FrameSource
 import com.trackstudio.app.playback.PlaybackController
 import com.trackstudio.app.playback.PlaybackState
 import com.trackstudio.app.tracking.CameraTrackingEngine
+import com.trackstudio.app.tracking.AiReconstructionEngine
 import com.trackstudio.app.tracking.GlobalReconstructionEngine
 import com.trackstudio.app.tracking.ReconstructionMode
 import com.trackstudio.app.tracking.ReconstructionEngine
@@ -230,7 +231,11 @@ class ViewerViewModel(
         )
 
         val initialMode = if (videoUri != null) ReconstructionMode.GLOBAL else _uiState.value.reconstructionMode
-        reconstructionEngine = if (initialMode == ReconstructionMode.GLOBAL) GlobalReconstructionEngine() else customEngine
+        reconstructionEngine = when (initialMode) {
+            ReconstructionMode.CUSTOM -> customEngine
+            ReconstructionMode.GLOBAL -> GlobalReconstructionEngine()
+            ReconstructionMode.AI -> AiReconstructionEngine(appContext)
+        }
         _uiState.value = ViewerUiState(
             playback = PlaybackState(
                 currentFrame = 0,
@@ -399,7 +404,7 @@ class ViewerViewModel(
         reconstructionEngine = when (mode) {
             ReconstructionMode.CUSTOM -> customEngine
             ReconstructionMode.GLOBAL -> GlobalReconstructionEngine()
-            ReconstructionMode.AI -> customEngine
+            ReconstructionMode.AI -> AiReconstructionEngine(appContext)
         }
         _uiState.update {
             it.copy(
@@ -412,13 +417,22 @@ class ViewerViewModel(
         }
     }
 
+    private fun hasAiFeatureModel(): Boolean = try {
+        appContext.assets.open("ai/feature_model.tflite").use { }
+        true
+    } catch (_: Exception) {
+        false
+    }
+
     fun startAutoTrack() {
         if (_uiState.value.isAutoTracking) return
         trackingResumeSignal = CompletableDeferred(Unit)
         anchorProjectionContext = null
-        if (_uiState.value.reconstructionMode == ReconstructionMode.AI) {
+        if (_uiState.value.reconstructionMode == ReconstructionMode.AI && !hasAiFeatureModel()) {
             _uiState.update {
-                it.copy(trackingError = "AI Engine is selected but is not ready to process footage yet. The existing engines remain available.")
+                it.copy(
+                    trackingError = "AI Engine needs its feature model asset before it can process footage. Custom and Global engines remain available."
+                )
             }
             return
         }
