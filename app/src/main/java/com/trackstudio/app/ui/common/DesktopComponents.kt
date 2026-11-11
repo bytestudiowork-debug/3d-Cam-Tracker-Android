@@ -23,6 +23,7 @@ import androidx.compose.ui.unit.dp
 import com.trackstudio.app.ui.theme.AccentPrimary
 import com.trackstudio.app.ui.theme.PanelBorder
 import com.trackstudio.app.ui.theme.PanelSurface
+import com.trackstudio.app.ui.theme.TextPrimary
 import com.trackstudio.app.ui.theme.TextSecondary
 
 /**
@@ -64,7 +65,8 @@ fun DesktopButton(
     onClick: () -> Unit,
     modifier: Modifier = Modifier,
     enabled: Boolean = true,
-    emphasized: Boolean = false
+    emphasized: Boolean = false,
+    large: Boolean = false
 ) {
     OutlinedButton(
         onClick = onClick,
@@ -72,14 +74,14 @@ fun DesktopButton(
         modifier = modifier,
         shape = RoundedCornerShape(3.dp),
         colors = if (emphasized) {
-            ButtonDefaults.outlinedButtonColors(containerColor = AccentPrimary.copy(alpha = 0.15f))
+            ButtonDefaults.outlinedButtonColors(containerColor = AccentPrimary.copy(alpha = 0.15f), contentColor = TextPrimary)
         } else {
-            ButtonDefaults.outlinedButtonColors()
+            ButtonDefaults.outlinedButtonColors(contentColor = TextPrimary)
         },
         border = BorderStroke(1.dp, if (emphasized) AccentPrimary else PanelBorder),
-        contentPadding = PaddingValues(horizontal = 14.dp, vertical = 8.dp)
+        contentPadding = if (large) PaddingValues(horizontal = 20.dp, vertical = 13.dp) else PaddingValues(horizontal = 14.dp, vertical = 8.dp)
     ) {
-        Text(text, style = MaterialTheme.typography.labelLarge)
+        Text(text, style = if (large) MaterialTheme.typography.titleMedium else MaterialTheme.typography.labelLarge, color = TextPrimary)
     }
 }
 
@@ -113,6 +115,6 @@ fun DesktopTextField(
 fun LabeledValueRow(label: String, value: String, modifier: Modifier = Modifier) {
     Row(modifier = modifier.fillMaxWidth()) {
         Text(label, style = MaterialTheme.typography.bodyMedium, color = TextSecondary, modifier = Modifier.padding(end = 8.dp))
-        Text(value, style = MaterialTheme.typography.bodyMedium)
+        Text(value, style = MaterialTheme.typography.bodyMedium, color = TextPrimary)
     }
 }

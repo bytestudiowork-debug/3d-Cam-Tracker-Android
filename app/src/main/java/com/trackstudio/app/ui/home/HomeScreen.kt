@@ -20,8 +20,8 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.withStyle
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.sp
 import com.trackstudio.app.ui.common.DesktopButton
-import com.trackstudio.app.ui.theme.TextSecondary
 import com.trackstudio.app.viewmodel.HomeViewModel
 
 @Composable
@@ -53,7 +53,7 @@ fun HomeScreen(
                         append("Studio")
                     }
                 },
-                style = MaterialTheme.typography.titleLarge.copy(fontWeight = FontWeight.SemiBold),
+                style = MaterialTheme.typography.titleLarge.copy(fontSize = 36.sp, fontWeight = FontWeight.SemiBold),
                 color = com.trackstudio.app.ui.theme.TextPrimary
             )
 
@@ -67,13 +67,15 @@ fun HomeScreen(
                     text = "New Project",
                     onClick = onNewProjectClick,
                     emphasized = true,
-                    modifier = Modifier.width(240.dp)
+                    modifier = Modifier.width(260.dp).height(54.dp),
+                    large = true,
                 )
 
                 DesktopButton(
                     text = "Recent Projects (${uiState.recentProjects.size})",
                     onClick = onRecentProjectsClick,
-                    modifier = Modifier.width(240.dp),
+                    modifier = Modifier.width(260.dp).height(54.dp),
+                    large = true,
                     enabled = uiState.recentProjects.isNotEmpty()
                 )
             }

@@ -4,6 +4,7 @@ import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
@@ -19,6 +20,7 @@ import com.trackstudio.app.ui.common.LabeledValueRow
 import com.trackstudio.app.ui.common.Panel
 import com.trackstudio.app.ui.theme.AccentError
 import com.trackstudio.app.ui.theme.AccentWarning
+import com.trackstudio.app.ui.theme.TextPrimary
 import com.trackstudio.app.ui.theme.TextSecondary
 import com.trackstudio.app.util.FileUtils
 import com.trackstudio.app.viewmodel.ImportPhase
@@ -63,31 +65,38 @@ fun FootagePanel(
                     + "Videos stay in their original format; frames decode as needed "
                     + "for preview and full-resolution tracking.",
             style = MaterialTheme.typography.bodyMedium,
-            color = TextSecondary
+            color = TextPrimary
         )
 
         Spacer(
             Modifier.height(14.dp)
         )
 
-        DesktopButton(
-            text = when (state.importPhase) {
-                ImportPhase.IDLE, ImportPhase.FAILED -> "Select Frames Folder..."
-                ImportPhase.PROBING -> "Reading Frames..."
-                ImportPhase.EXTRACTING_VIDEO -> "Reading Video..."
-                ImportPhase.PROBED -> "Replace Frames Folder..."
-            },
-            enabled = state.importPhase != ImportPhase.PROBING &&
-                state.importPhase != ImportPhase.EXTRACTING_VIDEO,
-            onClick = { folderPicker.launch(null) }
-        )
-        Spacer(Modifier.height(8.dp))
-        DesktopButton(
-            text = "Import Video...",
-            enabled = state.importPhase != ImportPhase.PROBING &&
-                state.importPhase != ImportPhase.EXTRACTING_VIDEO,
-            onClick = { videoPicker.launch(arrayOf("video/*")) }
-        )
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.spacedBy(8.dp)
+        ) {
+            DesktopButton(
+                text = when (state.importPhase) {
+                    ImportPhase.IDLE, ImportPhase.FAILED -> "Image Sequence Import"
+                    ImportPhase.PROBING -> "Reading Frames..."
+                    ImportPhase.EXTRACTING_VIDEO -> "Reading Video..."
+                    ImportPhase.PROBED -> "Replace Image Sequence"
+                },
+                enabled = state.importPhase != ImportPhase.PROBING &&
+                    state.importPhase != ImportPhase.EXTRACTING_VIDEO,
+                onClick = { folderPicker.launch(null) },
+                emphasized = true,
+                modifier = Modifier.weight(1f)
+            )
+            DesktopButton(
+                text = "Video Import",
+                enabled = state.importPhase != ImportPhase.PROBING &&
+                    state.importPhase != ImportPhase.EXTRACTING_VIDEO,
+                onClick = { videoPicker.launch(arrayOf("video/*")) },
+                modifier = Modifier.weight(1f)
+            )
+        }
         if (state.importPhase == ImportPhase.PROBING ||
             state.importPhase == ImportPhase.EXTRACTING_VIDEO) {
             DesktopButton(text = "Cancel Import", onClick = {
@@ -209,7 +218,8 @@ private fun FootageSummary(
         Text(
             if (state.isVideoSource) "Video detected" else "Sequence detected",
             style =
-                MaterialTheme.typography.titleSmall
+                MaterialTheme.typography.titleSmall,
+            color = TextPrimary
         )
 
         LabeledValueRow(

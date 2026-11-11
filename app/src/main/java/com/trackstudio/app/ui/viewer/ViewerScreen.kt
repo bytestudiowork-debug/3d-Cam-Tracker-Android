@@ -116,6 +116,7 @@ fun ViewerScreen(
     var markerSizeDp by remember { mutableFloatStateOf(3f) }
     var markerOutline by remember { mutableStateOf(true) }
     var markerOpacity by remember { mutableFloatStateOf(0.78f) }
+    var popupTransparency by remember { mutableFloatStateOf(0f) }
     var showAnchorOverlay by remember { mutableStateOf(true) }
     var anchorLineWidthDp by remember { mutableFloatStateOf(2.2f) }
     var activeToolPopup by remember { mutableStateOf<String?>(null) }
@@ -317,6 +318,8 @@ fun ViewerScreen(
                 markerSizeDp = markerSizeDp,
                 markerOutline = markerOutline,
                 markerOpacity = markerOpacity,
+                popupTransparency = popupTransparency,
+                onPopupTransparencyChanged = { popupTransparency = it },
                 onMarkerOpacityChanged = { markerOpacity = it },
                 onMarkerColorChanged = { markerColorArgb = it },
                 onMarkerSizeChanged = { markerSizeDp = it },

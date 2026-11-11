@@ -76,6 +76,8 @@ internal fun TrackingToolPopup(
     markerSizeDp: Float,
     markerOutline: Boolean,
     markerOpacity: Float,
+    popupTransparency: Float,
+    onPopupTransparencyChanged: (Float) -> Unit,
     onMarkerColorChanged: (Int) -> Unit,
     onMarkerSizeChanged: (Float) -> Unit,
     onMarkerOutlineChanged: (Boolean) -> Unit,
@@ -89,7 +91,7 @@ internal fun TrackingToolPopup(
     var zText by remember(title, anchorZ) { mutableStateOf(anchorZ.toString()) }
 
     Box(
-        Modifier.fillMaxSize().background(Color(0x99000000)).clickable(onClick = onDismiss),
+        Modifier.fillMaxSize().background(Color.Black.copy(alpha = 0.60f * (1f - popupTransparency.coerceIn(0f, 0.85f)))).clickable(onClick = onDismiss),
         contentAlignment = Alignment.Center
     ) {
         Column(
@@ -97,10 +99,10 @@ internal fun TrackingToolPopup(
                 .clickable(interactionSource = remember { MutableInteractionSource() }, indication = null) { }
                 .fillMaxWidth(0.88f)
                 .clip(RoundedCornerShape(14.dp))
-                .background(PanelBackground)
+                .background(PanelBackground.copy(alpha = 1f - popupTransparency.coerceIn(0f, 0.85f)))
         ) {
             Row(
-                Modifier.fillMaxWidth().height(52.dp).background(PanelSurfaceRaised)
+                Modifier.fillMaxWidth().height(52.dp).background(PanelSurfaceRaised.copy(alpha = 1f - popupTransparency.coerceIn(0f, 0.85f)))
                     .pointerInput(title) {
                         detectDragGestures { change, amount ->
                             change.consume()
@@ -118,6 +120,12 @@ internal fun TrackingToolPopup(
                 Modifier.fillMaxWidth().verticalScroll(rememberScrollState()).padding(14.dp),
                 verticalArrangement = Arrangement.spacedBy(12.dp)
             ) {
+                Text("Popup transparency · ${(popupTransparency * 100).toInt()}%", color = TextPrimary, fontSize = 12.sp)
+                Slider(
+                    value = popupTransparency.coerceIn(0f, 0.85f),
+                    onValueChange = onPopupTransparencyChanged,
+                    valueRange = 0f..0.85f
+                )
                 if (title == "Anchor") {
                     PopupSwitch("Show world anchor", showAnchor, onAnchorChanged)
                     Text("WORLD POSITION", color = TextSecondary, fontSize = 11.sp)
@@ -184,7 +192,7 @@ internal fun TrackingToolPopup(
                         "The anchor is a fixed point in the reconstructed world and is projected through each solved camera. XYZ values use relative scene units; absolute scale is not calibrated yet.",
                         color = TextSecondary, fontSize = 11.sp
                     )
-                    Text("Overlay opacity · ${(markerOpacity * 100).toInt()}%", color = TextPrimary, fontSize = 12.sp)
+                    Text("Marker opacity · ${(markerOpacity * 100).toInt()}%", color = TextPrimary, fontSize = 12.sp)
                     Slider(
                         value = markerOpacity.coerceIn(0.15f, 1f),
                         onValueChange = onMarkerOpacityChanged,
