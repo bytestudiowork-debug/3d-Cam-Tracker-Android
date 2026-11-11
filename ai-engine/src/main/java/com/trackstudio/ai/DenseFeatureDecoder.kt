@@ -94,13 +94,78 @@ internal object DenseFeatureDecoder {
         }
     }
 
+    /** Decodes SuperPoint's post-softmax full-resolution score map. */
+    fun decodePixelScores(
+        frameIndex: Int,
+        imageWidth: Int,
+        imageHeight: Int,
+        cellHeight: Int,
+        cellWidth: Int,
+        scores: FloatArray,
+        descriptors: FloatArray,
+        descriptorSize: Int = 256,
+        confidenceThreshold: Float = 0.001f,
+        nmsRadius: Int = 4,
+        maximumFeatures: Int = 500,
+        descriptorChannelsFirst: Boolean = true
+    ): List<FeatureObservation> {
+        require(imageWidth > 0 && imageHeight > 0)
+        require(cellHeight > 0 && cellWidth > 0)
+        require(scores.size == imageWidth * imageHeight)
+        require(descriptorSize > 0)
+        require(descriptors.size == cellHeight * cellWidth * descriptorSize)
+        require(confidenceThreshold in 0f..1f)
+        require(nmsRadius >= 0 && maximumFeatures > 0)
+
+        data class Candidate(val x: Int, val y: Int, val score: Float)
+        val candidates = ArrayList<Candidate>()
+        for (y in 0 until imageHeight) {
+            for (x in 0 until imageWidth) {
+                val score = scores[y * imageWidth + x]
+                if (score.isFinite() && score >= confidenceThreshold) {
+                    candidates += Candidate(x, y, score)
+                }
+            }
+        }
+        candidates.sortByDescending { it.score }
+
+        val suppressed = BooleanArray(imageWidth * imageHeight)
+        val selected = ArrayList<Candidate>(minOf(maximumFeatures, candidates.size))
+        for (candidate in candidates) {
+            val index = candidate.y * imageWidth + candidate.x
+            if (suppressed[index]) continue
+            selected += candidate
+            if (selected.size >= maximumFeatures) break
+            for (y in maxOf(0, candidate.y - nmsRadius)..minOf(imageHeight - 1, candidate.y + nmsRadius)) {
+                for (x in maxOf(0, candidate.x - nmsRadius)..minOf(imageWidth - 1, candidate.x + nmsRadius)) {
+                    suppressed[y * imageWidth + x] = true
+                }
+            }
+        }
+
+        return selected.map { candidate ->
+            val descriptor = sampleDescriptor(
+                descriptors, cellHeight, cellWidth, descriptorSize,
+                candidate.x / 8f, candidate.y / 8f, descriptorChannelsFirst
+            )
+            FeatureObservation(
+                frameIndex = frameIndex,
+                x = candidate.x.toFloat(),
+                y = candidate.y.toFloat(),
+                confidence = candidate.score,
+                descriptor = descriptor
+            )
+        }
+    }
+
     private fun sampleDescriptor(
         descriptors: FloatArray,
         cellHeight: Int,
         cellWidth: Int,
         descriptorSize: Int,
         x: Float,
-        y: Float
+        y: Float,
+        channelsFirst: Boolean = false
     ): FloatArray {
         val sx = x.coerceIn(0f, (cellWidth - 1).toFloat())
         val sy = y.coerceIn(0f, (cellHeight - 1).toFloat())
@@ -110,16 +175,17 @@ internal object DenseFeatureDecoder {
         val y1 = minOf(y0 + 1, cellHeight - 1)
         val dx = sx - x0
         val dy = sy - y0
-        val i00 = (y0 * cellWidth + x0) * descriptorSize
-        val i10 = (y0 * cellWidth + x1) * descriptorSize
-        val i01 = (y1 * cellWidth + x0) * descriptorSize
-        val i11 = (y1 * cellWidth + x1) * descriptorSize
+        val i00 = if (channelsFirst) y0 * cellWidth + x0 else (y0 * cellWidth + x0) * descriptorSize
+        val i10 = if (channelsFirst) y0 * cellWidth + x1 else (y0 * cellWidth + x1) * descriptorSize
+        val i01 = if (channelsFirst) y1 * cellWidth + x0 else (y1 * cellWidth + x0) * descriptorSize
+        val i11 = if (channelsFirst) y1 * cellWidth + x1 else (y1 * cellWidth + x1) * descriptorSize
         val result = FloatArray(descriptorSize)
         var normSquared = 0.0
 
         for (i in 0 until descriptorSize) {
-            val top = descriptors[i00 + i] * (1f - dx) + descriptors[i10 + i] * dx
-            val bottom = descriptors[i01 + i] * (1f - dx) + descriptors[i11 + i] * dx
+            val offset = if (channelsFirst) i * cellHeight * cellWidth else i
+            val top = descriptors[i00 + offset] * (1f - dx) + descriptors[i10 + offset] * dx
+            val bottom = descriptors[i01 + offset] * (1f - dx) + descriptors[i11 + offset] * dx
             val value = top * (1f - dy) + bottom * dy
             result[i] = value
             normSquared += value.toDouble() * value.toDouble()
