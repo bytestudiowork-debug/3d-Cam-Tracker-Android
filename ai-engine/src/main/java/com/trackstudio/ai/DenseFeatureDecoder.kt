@@ -146,7 +146,7 @@ internal object DenseFeatureDecoder {
         return selected.map { candidate ->
             val descriptor = sampleDescriptor(
                 descriptors, cellHeight, cellWidth, descriptorSize,
-                candidate.x / 8f, candidate.y / 8f, descriptorChannelsFirst
+                (candidate.x + 0.5f) / 8f - 0.5f,\n                (candidate.y + 0.5f) / 8f - 0.5f, descriptorChannelsFirst
             )
             FeatureObservation(
                 frameIndex = frameIndex,
