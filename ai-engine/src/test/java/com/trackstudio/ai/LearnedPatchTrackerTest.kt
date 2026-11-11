@@ -31,6 +31,22 @@ class LearnedPatchTrackerTest {
         assertEquals(1, result.single().frameIndex)
     }
 
+    @Test
+    fun assignsIdentityWhenStartingANewTrackSequence() {
+        val detected = FeatureObservation(1, 2f, 2f, 0.8f, descriptor = floatArrayOf(1f, 0f))
+        val detector = object : FeatureDetector {
+            override fun detect(frame: TrackingFrame) = listOf(detected)
+        }
+        val result = LearnedPatchTracker(detector).track(
+            previous = frame(0),
+            current = frame(1),
+            previousObservations = emptyList()
+        )
+
+        assertEquals(1, result.size)
+        assertEquals((1L shl 32), result.single().trackId)
+    }
+
     private fun frame(index: Int) = TrackingFrame(
         frameIndex = index,
         timestampNs = index.toLong(),
