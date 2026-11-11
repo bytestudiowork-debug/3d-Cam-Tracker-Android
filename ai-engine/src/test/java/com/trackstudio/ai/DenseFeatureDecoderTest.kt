@@ -39,7 +39,7 @@ class DenseFeatureDecoderTest {
     fun suppressesNearbyLowerScoringPoints() {
         val scores = FloatArray(65 * 2) { -10f }
         scores[0] = 10f
-        scores[1] = 9f
+        scores[1] = 5f
         scores[64] = -10f
         scores[65 + 64] = -10f
         val descriptors = FloatArray(2 * 256).also {
