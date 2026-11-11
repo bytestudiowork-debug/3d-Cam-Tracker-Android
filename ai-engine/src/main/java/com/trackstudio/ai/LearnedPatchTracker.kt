@@ -17,7 +17,13 @@ class LearnedPatchTracker(
         require(current.frameIndex > previous.frameIndex) {
             "The current frame must follow the previous frame."
         }
-        if (previousObservations.isEmpty()) return detector.detect(current)
+        if (previousObservations.isEmpty()) {
+            return detector.detect(current).mapIndexed { index, observation ->
+                observation.copy(
+                    trackId = observation.trackId ?: createTrackId(current.frameIndex, index)
+                )
+            }
+        }
 
         val currentObservations = detector.detect(current)
         if (currentObservations.isEmpty()) return emptyList()
