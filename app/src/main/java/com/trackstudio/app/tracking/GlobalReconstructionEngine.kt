@@ -44,10 +44,12 @@ import kotlinx.coroutines.sync.withLock
 class GlobalReconstructionEngine(
     private val maxFeatures: Int = 1400,
     private val ratioThreshold: Float = 0.78f,
-    private val maximumPairCount: Int = 420
+    private val maximumPairCount: Int = 420,
+    private val frameFeatureExtractor: ((Mat, Int, Int) -> FrameFeatures)? = null,
+    private val descriptorNormType: Int = Core.NORM_HAMMING
 ) : ReconstructionEngine {
 
-    internal data class FrameFeatures(
+    data class FrameFeatures(
         val keypoints: Array<KeyPoint>,
         val descriptors: Mat,
         val width: Int,
@@ -83,7 +85,7 @@ class GlobalReconstructionEngine(
             frameCount >= 250 -> if (heapMb <= 256L) 950 else 1200
             else -> maxFeatures.coerceIn(500, 4000)
         }
-        val orb = ORB.create(featureBudget)
+        val orb = if (frameFeatureExtractor == null) ORB.create(featureBudget) else null
         val frames = arrayOfNulls<FrameFeatures>(frameCount)
         var decodedFrames = 0
         val solveContext = currentCoroutineContext()
@@ -104,26 +106,34 @@ class GlobalReconstructionEngine(
                 val source = frameProvider(frameIndex)
                     ?: throw IllegalStateException("Unable to decode frame ${frameIndex + 1}.")
                 try {
-                    val gray = toGray(source)
-                    val keypoints = org.opencv.core.MatOfKeyPoint()
-                    val descriptors = Mat()
-                    try {
-                        val mask = Mat()
+                    val extracted = frameFeatureExtractor?.invoke(
+                        source, frameIndex, featureBudget
+                    ) ?: run {
+                        val gray = toGray(source)
+                        val keypoints = org.opencv.core.MatOfKeyPoint()
+                        val descriptors = Mat()
                         try {
-                            orb.detectAndCompute(gray, mask, keypoints, descriptors)
+                            val mask = Mat()
+                            try {
+                                orb?.detectAndCompute(gray, mask, keypoints, descriptors)
+                            } finally {
+                                mask.release()
+                            }
+                            FrameFeatures(
+                                keypoints.toArray(), descriptors, source.cols(), source.rows()
+                            )
+                        } catch (failure: Throwable) {
+                            descriptors.release()
+                            throw failure
                         } finally {
-                            mask.release()
+                            gray.release()
+                            keypoints.release()
                         }
-                        frames[frameIndex] = FrameFeatures(
-                            keypoints.toArray(), descriptors, source.cols(), source.rows()
-                        )
-                    } catch (failure: Throwable) {
-                        descriptors.release()
-                        throw failure
-                    } finally {
-                        gray.release()
-                        keypoints.release()
                     }
+                    require(extracted.width == source.cols() && extracted.height == source.rows()) {
+                        "Extracted feature dimensions do not match the source frame."
+                    }
+                    frames[frameIndex] = extracted
                 } finally {
                     source.release()
                 }
@@ -151,7 +161,7 @@ class GlobalReconstructionEngine(
             val verifiedPairs = coroutineScope {
                 chunks.map { chunk ->
                     async(Dispatchers.Default) {
-                        val workerMatcher = BFMatcher.create(Core.NORM_HAMMING, false)
+                        val workerMatcher = BFMatcher.create(descriptorNormType, false)
                         try {
                             chunk.mapNotNull { pair ->
                                 currentCoroutineContext().ensureActive()
@@ -477,7 +487,7 @@ class GlobalReconstructionEngine(
             )
         } finally {
             frames.filterNotNull().forEach { it.descriptors.release() }
-            orb.clear()
+            orb?.clear()
         }
     }
 
