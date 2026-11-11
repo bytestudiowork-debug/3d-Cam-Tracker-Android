@@ -31,6 +31,7 @@ class OnDeviceFeatureDetector(
     private val cellHeight: Int
     private val legacyCellScores: Boolean
     private val descriptorChannelsFirst: Boolean
+    val descriptorSize: Int
     private val inputBuffers: Array<ByteBuffer>
     private val outputBuffers: Array<ByteBuffer>
     private val outputValues: Array<FloatArray>
@@ -86,9 +87,16 @@ class OnDeviceFeatureDetector(
         val descriptorShape = descriptorTensor.shape()
         legacyCellScores = scoreShape.contentEquals(intArrayOf(1, cellHeight, cellWidth, 65))
         if (legacyCellScores) {
-            require(descriptorShape.contentEquals(intArrayOf(1, cellHeight, cellWidth, 256))) {
-                "The legacy descriptor output must have [1, height/8, width/8, 256] layout."
+            require(
+                descriptorShape.size == 4 &&
+                    descriptorShape[0] == 1 &&
+                    descriptorShape[1] == cellHeight &&
+                    descriptorShape[2] == cellWidth &&
+                    descriptorShape[3] > 0
+            ) {
+                "The legacy descriptor output must have [1, height/8, width/8, channels] layout."
             }
+            descriptorSize = descriptorShape[3]
             descriptorChannelsFirst = false
         } else {
             val validScoreShape =
@@ -98,15 +106,22 @@ class OnDeviceFeatureDetector(
             require(validScoreShape) {
                 "The dense score output must contain one full-resolution score per pixel."
             }
-            descriptorChannelsFirst = descriptorShape.contentEquals(
-                intArrayOf(1, 256, cellHeight, cellWidth)
-            )
-            val descriptorChannelsLast = descriptorShape.contentEquals(
-                intArrayOf(1, cellHeight, cellWidth, 256)
-            )
+            descriptorChannelsFirst =
+                descriptorShape.size == 4 &&
+                    descriptorShape[0] == 1 &&
+                    descriptorShape[2] == cellHeight &&
+                    descriptorShape[3] == cellWidth &&
+                    descriptorShape[1] > 0
+            val descriptorChannelsLast =
+                descriptorShape.size == 4 &&
+                    descriptorShape[0] == 1 &&
+                    descriptorShape[1] == cellHeight &&
+                    descriptorShape[2] == cellWidth &&
+                    descriptorShape[3] > 0
             require(descriptorChannelsFirst || descriptorChannelsLast) {
-                "The dense descriptor output must have 256 channels at 1/8 resolution."
+                "The dense descriptor output must have [1, channels, height/8, width/8] or [1, height/8, width/8, channels] layout."
             }
+            descriptorSize = if (descriptorChannelsFirst) descriptorShape[1] else descriptorShape[3]
         }
 
         inputBuffers = Array(interpreter.inputTensorCount) { index ->
@@ -158,6 +173,7 @@ class OnDeviceFeatureDetector(
                 cellWidth = cellWidth,
                 scores = outputValues[0],
                 descriptors = outputValues[1],
+                descriptorSize = descriptorSize,
                 confidenceThreshold = confidenceThreshold,
                 maximumFeatures = maximumFeatures
             )
@@ -170,6 +186,7 @@ class OnDeviceFeatureDetector(
                 cellWidth = cellWidth,
                 scores = outputValues[0],
                 descriptors = outputValues[1],
+                descriptorSize = descriptorSize,
                 confidenceThreshold = confidenceThreshold,
                 maximumFeatures = maximumFeatures,
                 descriptorChannelsFirst = descriptorChannelsFirst
