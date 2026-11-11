@@ -94,7 +94,7 @@ internal object DenseFeatureDecoder {
         }
     }
 
-    /** Decodes SuperPoint's post-softmax full-resolution score map. */
+    /** Decodes a post-softmax full-resolution score map. */
     fun decodePixelScores(
         frameIndex: Int,
         imageWidth: Int,
