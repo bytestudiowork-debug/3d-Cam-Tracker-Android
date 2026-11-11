@@ -24,8 +24,10 @@ Status date: 2026-11-11.
   rotations and camera intrinsics are held fixed.
 - The native solvers still need deterministic numerical parity tests against
   the pinned upstream implementation.
-- The AI feature module is not yet connected to the global reconstruction
-  input path. No model weights are packaged, so learned inference is not
+- The AI feature module now has an adapter that converts learned feature
+  observations into the frame representation consumed by the existing
+  global geometry engine. The existing OpenCV path remains the default.
+  No model weights are packaged, so actual learned inference is not yet
   available in the app.
 - Loop-closure scoring from learned frame signatures and complete device
   validation remain outstanding.
@@ -40,7 +42,7 @@ Actions.
 
 ## Architecture boundary
 
-The Custom and Global engines remain separate from the AI Engine. The next
-integration stage should allow learned feature observations to enter the
-existing geometry stages through a stable adapter, without replacing the
-existing OpenCV path or changing the Custom engine.
+The Custom and Global engines remain separate from the AI Engine. The next integration stage is to package and validate compatible model
+weights, then compare learned-feature reconstruction against the existing
+OpenCV baseline. The adapter does not replace the OpenCV path or change the
+Custom engine.
