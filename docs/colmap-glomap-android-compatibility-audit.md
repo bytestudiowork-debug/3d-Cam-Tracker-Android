@@ -60,7 +60,7 @@ then assess whether the later COLMAP source should replace or supplement it.
 
 ## Build/validation gate
 
-Before adding native libraries to the production app:
+Before adding upstream COLMAP/GLOMAP source to the production app:
 - record exact commits for COLMAP, GLOMAP, Ceres, Eigen, Abseil, PoseLib and
   any additional dependencies;
 - generate a dependency/licence inventory and fail CI if a GPL component is
@@ -80,6 +80,23 @@ Before adding native libraries to the production app:
 - COLMAP controller target graph at the later reference revision.
 - Ceres official installation, Android build, component and solver guidance.
 
-This is an integration audit, not a claim that COLMAP/GLOMAP currently build
-inside TrackStudio. The app's current native CMake target still contains only
-the proxy engine.
+## Implementation status update (2026-11-11)
+
+The app now builds Eigen 3.4.0 and Ceres 2.2.0 through its Android CMake
+configuration. SuiteSparse, CUDA and LAPACK are disabled; Ceres uses the
+Eigen sparse backend. The app builds a JNI target named
+`trackstudio_glomap` from two focused native solver files.
+
+This is a partial Android implementation, not a build of the upstream
+COLMAP/GLOMAP libraries. The positioner implements the ONLY_POINTS
+direction-constraint solve. The bundle-adjustment JNI path currently holds
+camera rotations fixed and jointly refines camera centres and 3D points.
+The Kotlin global reconstruction path still obtains features through its
+existing OpenCV implementation. The separate AI module is not connected to
+that geometry path yet, and it has no packaged model weights.
+
+The successful release workflow on 2026-11-11 built the Android app with
+the native target. A dedicated Ceres sparse-solver smoke workflow has now
+been enabled for `feature/ai-engine`; its two-ABI validation is tracked
+separately. Upstream COLMAP/GLOMAP source integration and deterministic
+parity testing remain open gates.
