@@ -85,9 +85,10 @@ private class AiFeatureFrameAdapter(
 
             val valid = observations.asSequence()
                 .filter { observation ->
-                    observation.descriptor?.size == DESCRIPTOR_SIZE &&
+                    val descriptor = observation.descriptor
+                    descriptor != null && descriptor.size == DESCRIPTOR_SIZE &&
                         observation.x.isFinite() && observation.y.isFinite() &&
-                        observation.descriptor.all { it.isFinite() }
+                        descriptor.all { it.isFinite() }
                 }
                 .take(maximumFeatures.coerceAtLeast(0))
                 .toList()
