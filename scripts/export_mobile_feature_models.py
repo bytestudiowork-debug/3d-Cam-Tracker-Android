@@ -185,7 +185,15 @@ def main():
         query, key, content = qkv[..., 0], qkv[..., 1], qkv[..., 2]
         query = lightglue_module.apply_cached_rotary_emb(encoding, query)
         key = lightglue_module.apply_cached_rotary_emb(encoding, key)
-        context = self.inner_attn(query, key, content, mask=mask)
+        similarity = torch.matmul(
+            query, key.permute(0, 1, 3, 2)
+        ) * (query.shape[-1] ** -0.5)
+        if mask is not None:
+            similarity = similarity.masked_fill(~mask, -float("inf"))
+        attention = F.softmax(similarity, dim=-1)
+        context = torch.matmul(attention, content)
+        if mask is not None:
+            context = context.nan_to_num()
         message = self.out_proj(
             context.permute(0, 2, 1, 3).reshape(batch, count, self.embed_dim)
         )
@@ -208,8 +216,8 @@ def main():
         ).permute(0, 2, 1, 3)
         query_key0 = query_key0 * self.scale ** 0.5
         query_key1 = query_key1 * self.scale ** 0.5
-        similarity = torch.einsum(
-            "bhid,bhjd->bhij", query_key0, query_key1
+        similarity = torch.matmul(
+            query_key0, query_key1.permute(0, 1, 3, 2)
         )
         if mask is not None:
             similarity = similarity.masked_fill(~mask, -float("inf"))
@@ -217,10 +225,8 @@ def main():
         attention10 = F.softmax(
             similarity.permute(0, 1, 3, 2).contiguous(), dim=-1
         )
-        message0 = torch.einsum("bhij,bhjd->bhid", attention01, content1)
-        message1 = torch.einsum(
-            "bhji,bhjd->bhid", attention10.permute(0, 1, 3, 2), content0
-        )
+        message0 = torch.matmul(attention01, content1)
+        message1 = torch.matmul(attention10, content0)
         message0 = self.to_out(
             message0.permute(0, 2, 1, 3).reshape(batch0, count0, -1)
         )
@@ -232,6 +238,20 @@ def main():
         value0 = value0 + self.ffn(torch.cat([value0, message0], dim=-1))
         value1 = value1 + self.ffn(torch.cat([value1, message1], dim=-1))
         return value0, value1
+
+    def export_match_assignment_forward(self, descriptors0, descriptors1):
+        projected0 = self.final_proj(descriptors0)
+        projected1 = self.final_proj(descriptors1)
+        dimension = projected0.shape[-1]
+        projected0 = projected0 / dimension ** 0.25
+        projected1 = projected1 / dimension ** 0.25
+        similarity = torch.matmul(projected0, projected1.permute(0, 2, 1))
+        certainty0 = self.matchability(descriptors0)
+        certainty1 = self.matchability(descriptors1)
+        assignment = lightglue_module.sigmoid_log_double_softmax(
+            similarity, certainty0, certainty1
+        )
+        return assignment, similarity
 
     def export_matcher_forward(self, data):
         data0, data1 = data["image0"], data["image1"]
@@ -302,6 +322,7 @@ def main():
     lightglue_module.sigmoid_log_double_softmax = export_sigmoid_log_double_softmax
     lightglue_module.SelfBlock.forward = export_self_block_forward
     lightglue_module.CrossBlock.forward = export_cross_block_forward
+    lightglue_module.MatchAssignment.forward = export_match_assignment_forward
     matcher._forward = types.MethodType(export_matcher_forward, matcher)
     with torch.no_grad():
         adapted_assignment = wrapper(*sample)
