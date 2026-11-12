@@ -91,6 +91,16 @@ jobs:
       - name: Run tracking engine unit tests
         run: ./gradlew testReleaseUnitTest --stacktrace --no-daemon
 
+      - name: Run on-device AI inference smoke test
+        uses: ReactiveCircus/android-emulator-runner@v2
+        with:
+          api-level: 30
+          target: default
+          arch: x86_64
+          profile: pixel_2
+          disable-animations: true
+          script: ./gradlew :app:connectedDebugAndroidTest --stacktrace --no-daemon
+
       - name: Build release APK
         run: ./gradlew assembleRelease --stacktrace --no-daemon
 
