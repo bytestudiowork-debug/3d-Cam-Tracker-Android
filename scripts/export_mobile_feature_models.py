@@ -69,6 +69,17 @@ def main():
     from modules.model import XFeatModel
     from modules.lighterglue import LighterGlue
 
+    class ExportableFeatureModel(XFeatModel):
+        def _unfold2d(self, image, ws=2):
+            batch, channels, height, width = image.shape
+            image = image.reshape(
+                batch, channels, height // ws, ws, width // ws, ws
+            )
+            image = image.permute(0, 1, 3, 5, 2, 4)
+            return image.reshape(
+                batch, channels * ws * ws, height // ws, width // ws
+            )
+
     class ExtractorExport(nn.Module):
         def __init__(self, model):
             super().__init__()
@@ -78,8 +89,18 @@ def main():
             descriptors, logits, reliability = self.model(image)
             return descriptors, logits, reliability
 
-    extractor = XFeatModel().cpu().eval()
-    extractor.load_state_dict(torch.load(extractor_weights, map_location="cpu"), strict=True)
+    weights = torch.load(extractor_weights, map_location="cpu")
+    extractor = ExportableFeatureModel().cpu().eval()
+    extractor.load_state_dict(weights, strict=True)
+    reference_extractor = XFeatModel().cpu().eval()
+    reference_extractor.load_state_dict(weights, strict=True)
+    parity_input = torch.rand(1, 3, 480, 640)
+    with torch.no_grad():
+        reference_outputs = reference_extractor(parity_input)
+        export_outputs = extractor(parity_input)
+    for reference_output, export_output in zip(reference_outputs, export_outputs):
+        torch.testing.assert_close(export_output, reference_output, rtol=0, atol=1e-6)
+
     extractor_path = ASSETS / "extractor.onnx"
     ASSETS.mkdir(parents=True, exist_ok=True)
     torch.onnx.export(
