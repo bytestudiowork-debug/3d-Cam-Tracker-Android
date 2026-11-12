@@ -187,11 +187,32 @@ def main():
         torch.tensor([[640.0, 480.0]]),
     )
     matcher_path = ASSETS / "matcher.onnx"
-    torch.onnx.export(
-        wrapper,
-        sample,
-        str(matcher_path),
-        input_names=[
+    original_transpose = torch.Tensor.transpose
+
+    def transpose_via_permute(tensor, dim0, dim1):
+        rank = tensor.dim()
+        dim0 = dim0 if dim0 >= 0 else rank + dim0
+        dim1 = dim1 if dim1 >= 0 else rank + dim1
+        axes = list(range(rank))
+        axes[dim0], axes[dim1] = axes[dim1], axes[dim0]
+        return tensor.permute(*axes)
+
+    with torch.no_grad():
+        expected_assignment = wrapper(*sample)
+        torch.Tensor.transpose = transpose_via_permute
+        try:
+            transposed_assignment = wrapper(*sample)
+        finally:
+            torch.Tensor.transpose = original_transpose
+    torch.testing.assert_close(transposed_assignment, expected_assignment, rtol=0, atol=0)
+
+    torch.Tensor.transpose = transpose_via_permute
+    try:
+        torch.onnx.export(
+            wrapper,
+            sample,
+            str(matcher_path),
+            input_names=[
             "keypoints0", "descriptors0", "image_size0",
             "keypoints1", "descriptors1", "image_size1",
         ],
@@ -203,9 +224,11 @@ def main():
             "descriptors1": {1: "count1"},
             "log_assignment": {1: "count0_with_dustbin", 2: "count1_with_dustbin"},
         },
-        opset_version=17,
-        do_constant_folding=True,
-    )
+            opset_version=17,
+            do_constant_folding=True,
+        )
+    finally:
+        torch.Tensor.transpose = original_transpose
     onnx.checker.check_model(str(matcher_path))
     matcher_session = ort.InferenceSession(str(matcher_path), providers=["CPUExecutionProvider"])
     for count0, count1 in ((128, 112), (72, 96)):
