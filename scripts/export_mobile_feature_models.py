@@ -5,6 +5,7 @@ import os
 import pathlib
 import subprocess
 import sys
+import types
 import urllib.request
 
 ROOT = pathlib.Path(__file__).resolve().parents[1]
@@ -52,6 +53,7 @@ def main():
     import onnxruntime as ort
     import torch
     import torch.nn as nn
+    import torch.nn.functional as F
 
     torch.set_num_threads(1)
     WORK.mkdir(parents=True, exist_ok=True)
@@ -150,11 +152,116 @@ def main():
             raise RuntimeError(f"Unexpected reliability map shape: {output[2].shape}")
 
     matcher_module = importlib.import_module("modules.lighterglue")
+    lightglue_module = importlib.import_module("kornia.feature.lightglue")
     matcher_module.LighterGlue.default_conf_xfeat["flash"] = False
+
+    def export_rotate_half(value):
+        original_shape = tuple(value.shape)
+        value = value.reshape(*original_shape[:-1], original_shape[-1] // 2, 2)
+        first, second = value[..., 0], value[..., 1]
+        return torch.stack((-second, first), dim=-1).reshape(original_shape)
+
+    def export_sigmoid_log_double_softmax(similarity, certainty0, certainty1):
+        batch, count0, count1 = similarity.shape
+        certainties = (
+            F.logsigmoid(certainty0)
+            + F.logsigmoid(certainty1).permute(0, 2, 1)
+        )
+        scores0 = F.log_softmax(similarity, dim=2)
+        scores1 = F.log_softmax(
+            similarity.permute(0, 2, 1).contiguous(), dim=2
+        ).permute(0, 2, 1)
+        scores = similarity.new_full((batch, count0 + 1, count1 + 1), 0)
+        scores[:, :count0, :count1] = scores0 + scores1 + certainties
+        scores[:, :-1, -1] = F.logsigmoid(-certainty0.reshape(batch, count0))
+        scores[:, -1, :-1] = F.logsigmoid(-certainty1.reshape(batch, count1))
+        return scores
+
+    def export_self_block_forward(self, value, encoding, mask=None):
+        batch, count, _ = value.shape
+        qkv = self.Wqkv(value).reshape(
+            batch, count, self.num_heads, self.head_dim, 3
+        ).permute(0, 2, 1, 3, 4)
+        query, key, content = qkv[..., 0], qkv[..., 1], qkv[..., 2]
+        query = lightglue_module.apply_cached_rotary_emb(encoding, query)
+        key = lightglue_module.apply_cached_rotary_emb(encoding, key)
+        context = self.inner_attn(query, key, content, mask=mask)
+        message = self.out_proj(
+            context.permute(0, 2, 1, 3).reshape(batch, count, self.embed_dim)
+        )
+        return value + self.ffn(torch.cat([value, message], dim=-1))
+
+    def export_cross_block_forward(self, value0, value1, mask=None):
+        batch0, count0, _ = value0.shape
+        batch1, count1, _ = value1.shape
+        query_key0 = self.to_qk(value0).reshape(
+            batch0, count0, self.heads, -1
+        ).permute(0, 2, 1, 3)
+        query_key1 = self.to_qk(value1).reshape(
+            batch1, count1, self.heads, -1
+        ).permute(0, 2, 1, 3)
+        content0 = self.to_v(value0).reshape(
+            batch0, count0, self.heads, -1
+        ).permute(0, 2, 1, 3)
+        content1 = self.to_v(value1).reshape(
+            batch1, count1, self.heads, -1
+        ).permute(0, 2, 1, 3)
+        query_key0 = query_key0 * self.scale ** 0.5
+        query_key1 = query_key1 * self.scale ** 0.5
+        similarity = torch.einsum(
+            "bhid,bhjd->bhij", query_key0, query_key1
+        )
+        if mask is not None:
+            similarity = similarity.masked_fill(~mask, -float("inf"))
+        attention01 = F.softmax(similarity, dim=-1)
+        attention10 = F.softmax(
+            similarity.permute(0, 1, 3, 2).contiguous(), dim=-1
+        )
+        message0 = torch.einsum("bhij,bhjd->bhid", attention01, content1)
+        message1 = torch.einsum(
+            "bhji,bhjd->bhid", attention10.permute(0, 1, 3, 2), content0
+        )
+        message0 = self.to_out(
+            message0.permute(0, 2, 1, 3).reshape(batch0, count0, -1)
+        )
+        message1 = self.to_out(
+            message1.permute(0, 2, 1, 3).reshape(batch1, count1, -1)
+        )
+        if mask is not None:
+            message0, message1 = message0.nan_to_num(), message1.nan_to_num()
+        value0 = value0 + self.ffn(torch.cat([value0, message0], dim=-1))
+        value1 = value1 + self.ffn(torch.cat([value1, message1], dim=-1))
+        return value0, value1
+
+    def export_matcher_forward(self, data):
+        data0, data1 = data["image0"], data["image1"]
+        keypoints0, keypoints1 = data0["keypoints"], data1["keypoints"]
+        size0, size1 = data0["image_size"], data1["image_size"]
+        keypoints0 = lightglue_module.normalize_keypoints(keypoints0, size0).clone()
+        keypoints1 = lightglue_module.normalize_keypoints(keypoints1, size1).clone()
+        descriptors0 = data0["descriptors"].detach().contiguous()
+        descriptors1 = data1["descriptors"].detach().contiguous()
+        if torch.is_autocast_enabled():
+            descriptors0 = descriptors0.half()
+            descriptors1 = descriptors1.half()
+        encoding0 = self.posenc(keypoints0)
+        encoding1 = self.posenc(keypoints1)
+        for layer_index in range(self.conf.n_layers):
+            descriptors0, descriptors1 = self.transformers[layer_index](
+                descriptors0, descriptors1, encoding0, encoding1
+            )
+        assignment, _ = self.log_assignment[layer_index](descriptors0, descriptors1)
+        return {"log_assignment": assignment}
+
     lighter = LighterGlue(str(matcher_weights))
     matcher = lighter.net.cpu().eval()
     matcher.conf.width_confidence = -1
     matcher.conf.depth_confidence = -1
+    matcher.conf.flash = False
+    matcher.conf.mp = False
+    for layer in matcher.transformers:
+        layer.self_attn.inner_attn.enable_flash = False
+        layer.self_attn.inner_attn.has_sdp = False
 
     class MatcherExport(nn.Module):
         def __init__(self, model):
@@ -186,49 +293,26 @@ def main():
         torch.nn.functional.normalize(torch.rand(1, 112, 64), dim=-1),
         torch.tensor([[640.0, 480.0]]),
     )
-    matcher_path = ASSETS / "matcher.onnx"
-    original_transpose = torch.Tensor.transpose
-    original_squeeze = torch.Tensor.squeeze
-
-    def transpose_via_permute(tensor, dim0, dim1):
-        rank = tensor.dim()
-        dim0 = dim0 if dim0 >= 0 else rank + dim0
-        dim1 = dim1 if dim1 >= 0 else rank + dim1
-        axes = list(range(rank))
-        axes[dim0], axes[dim1] = axes[dim1], axes[dim0]
-        return tensor.permute(*axes)
-
-    def squeeze_via_select(tensor, dim=None):
-        if dim is None:
-            result = tensor
-            for axis in reversed(range(result.dim())):
-                if result.shape[axis] == 1:
-                    result = result.select(axis, 0)
-            return result
-        axis = dim if dim >= 0 else tensor.dim() + dim
-        if tensor.shape[axis] == 1:
-            return tensor.select(axis, 0)
-        return tensor
-
     with torch.no_grad():
-        expected_assignment = wrapper(*sample)
-        torch.Tensor.transpose = transpose_via_permute
-        torch.Tensor.squeeze = squeeze_via_select
-        try:
-            transposed_assignment = wrapper(*sample)
-        finally:
-            torch.Tensor.transpose = original_transpose
-            torch.Tensor.squeeze = original_squeeze
-    torch.testing.assert_close(transposed_assignment, expected_assignment, rtol=0, atol=0)
+        reference_assignment = wrapper(*sample)
 
-    torch.Tensor.transpose = transpose_via_permute
-    torch.Tensor.squeeze = squeeze_via_select
-    try:
-        torch.onnx.export(
-            wrapper,
-            sample,
-            str(matcher_path),
-            input_names=[
+    lightglue_module.rotate_half = export_rotate_half
+    lightglue_module.sigmoid_log_double_softmax = export_sigmoid_log_double_softmax
+    lightglue_module.SelfBlock.forward = export_self_block_forward
+    lightglue_module.CrossBlock.forward = export_cross_block_forward
+    matcher._forward = types.MethodType(export_matcher_forward, matcher)
+    with torch.no_grad():
+        adapted_assignment = wrapper(*sample)
+    torch.testing.assert_close(
+        adapted_assignment, reference_assignment, rtol=2e-5, atol=2e-5
+    )
+
+    matcher_path = ASSETS / "matcher.onnx"
+    torch.onnx.export(
+        wrapper,
+        sample,
+        str(matcher_path),
+        input_names=[
             "keypoints0", "descriptors0", "image_size0",
             "keypoints1", "descriptors1", "image_size1",
         ],
@@ -240,12 +324,9 @@ def main():
             "descriptors1": {1: "count1"},
             "log_assignment": {1: "count0_with_dustbin", 2: "count1_with_dustbin"},
         },
-            opset_version=17,
-            do_constant_folding=True,
-        )
-    finally:
-        torch.Tensor.transpose = original_transpose
-        torch.Tensor.squeeze = original_squeeze
+        opset_version=17,
+        do_constant_folding=True,
+    )
     onnx.checker.check_model(str(matcher_path))
     matcher_session = ort.InferenceSession(str(matcher_path), providers=["CPUExecutionProvider"])
     for count0, count1 in ((128, 112), (72, 96)):
