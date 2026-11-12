@@ -188,6 +188,7 @@ def main():
     )
     matcher_path = ASSETS / "matcher.onnx"
     original_transpose = torch.Tensor.transpose
+    original_squeeze = torch.Tensor.squeeze
 
     def transpose_via_permute(tensor, dim0, dim1):
         rank = tensor.dim()
@@ -197,16 +198,31 @@ def main():
         axes[dim0], axes[dim1] = axes[dim1], axes[dim0]
         return tensor.permute(*axes)
 
+    def squeeze_via_select(tensor, dim=None):
+        if dim is None:
+            result = tensor
+            for axis in reversed(range(result.dim())):
+                if result.shape[axis] == 1:
+                    result = result.select(axis, 0)
+            return result
+        axis = dim if dim >= 0 else tensor.dim() + dim
+        if tensor.shape[axis] == 1:
+            return tensor.select(axis, 0)
+        return tensor
+
     with torch.no_grad():
         expected_assignment = wrapper(*sample)
         torch.Tensor.transpose = transpose_via_permute
+        torch.Tensor.squeeze = squeeze_via_select
         try:
             transposed_assignment = wrapper(*sample)
         finally:
             torch.Tensor.transpose = original_transpose
+            torch.Tensor.squeeze = original_squeeze
     torch.testing.assert_close(transposed_assignment, expected_assignment, rtol=0, atol=0)
 
     torch.Tensor.transpose = transpose_via_permute
+    torch.Tensor.squeeze = squeeze_via_select
     try:
         torch.onnx.export(
             wrapper,
@@ -229,6 +245,7 @@ def main():
         )
     finally:
         torch.Tensor.transpose = original_transpose
+        torch.Tensor.squeeze = original_squeeze
     onnx.checker.check_model(str(matcher_path))
     matcher_session = ort.InferenceSession(str(matcher_path), providers=["CPUExecutionProvider"])
     for count0, count1 in ((128, 112), (72, 96)):
