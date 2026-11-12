@@ -18,5 +18,8 @@ template <typename T> class span {
   T* end() noexcept { return data_ + size_; }
   const T* begin() const noexcept { return data_; }
   const T* end() const noexcept { return data_ + size_; }
- private: T* data_; size_t size_;
+ private:
+  T* data_;
+  size_t size_;
 };
+}  // namespace colmap

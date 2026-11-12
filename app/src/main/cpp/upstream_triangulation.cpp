@@ -10,8 +10,11 @@ Java_com_trackstudio_app_tracking_UpstreamTriangulation_nativeTriangulate(
  JNIEnv* env,jobject,jdoubleArray a,jdoubleArray b,jdouble x1,jdouble y1,jdouble x2,jdouble y2){
  if(!a||!b||env->GetArrayLength(a)!=12||env->GetArrayLength(b)!=12||
  !std::isfinite(x1)||!std::isfinite(y1)||!std::isfinite(x2)||!std::isfinite(y2))return EmptyResult(env);
- Eigen::Matrix3x4d p1,p2;env->GetDoubleArrayRegion(a,0,12,p1.data());env->GetDoubleArrayRegion(b,0,12,p2.data());
- if(env->ExceptionCheck()||!p1.allFinite()||!p2.allFinite())return EmptyResult(env);
+ jdouble av[12],bv[12];env->GetDoubleArrayRegion(a,0,12,av);env->GetDoubleArrayRegion(b,0,12,bv);
+ if(env->ExceptionCheck())return EmptyResult(env);
+ Eigen::Matrix3x4d p1,p2;
+ for(int r=0;r<3;++r)for(int c=0;c<4;++c){p1(r,c)=av[r*4+c];p2(r,c)=bv[r*4+c];}
+ if(!p1.allFinite()||!p2.allFinite())return EmptyResult(env);
  Eigen::Vector3d xyz;if(!colmap::TriangulatePoint(p1,p2,Eigen::Vector2d(x1,y1),Eigen::Vector2d(x2,y2),&xyz))return EmptyResult(env);
  jdoubleArray out=env->NewDoubleArray(3);if(out){const jdouble v[3]={xyz.x(),xyz.y(),xyz.z()};env->SetDoubleArrayRegion(out,0,3,v);}return out;
 }

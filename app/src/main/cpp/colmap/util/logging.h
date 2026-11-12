@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: BSD-3-Clause
 #pragma once
 #include <stdexcept>
+#include <type_traits>
 namespace colmap {
 template <typename T> T ThrowCheckNotNull(const char*, int, const char*, T value) {
   if (value == nullptr) throw std::invalid_argument("Null pointer check failed");
