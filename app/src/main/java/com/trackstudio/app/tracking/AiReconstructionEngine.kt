@@ -171,12 +171,12 @@ private class AiFeatureFrameAdapter(
         val firstCoordinates = FloatArray(first.keypoints.size * 2)
         val secondCoordinates = FloatArray(second.keypoints.size * 2)
         first.keypoints.forEachIndexed { index, keypoint ->
-            firstCoordinates[index * 2] = keypoint.pt.x
-            firstCoordinates[index * 2 + 1] = keypoint.pt.y
+            firstCoordinates[index * 2] = keypoint.pt.x.toFloat()
+            firstCoordinates[index * 2 + 1] = keypoint.pt.y.toFloat()
         }
         second.keypoints.forEachIndexed { index, keypoint ->
-            secondCoordinates[index * 2] = keypoint.pt.x
-            secondCoordinates[index * 2 + 1] = keypoint.pt.y
+            secondCoordinates[index * 2] = keypoint.pt.x.toFloat()
+            secondCoordinates[index * 2 + 1] = keypoint.pt.y.toFloat()
         }
 
         return matcher.matchRaw(

@@ -35,10 +35,10 @@ class FeatureMapDecoderTest {
         assertEquals(7, feature.frameIndex)
         assertEquals(3f, feature.x, 0f)
         assertEquals(0f, feature.y, 0f)
-        assertNotNull(feature.descriptor)
-        assertEquals(64, feature.descriptor!!.size)
-        assertEquals(1f, feature.descriptor[0], 1e-5f)
-        assertEquals(0f, feature.descriptor.drop(1).sum(), 1e-5f)
+        val descriptor = requireNotNull(feature.descriptor)
+        assertEquals(64, descriptor.size)
+        assertEquals(1f, descriptor[0], 1e-5f)
+        assertEquals(0f, descriptor.drop(1).sum(), 1e-5f)
     }
 
     @Test
