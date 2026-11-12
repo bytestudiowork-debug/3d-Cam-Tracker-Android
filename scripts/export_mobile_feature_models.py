@@ -199,7 +199,7 @@ def main():
         ) * (query.shape[-1] ** -0.5)
         if mask is not None:
             similarity = similarity.masked_fill(~mask, -float("inf"))
-        attention = F.softmax(similarity, dim=-1)
+        attention = F.softmax(similarity, dim=3)
         context = torch.matmul(attention, content)
         if mask is not None:
             context = context.nan_to_num()
@@ -230,9 +230,9 @@ def main():
         )
         if mask is not None:
             similarity = similarity.masked_fill(~mask, -float("inf"))
-        attention01 = F.softmax(similarity, dim=-1)
+        attention01 = F.softmax(similarity, dim=3)
         attention10 = F.softmax(
-            similarity.permute(0, 1, 3, 2).contiguous(), dim=-1
+            similarity.permute(0, 1, 3, 2).contiguous(), dim=3
         )
         message0 = torch.matmul(attention01, content1)
         message1 = torch.matmul(attention10, content0)
