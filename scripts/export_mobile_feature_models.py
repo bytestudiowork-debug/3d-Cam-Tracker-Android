@@ -162,7 +162,7 @@ def main():
         first, second = value.split(1, dim=-1)
         first = first.reshape(*original_shape[:-1], half)
         second = second.reshape(*original_shape[:-1], half)
-        return torch.stack((-second, first), dim=-1).reshape(original_shape)
+        return torch.stack((-second, first), dim=4).reshape(original_shape)
 
     def export_sigmoid_log_double_softmax(similarity, certainty0, certainty1):
         batch, count0, count1 = similarity.shape
@@ -206,7 +206,7 @@ def main():
         message = self.out_proj(
             context.permute(0, 2, 1, 3).reshape(batch, count, self.embed_dim)
         )
-        return value + self.ffn(torch.cat([value, message], dim=-1))
+        return value + self.ffn(torch.cat([value, message], dim=2))
 
     def export_cross_block_forward(self, value0, value1, mask=None):
         batch0, count0, _ = value0.shape
@@ -244,8 +244,8 @@ def main():
         )
         if mask is not None:
             message0, message1 = message0.nan_to_num(), message1.nan_to_num()
-        value0 = value0 + self.ffn(torch.cat([value0, message0], dim=-1))
-        value1 = value1 + self.ffn(torch.cat([value1, message1], dim=-1))
+        value0 = value0 + self.ffn(torch.cat([value0, message0], dim=2))
+        value1 = value1 + self.ffn(torch.cat([value1, message1], dim=2))
         return value0, value1
 
     def export_match_assignment_forward(self, descriptors0, descriptors1):
