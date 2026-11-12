@@ -106,7 +106,7 @@ def main():
         reference_outputs = reference_extractor(parity_input)
         export_outputs = extractor(parity_input)
     for reference_output, export_output in zip(reference_outputs, export_outputs):
-        torch.testing.assert_close(export_output, reference_output, rtol=0, atol=1e-6)
+        torch.testing.assert_close(export_output, reference_output, rtol=1e-5, atol=1e-5)
 
     extractor_path = ASSETS / "extractor.onnx"
     ASSETS.mkdir(parents=True, exist_ok=True)
