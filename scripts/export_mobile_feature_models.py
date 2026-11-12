@@ -229,10 +229,10 @@ def main():
         content1 = self.to_v(value1).reshape(
             batch1, count1, self.heads, -1
         ).permute(0, 2, 1, 3)
-        query_key0 = query_key0 * self.scale ** 0.5
-        query_key1 = query_key1 * self.scale ** 0.5
+        query0 = query0 * self.scale ** 0.5
+        query1 = query1 * self.scale ** 0.5
         similarity = torch.matmul(
-            query0, key1.permute(0, 1, 3, 2)
+            query0, query1.permute(0, 1, 3, 2)
         )
         if mask is not None:
             similarity = similarity.masked_fill(~mask, -float("inf"))
