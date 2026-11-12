@@ -211,17 +211,19 @@ def main():
     def export_cross_block_forward(self, value0, value1, mask=None):
         batch0, count0, _ = value0.shape
         batch1, count1, _ = value1.shape
+        head_dim = self.to_qk.out_features // self.heads
+        value_dim = self.to_v.out_features // self.heads
         query_key0 = self.to_qk(value0).reshape(
-            batch0, count0, self.heads, -1
+            batch0, count0, self.heads, head_dim
         ).permute(0, 2, 1, 3)
         query_key1 = self.to_qk(value1).reshape(
-            batch1, count1, self.heads, -1
+            batch1, count1, self.heads, head_dim
         ).permute(0, 2, 1, 3)
         content0 = self.to_v(value0).reshape(
-            batch0, count0, self.heads, -1
+            batch0, count0, self.heads, value_dim
         ).permute(0, 2, 1, 3)
         content1 = self.to_v(value1).reshape(
-            batch1, count1, self.heads, -1
+            batch1, count1, self.heads, value_dim
         ).permute(0, 2, 1, 3)
         query_key0 = query_key0 * self.scale ** 0.5
         query_key1 = query_key1 * self.scale ** 0.5
@@ -237,10 +239,10 @@ def main():
         message0 = torch.matmul(attention01, content1)
         message1 = torch.matmul(attention10, content0)
         message0 = self.to_out(
-            message0.permute(0, 2, 1, 3).reshape(batch0, count0, -1)
+            message0.permute(0, 2, 1, 3).reshape(batch0, count0, self.to_out.in_features)
         )
         message1 = self.to_out(
-            message1.permute(0, 2, 1, 3).reshape(batch1, count1, -1)
+            message1.permute(0, 2, 1, 3).reshape(batch1, count1, self.to_out.in_features)
         )
         if mask is not None:
             message0, message1 = message0.nan_to_num(), message1.nan_to_num()
