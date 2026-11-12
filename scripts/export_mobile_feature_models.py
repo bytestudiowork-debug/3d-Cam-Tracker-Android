@@ -110,8 +110,9 @@ def main():
 
     extractor_path = ASSETS / "extractor.onnx"
     ASSETS.mkdir(parents=True, exist_ok=True)
+    extractor_export = ExtractorExport(extractor).cpu().eval()
     torch.onnx.export(
-        ExtractorExport(extractor),
+        extractor_export,
         (torch.rand(1, 3, 480, 640),),
         str(extractor_path),
         input_names=["image"],
@@ -123,18 +124,23 @@ def main():
             "reliability": {2: "feature_height", 3: "feature_width"},
         },
         opset_version=17,
-        do_constant_folding=True,
+        training=torch.onnx.TrainingMode.EVAL,
+        do_constant_folding=False,
     )
     onnx.checker.check_model(str(extractor_path))
     extractor_session = ort.InferenceSession(str(extractor_path), providers=["CPUExecutionProvider"])
     for height, width in ((480, 640), (256, 448)):
         image = np.random.rand(1, 3, height, width).astype(np.float32)
-        output = extractor_session.run(
-            ["descriptors", "keypoint_logits", "reliability"], {"image": image}
-        )
+        output_names = ["descriptors", "keypoint_logits", "reliability"]
+        output = extractor_session.run(output_names, {"image": image})
         with torch.no_grad():
             reference = extractor(torch.from_numpy(image))
-        for actual, expected in zip(output, reference):
+        for output_name, actual, expected in zip(output_names, output, reference):
+            print(
+                output_name,
+                "max_abs_diff=",
+                float(np.max(np.abs(actual - expected.cpu().numpy()))),
+            )
             np.testing.assert_allclose(actual, expected.cpu().numpy(), rtol=2e-3, atol=2e-4)
         if output[0].shape != (1, 64, height // 8, width // 8):
             raise RuntimeError(f"Unexpected descriptor map shape: {output[0].shape}")
