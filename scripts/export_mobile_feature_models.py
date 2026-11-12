@@ -212,27 +212,21 @@ def main():
         batch0, count0, _ = value0.shape
         batch1, count1, _ = value1.shape
         query_key0 = self.to_qk(value0).reshape(
-            batch0, count0, self.heads, -1, 2
-        )
+            batch0, count0, self.heads, -1
+        ).permute(0, 2, 1, 3)
         query_key1 = self.to_qk(value1).reshape(
-            batch1, count1, self.heads, -1, 2
-        )
-        query0, key0 = query_key0.split(1, dim=-1)
-        query1, key1 = query_key1.split(1, dim=-1)
-        query0 = query0.reshape(batch0, count0, self.heads, -1).permute(0, 2, 1, 3)
-        key0 = key0.reshape(batch0, count0, self.heads, -1).permute(0, 2, 1, 3)
-        query1 = query1.reshape(batch1, count1, self.heads, -1).permute(0, 2, 1, 3)
-        key1 = key1.reshape(batch1, count1, self.heads, -1).permute(0, 2, 1, 3)
+            batch1, count1, self.heads, -1
+        ).permute(0, 2, 1, 3)
         content0 = self.to_v(value0).reshape(
             batch0, count0, self.heads, -1
         ).permute(0, 2, 1, 3)
         content1 = self.to_v(value1).reshape(
             batch1, count1, self.heads, -1
         ).permute(0, 2, 1, 3)
-        query0 = query0 * self.scale ** 0.5
-        query1 = query1 * self.scale ** 0.5
+        query_key0 = query_key0 * self.scale ** 0.5
+        query_key1 = query_key1 * self.scale ** 0.5
         similarity = torch.matmul(
-            query0, query1.permute(0, 1, 3, 2)
+            query_key0, query_key1.permute(0, 1, 3, 2)
         )
         if mask is not None:
             similarity = similarity.masked_fill(~mask, -float("inf"))
