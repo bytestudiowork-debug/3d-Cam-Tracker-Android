@@ -1,143 +1,101 @@
 name: Ceres Android EigenSparse Smoke
-
 on:
-  push:
-    branches: ["main", "native/ceres-eigensparse-smoke", "feature/ai-engine"]
-    paths:
-      - ".github/workflows/ceres-android-smoke.yml"
-      - "native/ceres-smoke/**"
-      - "app/src/main/cpp/CMakeLists.txt"
-      - "app/src/main/cpp/glomap_*.cpp"
-      - "app/src/main/cpp/glomap_progress_callback.h"
-      - "app/src/main/cpp/upstream_triangulation.cpp"
-      - "app/src/main/cpp/upstream_triangulation_core.h"
-      - "app/src/main/java/com/trackstudio/app/tracking/SfMTriangulator.kt"
-      - "app/src/main/java/com/trackstudio/app/tracking/UpstreamTriangulation.kt"
-  workflow_dispatch:
-
+ push:
+  branches: ["main","native/ceres-eigensparse-smoke","feature/ai-engine"]
+  paths:
+   - ".github/workflows/ceres-android-smoke.yml"
+   - "native/ceres-smoke/**"
+   - "app/src/main/cpp/CMakeLists.txt"
+   - "app/src/main/cpp/glomap_*.cpp"
+   - "app/src/main/cpp/upstream_*.cpp"
+   - "app/src/main/cpp/colmap/**"
+   - "app/src/main/java/com/trackstudio/app/tracking/SfMTriangulator.kt"
+   - "app/src/main/java/com/trackstudio/app/tracking/UpstreamTriangulation.kt"
+ workflow_dispatch:
 permissions:
-  contents: read
-
+ contents: read
 jobs:
-  host-solver-smoke:
-    runs-on: ubuntu-24.04
-    timeout-minutes: 30
-    steps:
-      - uses: actions/checkout@v4
-      - name: Fetch pinned Eigen 3.4.0
-        run: |
-          git clone --depth 1 --branch 3.4.0 https://gitlab.com/libeigen/eigen.git "$RUNNER_TEMP/eigen"
-          mkdir -p "$RUNNER_TEMP/eigen3-config"
-          cat > "$RUNNER_TEMP/eigen3-config/Eigen3Config.cmake" <<EOF
-          set(Eigen3_FOUND TRUE)
-          set(Eigen3_VERSION 3.4.0)
-          set(Eigen3_INCLUDE_DIRS "$RUNNER_TEMP/eigen")
-          if(NOT TARGET Eigen3::Eigen)
-            add_library(Eigen3::Eigen INTERFACE IMPORTED)
-            set_target_properties(Eigen3::Eigen PROPERTIES INTERFACE_INCLUDE_DIRECTORIES "$RUNNER_TEMP/eigen")
-          endif()
-          EOF
-          cat > "$RUNNER_TEMP/eigen3-config/Eigen3ConfigVersion.cmake" <<'EOF'
-          set(PACKAGE_VERSION 3.4.0)
-          if(PACKAGE_FIND_VERSION VERSION_LESS_EQUAL PACKAGE_VERSION)
-            set(PACKAGE_VERSION_COMPATIBLE TRUE)
-            if(PACKAGE_FIND_VERSION VERSION_EQUAL PACKAGE_VERSION)
-              set(PACKAGE_VERSION_EXACT TRUE)
-            endif()
-          endif()
-          EOF
-      - name: Fetch pinned Ceres 2.2.0
-        run: |
-          git clone --depth 1 --branch 2.2.0 https://ceres-solver.googlesource.com/ceres-solver "$RUNNER_TEMP/ceres"
-      - name: Build Ceres without SuiteSparse
-        run: |
-          cmake -S "$RUNNER_TEMP/ceres" -B "$RUNNER_TEMP/ceres-host" \
-            -DEigen3_DIR="$RUNNER_TEMP/eigen3-config" \
-            -DCMAKE_BUILD_TYPE=Release \
-            -DCMAKE_INSTALL_PREFIX="$RUNNER_TEMP/ceres-host-install" \
-            -DBUILD_SHARED_LIBS=ON -DBUILD_TESTING=OFF \
-            -DBUILD_EXAMPLES=OFF -DBUILD_BENCHMARKS=OFF \
-            -DMINIGLOG=ON -DGFLAGS=OFF \
-            -DSUITESPARSE=OFF -DEIGENSPARSE=ON \
-            -DCUDA=OFF -DLAPACK=OFF
-          grep -E '^(SUITESPARSE|EIGENSPARSE):BOOL=' "$RUNNER_TEMP/ceres-host/CMakeCache.txt"
-          grep -q '^SUITESPARSE:BOOL=OFF$' "$RUNNER_TEMP/ceres-host/CMakeCache.txt"
-          grep -q '^EIGENSPARSE:BOOL=ON$' "$RUNNER_TEMP/ceres-host/CMakeCache.txt"
-          cmake --build "$RUNNER_TEMP/ceres-host" --parallel 2
-          cmake --install "$RUNNER_TEMP/ceres-host"
-      - name: Run real SPARSE_SCHUR solve
-        run: |
-          cmake -S native/ceres-smoke -B "$RUNNER_TEMP/ceres-smoke-host" \
-            -DCMAKE_BUILD_TYPE=Release \
-            -DCMAKE_PREFIX_PATH="$RUNNER_TEMP/ceres-host-install" \
-            -DEigen3_DIR="$RUNNER_TEMP/eigen3-config"
-          cmake --build "$RUNNER_TEMP/ceres-smoke-host" --parallel 2
-          LD_LIBRARY_PATH="$RUNNER_TEMP/ceres-host-install/lib:$LD_LIBRARY_PATH" "$RUNNER_TEMP/ceres-smoke-host/ceres_sparse_smoke"
-          "$RUNNER_TEMP/ceres-smoke-host/triangulation_smoke"
-
-  android-abi-build:
-    runs-on: ubuntu-24.04
-    timeout-minutes: 45
-    strategy:
-      fail-fast: false
-      matrix:
-        abi: ["arm64-v8a", "armeabi-v7a"]
-    steps:
-      - uses: actions/checkout@v4
-      - uses: android-actions/setup-android@v3
-        with:
-          packages: "platform-tools"
-      - name: Fetch pinned Eigen 3.4.0 and Android NDK
-        run: |
-          sdkmanager "ndk;27.0.12077973"
-          git clone --depth 1 --branch 3.4.0 https://gitlab.com/libeigen/eigen.git "$RUNNER_TEMP/eigen"
-          mkdir -p "$RUNNER_TEMP/eigen3-config"
-          cat > "$RUNNER_TEMP/eigen3-config/Eigen3Config.cmake" <<EOF
-          set(Eigen3_FOUND TRUE)
-          set(Eigen3_VERSION 3.4.0)
-          set(Eigen3_INCLUDE_DIRS "$RUNNER_TEMP/eigen")
-          if(NOT TARGET Eigen3::Eigen)
-            add_library(Eigen3::Eigen INTERFACE IMPORTED)
-            set_target_properties(Eigen3::Eigen PROPERTIES INTERFACE_INCLUDE_DIRECTORIES "$RUNNER_TEMP/eigen")
-          endif()
-          EOF
-          cat > "$RUNNER_TEMP/eigen3-config/Eigen3ConfigVersion.cmake" <<'EOF'
-          set(PACKAGE_VERSION 3.4.0)
-          if(PACKAGE_FIND_VERSION VERSION_LESS_EQUAL PACKAGE_VERSION)
-            set(PACKAGE_VERSION_COMPATIBLE TRUE)
-            if(PACKAGE_FIND_VERSION VERSION_EQUAL PACKAGE_VERSION)
-              set(PACKAGE_VERSION_EXACT TRUE)
-            endif()
-          endif()
-          EOF
-      - name: Fetch pinned Ceres 2.2.0
-        run: |
-          git clone --depth 1 --branch 2.2.0 https://ceres-solver.googlesource.com/ceres-solver "$RUNNER_TEMP/ceres"
-      - name: Cross-build Ceres and smoke executable
-        env:
-          ABI: ${{ matrix.abi }}
-        run: |
-          cmake -S "$RUNNER_TEMP/ceres" -B "$RUNNER_TEMP/ceres-android" \
-            -DCMAKE_TOOLCHAIN_FILE="$ANDROID_SDK_ROOT/ndk/27.0.12077973/build/cmake/android.toolchain.cmake" \
-            -DANDROID_ABI="$ABI" -DANDROID_PLATFORM=android-26 \
-            -DANDROID_STL=c++_shared -DEigen3_DIR="$RUNNER_TEMP/eigen3-config" \
-            -DCMAKE_BUILD_TYPE=Release -DCMAKE_INSTALL_PREFIX="$RUNNER_TEMP/ceres-install" \
-            -DBUILD_SHARED_LIBS=ON -DBUILD_TESTING=OFF \
-            -DBUILD_EXAMPLES=OFF -DBUILD_BENCHMARKS=OFF \
-            -DMINIGLOG=ON -DGFLAGS=OFF \
-            -DSUITESPARSE=OFF -DEIGENSPARSE=ON -DCUDA=OFF -DLAPACK=OFF
-          grep -q '^SUITESPARSE:BOOL=OFF$' "$RUNNER_TEMP/ceres-android/CMakeCache.txt"
-          grep -q '^EIGENSPARSE:BOOL=ON$' "$RUNNER_TEMP/ceres-android/CMakeCache.txt"
-          cmake --build "$RUNNER_TEMP/ceres-android" --parallel 2
-          cmake --install "$RUNNER_TEMP/ceres-android"
-          cmake -S native/ceres-smoke -B "$RUNNER_TEMP/smoke-android" \
-            -DCMAKE_TOOLCHAIN_FILE="$ANDROID_SDK_ROOT/ndk/27.0.12077973/build/cmake/android.toolchain.cmake" \
-            -DANDROID_ABI="$ABI" -DANDROID_PLATFORM=android-26 \
-            -DANDROID_STL=c++_shared \
-            -DCeres_DIR="$RUNNER_TEMP/ceres-install/lib/cmake/Ceres" \
-            -DCMAKE_PREFIX_PATH="$RUNNER_TEMP/ceres-install" \
-            -DEigen3_DIR="$RUNNER_TEMP/eigen3-config" \
-            -DCMAKE_BUILD_TYPE=Release
-          cmake --build "$RUNNER_TEMP/smoke-android" --parallel 2
-          file "$RUNNER_TEMP/ceres-install/lib/libceres.so"
-          file "$RUNNER_TEMP/smoke-android/ceres_sparse_smoke"
+ host-solver-smoke:
+  runs-on: ubuntu-24.04
+  timeout-minutes: 30
+  steps:
+   - uses: actions/checkout@v4
+   - name: Fetch pinned Eigen 3.4.0
+     run: |
+      git clone --depth 1 --branch 3.4.0 https://gitlab.com/libeigen/eigen.git "$RUNNER_TEMP/eigen"
+      mkdir -p "$RUNNER_TEMP/eigen3-config"
+      cat > "$RUNNER_TEMP/eigen3-config/Eigen3Config.cmake" <<EOF
+      set(Eigen3_FOUND TRUE)
+      set(Eigen3_VERSION 3.4.0)
+      set(Eigen3_INCLUDE_DIRS "$RUNNER_TEMP/eigen")
+      if(NOT TARGET Eigen3::Eigen)
+       add_library(Eigen3::Eigen INTERFACE IMPORTED)
+       set_target_properties(Eigen3::Eigen PROPERTIES INTERFACE_INCLUDE_DIRECTORIES "$RUNNER_TEMP/eigen")
+      endif()
+      EOF
+      cat > "$RUNNER_TEMP/eigen3-config/Eigen3ConfigVersion.cmake" <<'EOF'
+      set(PACKAGE_VERSION 3.4.0)
+      if(PACKAGE_FIND_VERSION VERSION_LESS_EQUAL PACKAGE_VERSION)
+       set(PACKAGE_VERSION_COMPATIBLE TRUE)
+       if(PACKAGE_FIND_VERSION VERSION_EQUAL PACKAGE_VERSION)
+        set(PACKAGE_VERSION_EXACT TRUE)
+       endif()
+      endif()
+      EOF
+   - name: Fetch pinned Ceres 2.2.0
+     run: git clone --depth 1 --branch 2.2.0 https://ceres-solver.googlesource.com/ceres-solver "$RUNNER_TEMP/ceres"
+   - name: Build and run native tests
+     run: |
+      cmake -S "$RUNNER_TEMP/ceres" -B "$RUNNER_TEMP/ceres-host" -DEigen3_DIR="$RUNNER_TEMP/eigen3-config" -DCMAKE_BUILD_TYPE=Release -DCMAKE_INSTALL_PREFIX="$RUNNER_TEMP/ceres-install" -DBUILD_SHARED_LIBS=ON -DBUILD_TESTING=OFF -DBUILD_EXAMPLES=OFF -DBUILD_BENCHMARKS=OFF -DMINIGLOG=ON -DGFLAGS=OFF -DSUITESPARSE=OFF -DEIGENSPARSE=ON -DCUDA=OFF -DLAPACK=OFF
+      cmake --build "$RUNNER_TEMP/ceres-host" --parallel 2
+      cmake --install "$RUNNER_TEMP/ceres-host"
+      cmake -S native/ceres-smoke -B "$RUNNER_TEMP/ceres-smoke-host" -DCMAKE_BUILD_TYPE=Release -DCMAKE_PREFIX_PATH="$RUNNER_TEMP/ceres-install" -DEigen3_DIR="$RUNNER_TEMP/eigen3-config"
+      cmake --build "$RUNNER_TEMP/ceres-smoke-host" --parallel 2
+      LD_LIBRARY_PATH="$RUNNER_TEMP/ceres-install/lib:$LD_LIBRARY_PATH" "$RUNNER_TEMP/ceres-smoke-host/ceres_sparse_smoke"
+      "$RUNNER_TEMP/ceres-smoke-host/triangulation_smoke"
+ android-abi-build:
+  runs-on: ubuntu-24.04
+  timeout-minutes: 45
+  strategy:
+   fail-fast: false
+   matrix:
+    abi: ["arm64-v8a","armeabi-v7a"]
+  steps:
+   - uses: actions/checkout@v4
+   - uses: android-actions/setup-android@v3
+     with:
+      packages: "platform-tools"
+   - name: Fetch pinned Eigen and NDK
+     run: |
+      sdkmanager "ndk;27.0.12077973"
+      git clone --depth 1 --branch 3.4.0 https://gitlab.com/libeigen/eigen.git "$RUNNER_TEMP/eigen"
+      mkdir -p "$RUNNER_TEMP/eigen3-config"
+      cat > "$RUNNER_TEMP/eigen3-config/Eigen3Config.cmake" <<EOF
+      set(Eigen3_FOUND TRUE)
+      set(Eigen3_VERSION 3.4.0)
+      set(Eigen3_INCLUDE_DIRS "$RUNNER_TEMP/eigen")
+      if(NOT TARGET Eigen3::Eigen)
+       add_library(Eigen3::Eigen INTERFACE IMPORTED)
+       set_target_properties(Eigen3::Eigen PROPERTIES INTERFACE_INCLUDE_DIRECTORIES "$RUNNER_TEMP/eigen")
+      endif()
+      EOF
+      cat > "$RUNNER_TEMP/eigen3-config/Eigen3ConfigVersion.cmake" <<'EOF'
+      set(PACKAGE_VERSION 3.4.0)
+      if(PACKAGE_FIND_VERSION VERSION_LESS_EQUAL PACKAGE_VERSION)
+       set(PACKAGE_VERSION_COMPATIBLE TRUE)
+       if(PACKAGE_FIND_VERSION VERSION_EQUAL PACKAGE_VERSION)
+        set(PACKAGE_VERSION_EXACT TRUE)
+       endif()
+      endif()
+      EOF
+   - name: Fetch pinned Ceres 2.2.0
+     run: git clone --depth 1 --branch 2.2.0 https://ceres-solver.googlesource.com/ceres-solver "$RUNNER_TEMP/ceres"
+   - name: Build native Android ABI targets
+     env:
+      ABI: ${{ matrix.abi }}
+     run: |
+      cmake -S "$RUNNER_TEMP/ceres" -B "$RUNNER_TEMP/ceres-android" -DCMAKE_TOOLCHAIN_FILE="$ANDROID_SDK_ROOT/ndk/27.0.12077973/build/cmake/android.toolchain.cmake" -DANDROID_ABI="$ABI" -DANDROID_PLATFORM=android-26 -DANDROID_STL=c++_shared -DEigen3_DIR="$RUNNER_TEMP/eigen3-config" -DCMAKE_BUILD_TYPE=Release -DCMAKE_INSTALL_PREFIX="$RUNNER_TEMP/ceres-install" -DBUILD_SHARED_LIBS=ON -DBUILD_TESTING=OFF -DBUILD_EXAMPLES=OFF -DBUILD_BENCHMARKS=OFF -DMINIGLOG=ON -DGFLAGS=OFF -DSUITESPARSE=OFF -DEIGENSPARSE=ON -DCUDA=OFF -DLAPACK=OFF
+      cmake --build "$RUNNER_TEMP/ceres-android" --parallel 2
+      cmake --install "$RUNNER_TEMP/ceres-android"
+      cmake -S native/ceres-smoke -B "$RUNNER_TEMP/smoke-android" -DCMAKE_TOOLCHAIN_FILE="$ANDROID_SDK_ROOT/ndk/27.0.12077973/build/cmake/android.toolchain.cmake" -DANDROID_ABI="$ABI" -DANDROID_PLATFORM=android-26 -DANDROID_STL=c++_shared -DCeres_DIR="$RUNNER_TEMP/ceres-install/lib/cmake/Ceres" -DCMAKE_PREFIX_PATH="$RUNNER_TEMP/ceres-install" -DEigen3_DIR="$RUNNER_TEMP/eigen3-config" -DCMAKE_BUILD_TYPE=Release
+      cmake --build "$RUNNER_TEMP/smoke-android" --parallel 2

@@ -1,0 +1,16 @@
+Source revision: 137f21680c79d3f2fffbb1d11deb367162aa6f83
+License: BSD-3-Clause
+Original source files included:
+- src/colmap/estimators/triangulation.h
+- src/colmap/estimators/triangulation.cc
+- src/colmap/geometry/triangulation.h
+- src/colmap/optim/ransac.h
+- src/colmap/optim/loransac.h
+- src/colmap/optim/sampler.h
+- src/colmap/optim/random_sampler.h
+- src/colmap/optim/combination_sampler.h
+- src/colmap/optim/combination_sampler.cc
+- src/colmap/optim/support_measurement.h
+- src/colmap/scene/projection.h
+- src/colmap/scene/projection.cc
+Math helpers, type aliases, and camera/pose interfaces are narrow Android compatibility slices.
