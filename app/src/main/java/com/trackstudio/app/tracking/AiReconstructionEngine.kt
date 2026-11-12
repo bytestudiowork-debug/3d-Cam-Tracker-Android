@@ -1,7 +1,8 @@
 package com.trackstudio.app.tracking
 
 import android.content.Context
-import com.trackstudio.ai.OnDeviceFeatureDetector
+import com.trackstudio.ai.OnnxFeatureDetector
+import com.trackstudio.ai.OnnxFeatureMatcher
 import com.trackstudio.ai.TrackingFrame
 import org.opencv.core.Core
 import org.opencv.core.CvType
@@ -10,13 +11,13 @@ import org.opencv.core.KeyPoint
 import org.opencv.imgproc.Imgproc
 
 /**
- * Uses learned local features as input to the existing global geometry stages.
- * The geometric solver remains shared; only feature extraction and descriptor
- * distance change. The model asset is loaded lazily when solve() is called.
+ * Supplies learned observations and pair matches to the independent geometry stages.
+ * The model sessions are scoped to one solve and are always released afterwards.
  */
 internal class AiReconstructionEngine(
     context: Context,
-    private val modelAssetPath: String = "ai/feature_model.tflite"
+    private val extractorAssetPath: String = "ai/extractor.onnx",
+    private val matcherAssetPath: String = "ai/matcher.onnx"
 ) : ReconstructionEngine {
     private val appContext = context.applicationContext
 
@@ -26,32 +27,55 @@ internal class AiReconstructionEngine(
         frameProvider: suspend (Int) -> Mat?,
         onProgress: suspend (CameraTrackingProgress) -> Unit
     ): CameraTrackingResult {
-        val detector = OnDeviceFeatureDetector(
+        val detector = OnnxFeatureDetector(
             context = appContext,
-            modelAssetPath = modelAssetPath,
-            maximumFeatures = MAXIMUM_FEATURES
+            modelAssetPath = extractorAssetPath,
+            maximumFeatures = MAXIMUM_FEATURES,
+            threadCount = 2
         )
+        val matcher = try {
+            OnnxFeatureMatcher(
+                context = appContext,
+                modelAssetPath = matcherAssetPath,
+                maximumFeatures = MAXIMUM_FEATURES,
+                minimumMatchConfidence = MINIMUM_MATCH_CONFIDENCE,
+                threadCount = 2
+            )
+        } catch (failure: Throwable) {
+            detector.close()
+            throw failure
+        }
+
         return try {
             val adapter = AiFeatureFrameAdapter(detector)
             GlobalReconstructionEngine(
                 frameFeatureExtractor = adapter::extract,
-                descriptorNormType = Core.NORM_L2
+                descriptorNormType = Core.NORM_L2,
+                frameFeatureMatcher = { first, second ->
+                    adapter.match(first, second, matcher)
+                }
             ).solve(frameCount, cameraMatrix, frameProvider, onProgress)
         } finally {
+            matcher.close()
             detector.close()
         }
     }
 
     private companion object {
-        const val MAXIMUM_FEATURES = 500
+        const val MAXIMUM_FEATURES = 1400
+        const val MINIMUM_MATCH_CONFIDENCE = 0.1f
     }
 }
 
 /** Converts model observations into the frame representation consumed by SfM. */
 private class AiFeatureFrameAdapter(
-    private val detector: OnDeviceFeatureDetector
+    private val detector: OnnxFeatureDetector
 ) {
-    fun extract(source: Mat, frameIndex: Int, maximumFeatures: Int): GlobalReconstructionEngine.FrameFeatures {
+    fun extract(
+        source: Mat,
+        frameIndex: Int,
+        maximumFeatures: Int
+    ): GlobalReconstructionEngine.FrameFeatures {
         require(!source.empty()) { "Cannot extract features from an empty frame." }
         require(source.depth() == CvType.CV_8U) { "AI feature extraction requires 8-bit image frames." }
 
@@ -81,27 +105,21 @@ private class AiFeatureFrameAdapter(
                     pixels = pixels,
                     channels = 3
                 )
-            )
+            ).take(maximumFeatures.coerceAtLeast(0))
 
-            val valid = observations.asSequence()
-                .filter { observation ->
-                    val descriptor = observation.descriptor
-                    descriptor != null && descriptor.size == detector.descriptorSize &&
-                        observation.x.isFinite() && observation.y.isFinite() &&
-                        descriptor.all { it.isFinite() }
-                }
-                .take(maximumFeatures.coerceAtLeast(0))
-                .toList()
-
-            if (valid.isEmpty()) {
+            if (observations.isEmpty()) {
                 return GlobalReconstructionEngine.FrameFeatures(
                     emptyArray(), Mat(), source.cols(), source.rows()
                 )
             }
 
-            val descriptorSize = detector.descriptorSize
-            val descriptorValues = FloatArray(valid.size * descriptorSize)
-            valid.forEachIndexed { index, observation ->
+            val descriptorSize = observations.first().descriptor?.size
+                ?: throw IllegalStateException("The feature detector returned an observation without a descriptor.")
+            require(observations.all { it.descriptor?.size == descriptorSize }) {
+                "The feature detector returned inconsistent descriptor dimensions."
+            }
+            val descriptorValues = FloatArray(observations.size * descriptorSize)
+            observations.forEachIndexed { index, observation ->
                 System.arraycopy(
                     observation.descriptor!!,
                     0,
@@ -110,13 +128,13 @@ private class AiFeatureFrameAdapter(
                     descriptorSize
                 )
             }
-            val descriptors = Mat(valid.size, descriptorSize, CvType.CV_32F)
+            val descriptors = Mat(observations.size, descriptorSize, CvType.CV_32F)
             try {
                 check(descriptors.put(0, 0, descriptorValues) == descriptorValues.size) {
                     "Unable to pack learned feature descriptors."
                 }
-                val keypoints = Array(valid.size) { index ->
-                    val observation = valid[index]
+                val keypoints = Array(observations.size) { index ->
+                    val observation = observations[index]
                     KeyPoint(observation.x, observation.y, 1f)
                 }
                 return GlobalReconstructionEngine.FrameFeatures(
@@ -134,4 +152,44 @@ private class AiFeatureFrameAdapter(
         }
     }
 
+    fun match(
+        first: GlobalReconstructionEngine.FrameFeatures,
+        second: GlobalReconstructionEngine.FrameFeatures,
+        matcher: OnnxFeatureMatcher
+    ): List<Pair<Int, Int>> {
+        if (first.keypoints.isEmpty() || second.keypoints.isEmpty() ||
+            first.descriptors.empty() || second.descriptors.empty()
+        ) return emptyList()
+
+        val descriptorSize = first.descriptors.cols()
+        require(descriptorSize == 64 && second.descriptors.cols() == descriptorSize)
+        val firstDescriptors = FloatArray(first.keypoints.size * descriptorSize)
+        val secondDescriptors = FloatArray(second.keypoints.size * descriptorSize)
+        check(first.descriptors.get(0, 0, firstDescriptors) == firstDescriptors.size)
+        check(second.descriptors.get(0, 0, secondDescriptors) == secondDescriptors.size)
+
+        val firstCoordinates = FloatArray(first.keypoints.size * 2)
+        val secondCoordinates = FloatArray(second.keypoints.size * 2)
+        first.keypoints.forEachIndexed { index, keypoint ->
+            firstCoordinates[index * 2] = keypoint.pt.x
+            firstCoordinates[index * 2 + 1] = keypoint.pt.y
+        }
+        second.keypoints.forEachIndexed { index, keypoint ->
+            secondCoordinates[index * 2] = keypoint.pt.x
+            secondCoordinates[index * 2 + 1] = keypoint.pt.y
+        }
+
+        return matcher.matchRaw(
+            firstKeypoints = firstCoordinates,
+            firstDescriptors = firstDescriptors,
+            firstCount = first.keypoints.size,
+            firstWidth = first.width,
+            firstHeight = first.height,
+            secondKeypoints = secondCoordinates,
+            secondDescriptors = secondDescriptors,
+            secondCount = second.keypoints.size,
+            secondWidth = second.width,
+            secondHeight = second.height
+        ).map { it.firstFeatureIndex to it.secondFeatureIndex }
+    }
 }

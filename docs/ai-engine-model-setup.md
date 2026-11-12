@@ -1,25 +1,14 @@
-# AI Engine model asset
+# AI Engine model assets
 
-The AI Engine loads its optional TensorFlow Lite asset from:
+The AI Engine uses two generated ONNX assets stored in the APK:
 
-`app/src/main/assets/ai/feature_model.tflite`
+- `app/src/main/assets/ai/extractor.onnx`
+- `app/src/main/assets/ai/matcher.onnx`
 
-The asset is not committed to this repository. This keeps model binaries out of source control and allows the release asset to be updated independently from the Android code.
+The binaries are not committed to source control. On the `feature/ai-engine` branch, the Android build workflow downloads the pinned, checksum-verified source weights, exports both assets, validates their CPU inference and dynamic input dimensions, then packages them into the release APK.
 
-## Configure the build
+The Android runtime uses ONNX Runtime on CPU with bounded thread counts. The model files are copied from APK assets to the app's private files directory before the inference sessions are opened. Model assets are refreshed after an app update.
 
-1. Publish the approved model archive as a stable HTTPS ZIP containing exactly one `.tflite` file.
-2. Add a repository Actions variable named `AI_FEATURE_MODEL_ARCHIVE_URL` with that archive URL.
-3. Push to `feature/ai-engine`, or run the Android build workflow manually.
+If asset export or validation fails, the build fails rather than packaging placeholder models. The AI Engine must not be considered production-ready until real-device tests confirm extraction quality, matching stability, memory use, and processing speed across the supported Android device range.
 
-The workflow downloads the archive, extracts the model into the app assets directory, runs the unit tests, and builds the release APK. The download script can also be run locally:
-
-```bash
-AI_FEATURE_MODEL_ARCHIVE_URL="https://your-approved-host/model-archive.zip" \
-  bash scripts/fetch_ai_feature_model.sh
-./gradlew testReleaseUnitTest assembleRelease
-```
-
-The archive must contain exactly one TensorFlow Lite model. The runtime validates input and output tensor shapes and data types before inference. If the asset is absent, the AI Engine remains unavailable and the existing Custom and Global engines continue to work.
-
-Do not enable the AI Engine for production footage until device inference and same-footage comparisons against the Global engine have passed.
+The existing Custom and Global modes remain available independently of these assets.

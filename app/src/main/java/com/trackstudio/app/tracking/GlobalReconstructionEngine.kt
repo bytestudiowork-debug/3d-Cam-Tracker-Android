@@ -46,7 +46,8 @@ class GlobalReconstructionEngine(
     private val ratioThreshold: Float = 0.78f,
     private val maximumPairCount: Int = 420,
     private val frameFeatureExtractor: ((Mat, Int, Int) -> FrameFeatures)? = null,
-    private val descriptorNormType: Int = Core.NORM_HAMMING
+    private val descriptorNormType: Int = Core.NORM_HAMMING,
+    private val frameFeatureMatcher: ((FrameFeatures, FrameFeatures) -> List<Pair<Int, Int>>)? = null
 ) : ReconstructionEngine {
 
     data class FrameFeatures(
@@ -161,13 +162,18 @@ class GlobalReconstructionEngine(
             val verifiedPairs = coroutineScope {
                 chunks.map { chunk ->
                     async(Dispatchers.Default) {
-                        val workerMatcher = BFMatcher.create(descriptorNormType, false)
+                        val workerMatcher = if (frameFeatureMatcher == null) {
+                            BFMatcher.create(descriptorNormType, false)
+                        } else null
                         try {
                             chunk.mapNotNull { pair ->
                                 currentCoroutineContext().ensureActive()
                                 val first = frames[pair.first] ?: return@mapNotNull null
                                 val second = frames[pair.second] ?: return@mapNotNull null
-                                val verified = verifyPair(pair.first, pair.second, first, second, cameraMatrix, workerMatcher)
+                                val verified = verifyPair(
+                                    pair.first, pair.second, first, second, cameraMatrix,
+                                    workerMatcher, frameFeatureMatcher
+                                )
                                 val completed = completedPairs.incrementAndGet()
                                 if (completed % 2 == 0 || completed == candidatePairs.size) {
                                     progressMutex.withLock {
@@ -183,7 +189,7 @@ class GlobalReconstructionEngine(
                                 verified
                             }
                         } finally {
-                            workerMatcher.clear()
+                            workerMatcher?.clear()
                         }
                     }
                 }.awaitAll().flatten()
@@ -522,31 +528,42 @@ class GlobalReconstructionEngine(
         first: FrameFeatures,
         second: FrameFeatures,
         cameraMatrix: Mat,
-        matcher: BFMatcher
+        matcher: BFMatcher?,
+        learnedMatcher: ((FrameFeatures, FrameFeatures) -> List<Pair<Int, Int>>)?
     ): VerifiedPair? {
         if (first.descriptors.empty() || second.descriptors.empty() ||
             first.keypoints.isEmpty() || second.keypoints.isEmpty()
         ) return null
 
-        val knn = mutableListOf<MatOfDMatch>()
         val matched = mutableListOf<Pair<Int, Int>>()
         val usedTrain = HashSet<Int>()
-        try {
-            matcher.knnMatch(first.descriptors, second.descriptors, knn, 2)
-            for (row in knn) {
-                val candidates = row.toArray()
-                if (candidates.size < 2) continue
-                val best = candidates[0]
-                val next = candidates[1]
-                if (best.distance >= ratioThreshold * next.distance) continue
-                if (best.queryIdx !in first.keypoints.indices ||
-                    best.trainIdx !in second.keypoints.indices ||
-                    !usedTrain.add(best.trainIdx)
+        if (learnedMatcher != null) {
+            for ((queryIndex, trainIndex) in learnedMatcher(first, second)) {
+                if (queryIndex !in first.keypoints.indices ||
+                    trainIndex !in second.keypoints.indices ||
+                    !usedTrain.add(trainIndex)
                 ) continue
-                matched += best.queryIdx to best.trainIdx
+                matched += queryIndex to trainIndex
             }
-        } finally {
-            knn.forEach { it.release() }
+        } else {
+            val knn = mutableListOf<MatOfDMatch>()
+            try {
+                (matcher ?: return null).knnMatch(first.descriptors, second.descriptors, knn, 2)
+                for (row in knn) {
+                    val candidates = row.toArray()
+                    if (candidates.size < 2) continue
+                    val best = candidates[0]
+                    val next = candidates[1]
+                    if (best.distance >= ratioThreshold * next.distance) continue
+                    if (best.queryIdx !in first.keypoints.indices ||
+                        best.trainIdx !in second.keypoints.indices ||
+                        !usedTrain.add(best.trainIdx)
+                    ) continue
+                    matched += best.queryIdx to best.trainIdx
+                }
+            } finally {
+                knn.forEach { it.release() }
+            }
         }
         if (matched.size < 30) return null
 

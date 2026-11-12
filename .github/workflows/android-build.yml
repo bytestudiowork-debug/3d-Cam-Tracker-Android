@@ -15,8 +15,8 @@ concurrency:
 
 jobs:
   build:
-    runs-on: ubuntu-latest
-    timeout-minutes: 45
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
 
     steps:
       - name: Checkout
@@ -27,6 +27,24 @@ jobs:
         with:
           distribution: temurin
           java-version: "17"
+
+      - name: Set up Python
+        if: ${{ github.ref == 'refs/heads/feature/ai-engine' }}
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+          cache-dependency-path: scripts/requirements_mobile_feature_models.txt
+
+      - name: Export and validate mobile inference assets
+        if: ${{ github.ref == 'refs/heads/feature/ai-engine' }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          python -m pip install --upgrade pip
+          python -m pip install torch==2.2.2 --index-url https://download.pytorch.org/whl/cpu --extra-index-url https://pypi.org/simple
+          python -m pip install -r scripts/requirements_mobile_feature_models.txt
+          python scripts/export_mobile_feature_models.py
 
       - name: Set up Android SDK
         uses: android-actions/setup-android@v3
@@ -43,12 +61,8 @@ jobs:
             "ndk;27.0.12077973"
             "cmake;3.22.1"
           )
-
-          # Retry interrupted downloads; clear incomplete SDK cache between attempts.
           for attempt in 1 2 3; do
             echo "Android SDK installation attempt ${attempt}/3"
-            # sdkmanager can finish successfully before the yes process exits.
-            # Ignore yes' expected SIGPIPE and use sdkmanager's exit status.
             set +o pipefail
             if yes | sdkmanager --install "${packages[@]}"; then
               set -o pipefail
@@ -65,12 +79,6 @@ jobs:
           echo "Android SDK installation failed after 3 attempts (sdkmanager exit: ${install_status})."
           exit 1
 
-      - name: Fetch optional AI feature model asset
-        if: ${{ vars.AI_FEATURE_MODEL_ARCHIVE_URL != '' }}
-        env:
-          AI_FEATURE_MODEL_ARCHIVE_URL: ${{ vars.AI_FEATURE_MODEL_ARCHIVE_URL }}
-        run: bash scripts/fetch_ai_feature_model.sh
-
       - name: Set up Gradle
         uses: gradle/actions/setup-gradle@v4
 
@@ -86,7 +94,6 @@ jobs:
       - name: Build release APK
         run: ./gradlew assembleRelease --stacktrace --no-daemon
 
-      # PR builds still compile and run tests, but only branch/manual runs publish APK artifacts.
       - name: Upload release APK
         if: github.event_name != 'pull_request'
         uses: actions/upload-artifact@v4

@@ -74,7 +74,7 @@ android {
 
     // The on-device feature runtime maps model assets directly from the APK.
     androidResources {
-        noCompress += "tflite"
+        noCompress += listOf("tflite", "onnx")
     }
 
     packaging {
