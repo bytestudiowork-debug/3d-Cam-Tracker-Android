@@ -174,11 +174,15 @@ def main():
         scores1 = F.log_softmax(
             similarity.permute(0, 2, 1).contiguous(), dim=2
         ).permute(0, 2, 1)
-        scores = similarity.new_full((batch, count0 + 1, count1 + 1), 0)
-        scores[:, :count0, :count1] = scores0 + scores1 + certainties
-        scores[:, :-1, -1] = F.logsigmoid(-certainty0.reshape(batch, count0))
-        scores[:, -1, :-1] = F.logsigmoid(-certainty1.reshape(batch, count1))
-        return scores
+        main_scores = scores0 + scores1 + certainties
+        column_dustbin = F.logsigmoid(
+            -certainty0.reshape(batch, count0)
+        ).unsqueeze(2)
+        row_dustbin = F.logsigmoid(-certainty1.reshape(batch, count1))
+        corner = similarity.new_zeros((batch, 1))
+        top = torch.cat([main_scores, column_dustbin], dim=2)
+        bottom = torch.cat([row_dustbin, corner], dim=1).unsqueeze(1)
+        return torch.cat([top, bottom], dim=1)
 
     def export_self_block_forward(self, value, encoding, mask=None):
         batch, count, _ = value.shape
