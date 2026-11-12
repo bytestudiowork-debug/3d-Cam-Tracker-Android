@@ -157,8 +157,11 @@ def main():
 
     def export_rotate_half(value):
         original_shape = tuple(value.shape)
-        value = value.reshape(*original_shape[:-1], original_shape[-1] // 2, 2)
-        first, second = value[..., 0], value[..., 1]
+        half = original_shape[-1] // 2
+        value = value.reshape(*original_shape[:-1], half, 2)
+        first, second = value.split(1, dim=-1)
+        first = first.reshape(*original_shape[:-1], half)
+        second = second.reshape(*original_shape[:-1], half)
         return torch.stack((-second, first), dim=-1).reshape(original_shape)
 
     def export_sigmoid_log_double_softmax(similarity, certainty0, certainty1):
@@ -181,8 +184,14 @@ def main():
         batch, count, _ = value.shape
         qkv = self.Wqkv(value).reshape(
             batch, count, self.num_heads, self.head_dim, 3
-        ).permute(0, 2, 1, 3, 4)
-        query, key, content = qkv[..., 0], qkv[..., 1], qkv[..., 2]
+        )
+        query, key, content = qkv.split(1, dim=-1)
+        query = query.reshape(batch, count, self.num_heads, self.head_dim)
+        key = key.reshape(batch, count, self.num_heads, self.head_dim)
+        content = content.reshape(batch, count, self.num_heads, self.head_dim)
+        query = query.permute(0, 2, 1, 3)
+        key = key.permute(0, 2, 1, 3)
+        content = content.permute(0, 2, 1, 3)
         query = lightglue_module.apply_cached_rotary_emb(encoding, query)
         key = lightglue_module.apply_cached_rotary_emb(encoding, key)
         similarity = torch.matmul(
@@ -203,11 +212,17 @@ def main():
         batch0, count0, _ = value0.shape
         batch1, count1, _ = value1.shape
         query_key0 = self.to_qk(value0).reshape(
-            batch0, count0, self.heads, -1
-        ).permute(0, 2, 1, 3)
+            batch0, count0, self.heads, -1, 2
+        )
         query_key1 = self.to_qk(value1).reshape(
-            batch1, count1, self.heads, -1
-        ).permute(0, 2, 1, 3)
+            batch1, count1, self.heads, -1, 2
+        )
+        query0, key0 = query_key0.split(1, dim=-1)
+        query1, key1 = query_key1.split(1, dim=-1)
+        query0 = query0.reshape(batch0, count0, self.heads, -1).permute(0, 2, 1, 3)
+        key0 = key0.reshape(batch0, count0, self.heads, -1).permute(0, 2, 1, 3)
+        query1 = query1.reshape(batch1, count1, self.heads, -1).permute(0, 2, 1, 3)
+        key1 = key1.reshape(batch1, count1, self.heads, -1).permute(0, 2, 1, 3)
         content0 = self.to_v(value0).reshape(
             batch0, count0, self.heads, -1
         ).permute(0, 2, 1, 3)
@@ -217,7 +232,7 @@ def main():
         query_key0 = query_key0 * self.scale ** 0.5
         query_key1 = query_key1 * self.scale ** 0.5
         similarity = torch.matmul(
-            query_key0, query_key1.permute(0, 1, 3, 2)
+            query0, key1.permute(0, 1, 3, 2)
         )
         if mask is not None:
             similarity = similarity.masked_fill(~mask, -float("inf"))
