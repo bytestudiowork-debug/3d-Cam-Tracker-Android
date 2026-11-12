@@ -244,6 +244,8 @@ def main():
         if torch.is_autocast_enabled():
             descriptors0 = descriptors0.half()
             descriptors1 = descriptors1.half()
+        descriptors0 = self.input_proj(descriptors0)
+        descriptors1 = self.input_proj(descriptors1)
         encoding0 = self.posenc(keypoints0)
         encoding1 = self.posenc(keypoints1)
         for layer_index in range(self.conf.n_layers):
