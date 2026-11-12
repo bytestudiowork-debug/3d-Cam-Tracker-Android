@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: BSD-3-Clause
 #include "colmap/geometry/triangulation.h"
+#include "colmap/util/logging.h"
 #include <algorithm>
 #include <cmath>
 #include <limits>

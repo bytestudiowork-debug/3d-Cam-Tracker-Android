@@ -6,6 +6,7 @@
 namespace colmap {
 struct Camera {
  double fx=1.0,fy=1.0,skew=0.0,cx=0.0,cy=0.0;
+ int width=0;
  bool IsPerspective() const{return true;} bool IsSpherical() const{return false;}
  std::optional<Eigen::Vector3d> CamRayFromImg(const Eigen::Vector2d& p) const {
   if(!std::isfinite(fx)||!std::isfinite(fy)||fx<=0||fy<=0)return std::nullopt;
