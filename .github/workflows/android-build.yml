@@ -108,7 +108,6 @@ jobs:
             adb shell getprop sys.boot_completed
             adb shell getprop ro.build.version.sdk
             adb devices -l
-            adb install -r app/build/outputs/apk/debug/app-debug.apk
             ./gradlew :app:connectedDebugAndroidTest --stacktrace --no-daemon
 
       - name: Build release APK
