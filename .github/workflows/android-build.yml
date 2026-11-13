@@ -94,10 +94,13 @@ jobs:
       - name: Run on-device AI inference smoke test
         uses: ReactiveCircus/android-emulator-runner@v2
         with:
-          api-level: 30
-          target: default
+          api-level: 35
+          target: google_apis
           arch: x86_64
           profile: pixel_2
+          cores: 4
+          emulator-boot-timeout: 900
+          emulator-options: -no-window -gpu swiftshader_indirect -no-snapshot -noaudio -no-boot-anim -memory 4096 -cores 4
           disable-animations: true
           script: ./gradlew :app:connectedDebugAndroidTest --stacktrace --no-daemon
 

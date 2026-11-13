@@ -4,8 +4,6 @@ import android.content.Context
 import ai.onnxruntime.OnnxTensor
 import ai.onnxruntime.OrtEnvironment
 import ai.onnxruntime.OrtSession
-import java.io.File
-import java.io.FileOutputStream
 import java.nio.ByteBuffer
 import java.nio.ByteOrder
 import java.nio.FloatBuffer
@@ -31,7 +29,7 @@ class OnnxFeatureDetector(
         options.setIntraOpNumThreads(threadCount)
         options.setInterOpNumThreads(1)
         session = try {
-            environment.createSession(copyAsset(context.applicationContext, modelAssetPath).absolutePath, options)
+            environment.createSession(ModelAssetLoader.copyAsset(context.applicationContext, modelAssetPath).absolutePath, options)
         } finally {
             options.close()
         }
@@ -121,22 +119,6 @@ class OnnxFeatureDetector(
         val values = FloatArray(buffer.remaining())
         buffer.get(values)
         return values
-    }
-
-    private fun copyAsset(context: Context, assetPath: String): File {
-        val directory = File(context.filesDir, "trackstudio-models")
-        if (!directory.exists() && !directory.mkdirs()) {
-            throw IllegalStateException("Unable to create the model directory.")
-        }
-        val updateStamp = context.packageManager.getPackageInfo(context.packageName, 0).lastUpdateTime
-        val output = File(directory, assetPath.substringAfterLast('/') + "-" + updateStamp)
-        if (!output.exists() || output.length() == 0L) {
-            context.assets.open(assetPath).use { input ->
-                FileOutputStream(output).use { target -> input.copyTo(target) }
-            }
-        }
-        check(output.length() > 0L) { "The feature model asset is empty." }
-        return output
     }
 
     override fun close() {
