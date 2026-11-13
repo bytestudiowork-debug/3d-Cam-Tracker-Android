@@ -103,12 +103,30 @@ jobs:
           emulator-options: -no-window -gpu swiftshader -no-snapshot -noaudio -no-boot-anim -wipe-data -memory 4096 -cores 2
           disable-animations: false
           script: |
+            set -eu
             adb start-server
             adb wait-for-device
             adb shell getprop sys.boot_completed
             adb shell getprop ro.build.version.sdk
             adb devices -l
-            ./gradlew :app:connectedDebugAndroidTest --stacktrace --no-daemon
+
+            # Build both APKs before installing. Use adb's non-streaming path
+            # to avoid flaky package-session writes on the hosted emulator.
+            ./gradlew :app:assembleDebug :app:assembleDebugAndroidTest --stacktrace --no-daemon
+            adb install --no-streaming -r app/build/outputs/apk/debug/app-debug.apk
+            adb install --no-streaming -r app/build/outputs/apk/androidTest/debug/app-debug-androidTest.apk
+
+            # Run the inference test directly so installation and test failures
+            # are reported separately in the workflow log.
+            test_output="$(adb shell am instrument -w -r -e class com.trackstudio.app.AiFeatureRuntimeInstrumentedTest com.trackstudio.app.test/androidx.test.runner.AndroidJUnitRunner 2>&1)" || {
+              printf '%s\n' "$test_output"
+              exit 1
+            }
+            printf '%s\n' "$test_output"
+            printf '%s\n' "$test_output" | grep -Eq 'OK \([0-9]+ tests?\)' || {
+              echo "Android inference instrumentation did not report a passing test."
+              exit 1
+            }
 
       - name: Build release APK
         run: ./gradlew assembleRelease --stacktrace --no-daemon
