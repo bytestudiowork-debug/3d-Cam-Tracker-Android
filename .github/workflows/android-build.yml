@@ -94,15 +94,30 @@ jobs:
       - name: Run on-device AI inference smoke test
         uses: ReactiveCircus/android-emulator-runner@v2
         with:
-          api-level: 34
+          api-level: 30
           target: google_apis
           arch: x86_64
           profile: pixel_2
           cores: 2
           emulator-boot-timeout: 900
-          emulator-options: -no-window -gpu swiftshader_indirect -no-snapshot -noaudio -no-boot-anim -memory 4096 -cores 2
+          emulator-options: -no-window -gpu swiftshader -no-snapshot -noaudio -no-boot-anim -wipe-data -memory 4096 -cores 2
           disable-animations: true
-          script: ./gradlew :app:connectedDebugAndroidTest --stacktrace --no-daemon
+          script: |
+            set -euo pipefail
+            adb start-server
+            adb wait-for-device
+            for attempt in $(seq 1 90); do
+              booted="$(adb shell getprop sys.boot_completed 2>/dev/null | tr -d '\r' || true)"
+              if [ "$booted" = "1" ]; then
+                break
+              fi
+              sleep 5
+            done
+            test "$(adb shell getprop sys.boot_completed | tr -d '\r')" = "1"
+            adb shell getprop ro.build.version.sdk
+            adb devices -l
+            adb install -r app/build/outputs/apk/debug/app-debug.apk
+            ./gradlew :app:connectedDebugAndroidTest --stacktrace --no-daemon
 
       - name: Build release APK
         run: ./gradlew assembleRelease --stacktrace --no-daemon
