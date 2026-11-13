@@ -115,7 +115,7 @@ jobs:
 
             # Wait for Android framework services, not just the ADB transport.
             boot_attempt=0
-            until [ "$(adb shell getprop sys.boot_completed 2>/dev/null | tr -d '\\r')" = "1" ]; do
+            until [ "$(adb shell getprop sys.boot_completed 2>/dev/null | tr -d '[:space:]')" = "1" ]; do
               boot_attempt=$((boot_attempt + 1))
               if [ "$boot_attempt" -ge 120 ]; then
                 echo "Emulator did not finish booting."
