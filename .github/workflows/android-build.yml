@@ -103,17 +103,9 @@ jobs:
           emulator-options: -no-window -gpu swiftshader -no-snapshot -noaudio -no-boot-anim -wipe-data -memory 4096 -cores 2
           disable-animations: false
           script: |
-            set -eu
             adb start-server
             adb wait-for-device
-            for attempt in $(seq 1 90); do
-              booted="$(adb shell getprop sys.boot_completed 2>/dev/null | tr -d '\r' || true)"
-              if [ "$booted" = "1" ]; then
-                break
-              fi
-              sleep 5
-            done
-            test "$(adb shell getprop sys.boot_completed | tr -d '\r')" = "1"
+            adb shell getprop sys.boot_completed
             adb shell getprop ro.build.version.sdk
             adb devices -l
             adb install -r app/build/outputs/apk/debug/app-debug.apk
