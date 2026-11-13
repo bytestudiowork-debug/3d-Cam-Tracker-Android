@@ -71,12 +71,6 @@ def main():
     from modules.model import XFeatModel
     from modules.lighterglue import LighterGlue
 
-    class InstanceNormExport(nn.Module):
-        def forward(self, image):
-            mean = image.mean(dim=(2, 3), keepdim=True)
-            variance = (image - mean).square().mean(dim=(2, 3), keepdim=True)
-            return (image - mean) / torch.sqrt(variance + 1e-5)
-
     class ExportableFeatureModel(XFeatModel):
         def _unfold2d(self, image, ws=2):
             batch, channels, height, width = image.shape
@@ -100,7 +94,6 @@ def main():
     weights = torch.load(extractor_weights, map_location="cpu")
     extractor = ExportableFeatureModel().cpu().eval()
     extractor.load_state_dict(weights, strict=True)
-    extractor.norm = InstanceNormExport()
     reference_extractor = XFeatModel().cpu().eval()
     reference_extractor.load_state_dict(weights, strict=True)
     parity_input = torch.rand(1, 3, 480, 640)
