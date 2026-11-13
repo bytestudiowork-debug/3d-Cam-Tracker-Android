@@ -101,7 +101,7 @@ jobs:
           cores: 2
           emulator-boot-timeout: 900
           emulator-options: -no-window -gpu swiftshader -no-snapshot -noaudio -no-boot-anim -wipe-data -memory 4096 -cores 2
-          disable-animations: true
+          disable-animations: false
           script: |
             set -euo pipefail
             adb start-server
