@@ -91,6 +91,9 @@ jobs:
       - name: Run tracking engine unit tests
         run: ./gradlew testReleaseUnitTest --stacktrace --no-daemon
 
+      - name: Build debug APKs for emulator test
+        run: ./gradlew :app:assembleDebug :app:assembleDebugAndroidTest --stacktrace --no-daemon
+
       - name: Run on-device AI inference smoke test
         uses: ReactiveCircus/android-emulator-runner@v2
         with:
@@ -110,9 +113,31 @@ jobs:
             adb shell getprop ro.build.version.sdk
             adb devices -l
 
-            # Build both APKs before installing. Use adb's non-streaming path
-            # to avoid flaky package-session writes on the hosted emulator.
-            ./gradlew :app:assembleDebug :app:assembleDebugAndroidTest --stacktrace --no-daemon
+            # Wait for Android framework services, not just the ADB transport.
+            boot_attempt=0
+            until [ "$(adb shell getprop sys.boot_completed 2>/dev/null | tr -d '\\r')" = "1" ]; do
+              boot_attempt=$((boot_attempt + 1))
+              if [ "$boot_attempt" -ge 120 ]; then
+                echo "Emulator did not finish booting."
+                adb logcat -d -t 500 || true
+                exit 1
+              fi
+              sleep 5
+            done
+
+            package_attempt=0
+            until adb shell cmd package list packages >/dev/null 2>&1; do
+              package_attempt=$((package_attempt + 1))
+              if [ "$package_attempt" -ge 60 ]; then
+                echo "Android package manager did not become available."
+                adb logcat -d -t 500 || true
+                exit 1
+              fi
+              sleep 5
+            done
+
+            # APKs are built before emulator startup to avoid starving the
+            # emulator while Gradle compiles the large native app.
             adb install --no-streaming -r app/build/outputs/apk/debug/app-debug.apk
             adb install --no-streaming -r app/build/outputs/apk/androidTest/debug/app-debug-androidTest.apk
 
