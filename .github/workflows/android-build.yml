@@ -103,7 +103,7 @@ jobs:
           emulator-options: -no-window -gpu swiftshader -no-snapshot -noaudio -no-boot-anim -wipe-data -memory 4096 -cores 2
           disable-animations: false
           script: |
-            set -euo pipefail
+            set -eu
             adb start-server
             adb wait-for-device
             for attempt in $(seq 1 90); do
