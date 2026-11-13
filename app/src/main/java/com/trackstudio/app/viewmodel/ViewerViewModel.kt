@@ -230,7 +230,11 @@ class ViewerViewModel(
             speed = 1.0
         )
 
-        val initialMode = if (videoUri != null) ReconstructionMode.GLOBAL else _uiState.value.reconstructionMode
+        val initialMode = if (videoUri != null && _uiState.value.reconstructionMode == ReconstructionMode.CUSTOM) {
+            ReconstructionMode.GLOBAL
+        } else {
+            _uiState.value.reconstructionMode
+        }
         reconstructionEngine = when (initialMode) {
             ReconstructionMode.CUSTOM -> customEngine
             ReconstructionMode.GLOBAL -> GlobalReconstructionEngine()
@@ -417,21 +421,27 @@ class ViewerViewModel(
         }
     }
 
-    private fun hasAiFeatureModel(): Boolean = try {
-        appContext.assets.open("ai/feature_model.tflite").use { }
-        true
-    } catch (_: Exception) {
-        false
+    private fun hasAiFeatureModels(): Boolean {
+        val requiredAssets = listOf("ai/extractor.onnx", "ai/matcher.onnx")
+        return requiredAssets.all { assetPath ->
+            try {
+                appContext.assets.openFd(assetPath).use { descriptor ->
+                    descriptor.length > 0L
+                }
+            } catch (_: Exception) {
+                false
+            }
+        }
     }
 
     fun startAutoTrack() {
         if (_uiState.value.isAutoTracking) return
         trackingResumeSignal = CompletableDeferred(Unit)
         anchorProjectionContext = null
-        if (_uiState.value.reconstructionMode == ReconstructionMode.AI && !hasAiFeatureModel()) {
+        if (_uiState.value.reconstructionMode == ReconstructionMode.AI && !hasAiFeatureModels()) {
             _uiState.update {
                 it.copy(
-                    trackingError = "AI Engine needs its feature model asset before it can process footage. Custom and Global engines remain available."
+                    trackingError = "AI Engine model assets are missing from this build. Rebuild with model export enabled. Custom and Global engines remain available."
                 )
             }
             return
