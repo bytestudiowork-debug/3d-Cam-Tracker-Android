@@ -44,6 +44,11 @@ android {
         debug {
             isMinifyEnabled = false
             isJniDebuggable = false
+            // Include the hosted x86_64 emulator ABI for instrumentation tests.
+            // Release builds remain limited to supported physical-device ABIs.
+            ndk {
+                abiFilters += "x86_64"
+            }
         }
     }
 
