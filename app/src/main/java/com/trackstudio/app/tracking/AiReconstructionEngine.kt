@@ -28,21 +28,23 @@ internal class AiReconstructionEngine(
         frameProvider: suspend (Int) -> Mat?,
         onProgress: suspend (CameraTrackingProgress) -> Unit
     ): CameraTrackingResult {
+        val runtime = AiRuntimePolicy.forDevice(appContext)
         val detector = OnnxFeatureDetector(
             context = appContext,
             modelAssetPath = extractorAssetPath,
-            maximumFeatures = MAXIMUM_FEATURES,
+            maximumFeatures = runtime.maximumFeatures,
+            maximumInputDimension = runtime.maximumInputDimension,
             descriptorChannels = descriptorSize,
-            threadCount = 2
+            threadCount = runtime.threadCount
         )
         val matcher = try {
             OnnxFeatureMatcher(
                 context = appContext,
                 modelAssetPath = matcherAssetPath,
-                maximumFeatures = MAXIMUM_FEATURES,
+                maximumFeatures = runtime.maximumFeatures,
                 minimumMatchConfidence = MINIMUM_MATCH_CONFIDENCE,
                 descriptorSize = descriptorSize,
-                threadCount = 2
+                threadCount = runtime.threadCount
             )
         } catch (failure: Throwable) {
             detector.close()
@@ -65,7 +67,6 @@ internal class AiReconstructionEngine(
     }
 
     private companion object {
-        const val MAXIMUM_FEATURES = 1400
         const val MINIMUM_MATCH_CONFIDENCE = 0.1f
     }
 }
