@@ -101,23 +101,18 @@ jobs:
           target: google_apis
           arch: x86_64
           profile: pixel_2
-          cores: 2
+          cores: 4
           emulator-boot-timeout: 900
-          emulator-options: -no-window -gpu swiftshader -no-snapshot -noaudio -no-boot-anim -wipe-data -memory 4096 -cores 2
-          disable-animations: false
-          # The runner waits for the emulator's boot-completed signal before
-          # executing this script. Each script line is launched in its own
-          # shell, so keep retry logic on a single line (no multi-line loops).
+          # Keep the virtual device within the hosted runner's memory budget;
+          # avoid overcommitting RAM, which can destabilize Android system_server.
+          emulator-options: -no-window -gpu swiftshader -no-snapshot -noaudio -no-boot-anim -wipe-data -memory 2048 -cores 4
+          disable-animations: true
+          # Let Gradle's connected test task manage APK installation and
+          # instrumentation rather than maintaining a second manual ADB path.
           script: |
             adb devices -l
             adb shell getprop sys.boot_completed
-            adb shell getprop ro.build.version.sdk
-            for attempt in $(seq 1 30); do adb shell cmd package list packages >/dev/null 2>&1 && break; sleep 2; done; adb shell cmd package list packages >/dev/null
-            adb install --no-streaming -r app/build/outputs/apk/debug/app-debug.apk
-            adb install --no-streaming -r app/build/outputs/apk/androidTest/debug/app-debug-androidTest.apk
-            test_output="$(adb shell am instrument -w -r -e class com.trackstudio.app.AiFeatureRuntimeInstrumentedTest com.trackstudio.app.test/androidx.test.runner.AndroidJUnitRunner 2>&1)" || { printf '%s\\n' "$test_output"; exit 1; }
-            printf '%s\\n' "$test_output"
-            printf '%s\\n' "$test_output" | grep -Eq 'OK \\([0-9]+ tests?\\)'
+            ./gradlew :app:connectedDebugAndroidTest --stacktrace --no-daemon
 
       - name: Build release APK
         run: ./gradlew assembleRelease --stacktrace --no-daemon
