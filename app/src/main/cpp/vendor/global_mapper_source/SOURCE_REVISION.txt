@@ -1,0 +1,7 @@
+Original source snapshot
+Repository: https://github.com/colmap/glomap
+Revision: 99806d0869f802fad218516a2e027793e7ca687d
+Revision date: 2026-01-30
+License: BSD 3-Clause (see LICENSE)
+
+The files in glomap/ are copied verbatim from this revision. No algorithm or camera-tracking code has been adapted in this snapshot. This source snapshot is not yet wired into the Android application build. Android dependency/build integration and replacement of the current adapters are the next implementation stage.
