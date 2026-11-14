@@ -9,58 +9,88 @@ import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
 import org.junit.Test
 import org.junit.runner.RunWith
+import kotlin.math.abs
 import kotlin.random.Random
 
 @RunWith(AndroidJUnit4::class)
 class AiFeatureRuntimeInstrumentedTest {
 
     @Test
-    fun packagedModelsRunOnAndroidCpuAndProduceConsistentMatches() {
+    fun packagedModelsMatchTranslatedFramesAndRestoreSourceCoordinates() {
         val context = InstrumentationRegistry.getInstrumentation().targetContext
         val width = 320
         val height = 240
-        val pixels = ByteArray(width * height * 3)
-        val random = Random(20261112)
-        for (index in pixels.indices) {
-            pixels[index] = random.nextInt(256).toByte()
+        val channels = 3
+        val shiftX = 10
+        val shiftY = 10
+        val firstPixels = ByteArray(width * height * channels)
+        val random = Random(20261114)
+        for (index in firstPixels.indices) {
+            firstPixels[index] = random.nextInt(256).toByte()
         }
-        val frame = TrackingFrame(
+
+        // Translate by ten source pixels. With the 256-pixel inference limit,
+        // this is an eight-pixel shift in model space and exercises coordinate
+        // restoration after the detector resizes the source frame.
+        val secondPixels = ByteArray(firstPixels.size)
+        for (y in 0 until height - shiftY) {
+            for (x in 0 until width - shiftX) {
+                val sourceOffset = (y * width + x) * channels
+                val targetOffset = ((y + shiftY) * width + x + shiftX) * channels
+                System.arraycopy(firstPixels, sourceOffset, secondPixels, targetOffset, channels)
+            }
+        }
+
+        val firstFrame = TrackingFrame(
             frameIndex = 0,
             timestampNs = 0L,
             width = width,
             height = height,
-            pixels = pixels,
-            channels = 3
+            pixels = firstPixels,
+            channels = channels
+        )
+        val secondFrame = TrackingFrame(
+            frameIndex = 1,
+            timestampNs = 33_333_333L,
+            width = width,
+            height = height,
+            pixels = secondPixels,
+            channels = channels
         )
 
         OnnxFeatureDetector(
             context = context,
             maximumFeatures = 512,
-            maximumInputDimension = 320,
+            maximumInputDimension = 256,
             threadCount = 2
         ).use { detector ->
-            val observations = detector.detect(frame)
-            assertFalse("The packaged extractor returned no features.", observations.isEmpty())
-            assertTrue("The extractor exceeded its feature limit.", observations.size <= 512)
-            assertTrue(
-                "The extractor returned an invalid point.",
-                observations.all {
-                    it.x.isFinite() && it.y.isFinite() &&
-                        it.x >= 0f && it.x < width.toFloat() &&
-                        it.y >= 0f && it.y < height.toFloat() &&
-                        it.descriptor?.size == 64 &&
-                        it.descriptor?.all { value -> value.isFinite() } == true
-                }
-            )
-            assertTrue(
-                "The extractor returned non-normalized descriptors.",
-                observations.all { observation ->
-                    val norm = kotlin.math.sqrt(
-                        observation.descriptor!!.sumOf { it.toDouble() * it.toDouble() }
-                    )
-                    kotlin.math.abs(norm - 1.0) < 1e-3
-                }
-            )
+            val first = detector.detect(firstFrame)
+            val second = detector.detect(secondFrame)
+            assertFalse("The packaged extractor returned no first-frame features.", first.isEmpty())
+            assertFalse("The packaged extractor returned no second-frame features.", second.isEmpty())
+            assertTrue("The extractor exceeded its feature limit.", first.size <= 512 && second.size <= 512)
+
+            for (observations in listOf(first, second)) {
+                assertTrue(
+                    "The extractor returned an invalid point or descriptor.",
+                    observations.all {
+                        it.x.isFinite() && it.y.isFinite() &&
+                            it.x >= 0f && it.x < width.toFloat() &&
+                            it.y >= 0f && it.y < height.toFloat() &&
+                            it.descriptor?.size == 64 &&
+                            it.descriptor?.all { value -> value.isFinite() } == true
+                    }
+                )
+                assertTrue(
+                    "The extractor returned non-normalized descriptors.",
+                    observations.all { observation ->
+                        val norm = kotlin.math.sqrt(
+                            observation.descriptor!!.sumOf { it.toDouble() * it.toDouble() }
+                        )
+                        abs(norm - 1.0) < 1e-3
+                    }
+                )
+            }
 
             OnnxFeatureMatcher(
                 context = context,
@@ -68,42 +98,67 @@ class AiFeatureRuntimeInstrumentedTest {
                 minimumMatchConfidence = 0.1f,
                 threadCount = 2
             ).use { matcher ->
-                val coordinates = FloatArray(observations.size * 2)
-                val descriptors = FloatArray(observations.size * 64)
-                observations.forEachIndexed { index, observation ->
-                    coordinates[index * 2] = observation.x
-                    coordinates[index * 2 + 1] = observation.y
-                    System.arraycopy(
-                        observation.descriptor!!,
-                        0,
-                        descriptors,
-                        index * 64,
-                        64
-                    )
-                }
                 val matches = matcher.matchRaw(
-                    firstKeypoints = coordinates,
-                    firstDescriptors = descriptors,
-                    firstCount = observations.size,
+                    firstKeypoints = first.toCoordinates(),
+                    firstDescriptors = first.toDescriptors(),
+                    firstCount = first.size,
                     firstWidth = width,
                     firstHeight = height,
-                    secondKeypoints = coordinates,
-                    secondDescriptors = descriptors,
-                    secondCount = observations.size,
+                    secondKeypoints = second.toCoordinates(),
+                    secondDescriptors = second.toDescriptors(),
+                    secondCount = second.size,
                     secondWidth = width,
                     secondHeight = height
                 )
-                assertFalse("The packaged matcher returned no self-matches.", matches.isEmpty())
                 assertTrue(
-                    "The matcher returned an invalid feature index.",
+                    "The packaged matcher found too few cross-frame correspondences.",
+                    matches.size >= 3
+                )
+                assertTrue(
+                    "The matcher returned an invalid feature index or confidence.",
                     matches.all {
-                        it.firstFeatureIndex in observations.indices &&
-                            it.secondFeatureIndex in observations.indices &&
+                        it.firstFeatureIndex in first.indices &&
+                            it.secondFeatureIndex in second.indices &&
                             it.confidence.isFinite() &&
                             it.confidence in 0f..1f
                     }
                 )
+
+                val horizontalOffsets = matches.map {
+                    second[it.secondFeatureIndex].x - first[it.firstFeatureIndex].x
+                }.sorted()
+                val verticalOffsets = matches.map {
+                    second[it.secondFeatureIndex].y - first[it.firstFeatureIndex].y
+                }.sorted()
+                val medianX = horizontalOffsets[horizontalOffsets.size / 2]
+                val medianY = verticalOffsets[verticalOffsets.size / 2]
+
+                assertTrue(
+                    "Horizontal source-coordinate shift was not restored: $medianX px.",
+                    abs(medianX - shiftX) < 4.5f
+                )
+                assertTrue(
+                    "Vertical source-coordinate shift was not restored: $medianY px.",
+                    abs(medianY - shiftY) < 4.5f
+                )
             }
         }
     }
+
+    private fun List<com.trackstudio.ai.FeatureObservation>.toCoordinates(): FloatArray =
+        FloatArray(size * 2).also { values ->
+            forEachIndexed { index, observation ->
+                values[index * 2] = observation.x
+                values[index * 2 + 1] = observation.y
+            }
+        }
+
+    private fun List<com.trackstudio.ai.FeatureObservation>.toDescriptors(): FloatArray =
+        FloatArray(size * 64).also { values ->
+            forEachIndexed { index, observation ->
+                val descriptor = requireNotNull(observation.descriptor)
+                require(descriptor.size == 64)
+                System.arraycopy(descriptor, 0, values, index * 64, 64)
+            }
+        }
 }
