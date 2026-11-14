@@ -105,53 +105,19 @@ jobs:
           emulator-boot-timeout: 900
           emulator-options: -no-window -gpu swiftshader -no-snapshot -noaudio -no-boot-anim -wipe-data -memory 4096 -cores 2
           disable-animations: false
+          # The runner waits for the emulator's boot-completed signal before
+          # executing this script. Each script line is launched in its own
+          # shell, so keep retry logic on a single line (no multi-line loops).
           script: |
-            set -eu
-            adb start-server
-            adb wait-for-device
+            adb devices -l
             adb shell getprop sys.boot_completed
             adb shell getprop ro.build.version.sdk
-            adb devices -l
-
-            # Wait for Android framework services, not just the ADB transport.
-            boot_attempt=0
-            until [ "$(adb shell getprop sys.boot_completed 2>/dev/null | tr -d '[:space:]')" = "1" ]; do
-              boot_attempt=$((boot_attempt + 1))
-              if [ "$boot_attempt" -ge 120 ]; then
-                echo "Emulator did not finish booting."
-                adb logcat -d -t 500 || true
-                exit 1
-              fi
-              sleep 5
-            done
-
-            package_attempt=0
-            until adb shell cmd package list packages >/dev/null 2>&1; do
-              package_attempt=$((package_attempt + 1))
-              if [ "$package_attempt" -ge 60 ]; then
-                echo "Android package manager did not become available."
-                adb logcat -d -t 500 || true
-                exit 1
-              fi
-              sleep 5
-            done
-
-            # APKs are built before emulator startup to avoid starving the
-            # emulator while Gradle compiles the large native app.
+            for attempt in $(seq 1 30); do adb shell cmd package list packages >/dev/null 2>&1 && break; sleep 2; done; adb shell cmd package list packages >/dev/null
             adb install --no-streaming -r app/build/outputs/apk/debug/app-debug.apk
             adb install --no-streaming -r app/build/outputs/apk/androidTest/debug/app-debug-androidTest.apk
-
-            # Run the inference test directly so installation and test failures
-            # are reported separately in the workflow log.
-            test_output="$(adb shell am instrument -w -r -e class com.trackstudio.app.AiFeatureRuntimeInstrumentedTest com.trackstudio.app.test/androidx.test.runner.AndroidJUnitRunner 2>&1)" || {
-              printf '%s\n' "$test_output"
-              exit 1
-            }
-            printf '%s\n' "$test_output"
-            printf '%s\n' "$test_output" | grep -Eq 'OK \([0-9]+ tests?\)' || {
-              echo "Android inference instrumentation did not report a passing test."
-              exit 1
-            }
+            test_output="$(adb shell am instrument -w -r -e class com.trackstudio.app.AiFeatureRuntimeInstrumentedTest com.trackstudio.app.test/androidx.test.runner.AndroidJUnitRunner 2>&1)" || { printf '%s\\n' "$test_output"; exit 1; }
+            printf '%s\\n' "$test_output"
+            printf '%s\\n' "$test_output" | grep -Eq 'OK \\([0-9]+ tests?\\)'
 
       - name: Build release APK
         run: ./gradlew assembleRelease --stacktrace --no-daemon
