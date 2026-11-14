@@ -81,6 +81,10 @@ jobs:
 
       - name: Set up Gradle
         uses: gradle/actions/setup-gradle@v4
+        with:
+          # Keep a reusable cache for the long-lived feature branch.
+          # Other branches and pull requests remain read-only by default.
+          cache-read-only: ${{ github.ref != 'refs/heads/feature/ai-engine' && github.ref_name != github.event.repository.default_branch }}
 
       - name: Make Gradle Wrapper executable
         run: chmod +x ./gradlew
