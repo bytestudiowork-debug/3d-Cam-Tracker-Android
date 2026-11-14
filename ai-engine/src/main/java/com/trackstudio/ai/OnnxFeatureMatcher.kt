@@ -14,6 +14,7 @@ class OnnxFeatureMatcher(
     modelAssetPath: String = "ai/matcher.onnx",
     private val maximumFeatures: Int = 1400,
     private val minimumMatchConfidence: Float = 0.1f,
+    private val descriptorSize: Int = 64,
     threadCount: Int = 2
 ) : AutoCloseable {
     private val environment = OrtEnvironment.getEnvironment()
@@ -22,6 +23,7 @@ class OnnxFeatureMatcher(
     init {
         require(maximumFeatures > 0)
         require(minimumMatchConfidence in 0f..1f)
+        require(descriptorSize > 0)
         require(threadCount > 0)
         val options = OrtSession.SessionOptions()
         options.setIntraOpNumThreads(threadCount)
@@ -50,17 +52,17 @@ class OnnxFeatureMatcher(
         require(firstCount <= maximumFeatures && secondCount <= maximumFeatures)
         require(firstKeypoints.size == firstCount * 2)
         require(secondKeypoints.size == secondCount * 2)
-        require(firstDescriptors.size == firstCount * DESCRIPTOR_SIZE)
-        require(secondDescriptors.size == secondCount * DESCRIPTOR_SIZE)
+        require(firstDescriptors.size == firstCount * descriptorSize)
+        require(secondDescriptors.size == secondCount * descriptorSize)
         require(firstWidth > 0 && firstHeight > 0 && secondWidth > 0 && secondHeight > 0)
 
         val inputs = LinkedHashMap<String, OnnxTensor>(6)
         try {
             inputs["keypoints0"] = tensor(firstKeypoints, 1L, firstCount.toLong(), 2L)
-            inputs["descriptors0"] = tensor(firstDescriptors, 1L, firstCount.toLong(), DESCRIPTOR_SIZE.toLong())
+            inputs["descriptors0"] = tensor(firstDescriptors, 1L, firstCount.toLong(), descriptorSize.toLong())
             inputs["image_size0"] = tensor(floatArrayOf(firstWidth.toFloat(), firstHeight.toFloat()), 1L, 2L)
             inputs["keypoints1"] = tensor(secondKeypoints, 1L, secondCount.toLong(), 2L)
-            inputs["descriptors1"] = tensor(secondDescriptors, 1L, secondCount.toLong(), DESCRIPTOR_SIZE.toLong())
+            inputs["descriptors1"] = tensor(secondDescriptors, 1L, secondCount.toLong(), descriptorSize.toLong())
             inputs["image_size1"] = tensor(floatArrayOf(secondWidth.toFloat(), secondHeight.toFloat()), 1L, 2L)
 
             session.run(inputs).use { result ->
@@ -94,10 +96,6 @@ class OnnxFeatureMatcher(
 
     override fun close() {
         session.close()
-    }
-
-    private companion object {
-        const val DESCRIPTOR_SIZE = 64
     }
 }
 

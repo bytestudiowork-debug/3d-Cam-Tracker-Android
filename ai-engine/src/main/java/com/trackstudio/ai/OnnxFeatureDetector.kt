@@ -16,6 +16,8 @@ class OnnxFeatureDetector(
     modelAssetPath: String = "ai/extractor.onnx",
     private val maximumFeatures: Int = 1400,
     private val maximumInputDimension: Int = 640,
+    private val descriptorChannels: Int = 64,
+    private val nmsRadius: Int = 2,
     threadCount: Int = 2
 ) : FeatureDetector, AutoCloseable {
     private val environment = OrtEnvironment.getEnvironment()
@@ -24,6 +26,8 @@ class OnnxFeatureDetector(
     init {
         require(maximumFeatures > 0)
         require(maximumInputDimension >= 32)
+        require(descriptorChannels > 0)
+        require(nmsRadius >= 0)
         require(threadCount > 0)
         val options = OrtSession.SessionOptions()
         options.setIntraOpNumThreads(threadCount)
@@ -58,7 +62,9 @@ class OnnxFeatureDetector(
                     descriptorMap = descriptors,
                     keypointLogits = keypointLogits,
                     reliabilityMap = reliability,
-                    maximumFeatures = maximumFeatures
+                    maximumFeatures = maximumFeatures,
+                    descriptorChannels = descriptorChannels,
+                    nmsRadius = nmsRadius
                 )
                 val scaleX = frame.width.toFloat() / inputWidth
                 val scaleY = frame.height.toFloat() / inputHeight

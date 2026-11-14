@@ -60,4 +60,41 @@ class FeatureMapDecoderTest {
 
         assertEquals(0, result.size)
     }
+    @Test
+    fun decodesVariableWidthDescriptorsWithoutChangingFeatureCoordinates() {
+        val width = 16
+        val height = 16
+        val cellCount = 4
+        val descriptorChannels = 128
+        val descriptors = FloatArray(descriptorChannels * cellCount)
+        for (channel in 0 until descriptorChannels) {
+            for (cell in 0 until cellCount) {
+                descriptors[channel * cellCount + cell] =
+                    if (channel == 7) 1f else 0f
+            }
+        }
+        val logits = FloatArray(65 * cellCount) { -12f }
+        logits[3 * cellCount] = 12f
+        val reliability = FloatArray(cellCount) { 1f }
+
+        val observations = FeatureMapDecoder.decode(
+            frameIndex = 2,
+            inputWidth = width,
+            inputHeight = height,
+            descriptorMap = descriptors,
+            keypointLogits = logits,
+            reliabilityMap = reliability,
+            maximumFeatures = 10,
+            descriptorChannels = descriptorChannels
+        )
+
+        assertTrue(observations.isNotEmpty())
+        assertEquals(3f, observations.first().x, 0f)
+        assertEquals(0f, observations.first().y, 0f)
+        val descriptor = requireNotNull(observations.first().descriptor)
+        assertEquals(descriptorChannels, descriptor.size)
+        assertEquals(1f, descriptor[7], 1e-5f)
+        assertEquals(0f, descriptor.filterIndexed { index, _ -> index != 7 }.sum(), 1e-5f)
+    }
+
 }

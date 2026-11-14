@@ -17,7 +17,8 @@ import org.opencv.imgproc.Imgproc
 internal class AiReconstructionEngine(
     context: Context,
     private val extractorAssetPath: String = "ai/extractor.onnx",
-    private val matcherAssetPath: String = "ai/matcher.onnx"
+    private val matcherAssetPath: String = "ai/matcher.onnx",
+    private val descriptorSize: Int = 64
 ) : ReconstructionEngine {
     private val appContext = context.applicationContext
 
@@ -31,6 +32,7 @@ internal class AiReconstructionEngine(
             context = appContext,
             modelAssetPath = extractorAssetPath,
             maximumFeatures = MAXIMUM_FEATURES,
+            descriptorChannels = descriptorSize,
             threadCount = 2
         )
         val matcher = try {
@@ -39,6 +41,7 @@ internal class AiReconstructionEngine(
                 modelAssetPath = matcherAssetPath,
                 maximumFeatures = MAXIMUM_FEATURES,
                 minimumMatchConfidence = MINIMUM_MATCH_CONFIDENCE,
+                descriptorSize = descriptorSize,
                 threadCount = 2
             )
         } catch (failure: Throwable) {
@@ -162,7 +165,7 @@ private class AiFeatureFrameAdapter(
         ) return emptyList()
 
         val descriptorSize = first.descriptors.cols()
-        require(descriptorSize == 64 && second.descriptors.cols() == descriptorSize)
+        require(descriptorSize > 0 && second.descriptors.cols() == descriptorSize)
         val firstDescriptors = FloatArray(first.keypoints.size * descriptorSize)
         val secondDescriptors = FloatArray(second.keypoints.size * descriptorSize)
         check(first.descriptors.get(0, 0, firstDescriptors) == firstDescriptors.size)

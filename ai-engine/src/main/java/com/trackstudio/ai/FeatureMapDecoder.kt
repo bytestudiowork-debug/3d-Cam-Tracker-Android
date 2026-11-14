@@ -17,18 +17,22 @@ object FeatureMapDecoder {
         keypointLogits: FloatArray,
         reliabilityMap: FloatArray,
         maximumFeatures: Int,
+        descriptorChannels: Int = 64,
+        nmsRadius: Int = 2,
         confidenceThreshold: Float = 0.05f
     ): List<FeatureObservation> {
         require(frameIndex >= 0)
         require(inputWidth >= 8 && inputHeight >= 8)
         require(inputWidth % 8 == 0 && inputHeight % 8 == 0)
         require(maximumFeatures > 0)
+        require(descriptorChannels > 0)
+        require(nmsRadius >= 0)
         require(confidenceThreshold in 0f..1f)
 
         val cellWidth = inputWidth / 8
         val cellHeight = inputHeight / 8
         val cellCount = cellWidth * cellHeight
-        require(descriptorMap.size == DESCRIPTOR_CHANNELS * cellCount)
+        require(descriptorMap.size == descriptorChannels * cellCount)
         require(keypointLogits.size == KEYPOINT_CHANNELS * cellCount)
         require(reliabilityMap.size == cellCount)
 
@@ -63,7 +67,7 @@ object FeatureMapDecoder {
             val row = y * inputWidth
             for (x in 0 until inputWidth) {
                 var maximum = Float.NEGATIVE_INFINITY
-                for (offset in -NMS_RADIUS..NMS_RADIUS) {
+                for (offset in -nmsRadius..nmsRadius) {
                     val sampleX = x + offset
                     if (sampleX in 0 until inputWidth) {
                         maximum = maxOf(maximum, keypointMap[row + sampleX])
@@ -76,7 +80,7 @@ object FeatureMapDecoder {
         for (y in 0 until inputHeight) {
             for (x in 0 until inputWidth) {
                 var maximum = Float.NEGATIVE_INFINITY
-                for (offset in -NMS_RADIUS..NMS_RADIUS) {
+                for (offset in -nmsRadius..nmsRadius) {
                     val sampleY = y + offset
                     if (sampleY in 0 until inputHeight) {
                         maximum = maxOf(maximum, horizontalMaximum[sampleY * inputWidth + x])
@@ -89,18 +93,18 @@ object FeatureMapDecoder {
         val normalizedDescriptors = descriptorMap.copyOf()
         for (cell in 0 until cellCount) {
             var squaredNorm = 0.0
-            for (channel in 0 until DESCRIPTOR_CHANNELS) {
+            for (channel in 0 until descriptorChannels) {
                 val value = normalizedDescriptors[channel * cellCount + cell]
                 squaredNorm += value.toDouble() * value.toDouble()
             }
             val norm = sqrt(squaredNorm).toFloat()
             if (norm > 1e-12f && norm.isFinite()) {
                 val inverse = 1f / norm
-                for (channel in 0 until DESCRIPTOR_CHANNELS) {
+                for (channel in 0 until descriptorChannels) {
                     normalizedDescriptors[channel * cellCount + cell] *= inverse
                 }
             } else {
-                for (channel in 0 until DESCRIPTOR_CHANNELS) {
+                for (channel in 0 until descriptorChannels) {
                     normalizedDescriptors[channel * cellCount + cell] = 0f
                 }
             }
@@ -126,10 +130,10 @@ object FeatureMapDecoder {
                 if (x == 0 && y == 0) score = -1f
                 if (!score.isFinite() || score <= 0f) continue
 
-                val descriptor = FloatArray(DESCRIPTOR_CHANNELS)
+                val descriptor = FloatArray(descriptorChannels)
                 val gridX = x.toFloat() / (inputWidth - 1) * cellWidth - 0.5f
                 val gridY = y.toFloat() / (inputHeight - 1) * cellHeight - 0.5f
-                for (channel in 0 until DESCRIPTOR_CHANNELS) {
+                for (channel in 0 until descriptorChannels) {
                     descriptor[channel] = sampleChannelBicubic(
                         normalizedDescriptors, channel, cellCount, cellWidth, cellHeight,
                         gridX, gridY
@@ -208,7 +212,6 @@ object FeatureMapDecoder {
         }
     }
 
-    private const val DESCRIPTOR_CHANNELS = 64
     private const val KEYPOINT_CHANNELS = 65
     private const val NMS_RADIUS = 2
 }
