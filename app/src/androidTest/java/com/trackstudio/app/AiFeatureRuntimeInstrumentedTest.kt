@@ -5,6 +5,7 @@ import androidx.test.platform.app.InstrumentationRegistry
 import com.trackstudio.ai.OnnxFeatureDetector
 import com.trackstudio.ai.OnnxFeatureMatcher
 import com.trackstudio.ai.TrackingFrame
+import com.trackstudio.app.tracking.OpenCvRuntime
 import org.junit.Assert.assertArrayEquals
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
@@ -21,6 +22,8 @@ class AiFeatureRuntimeInstrumentedTest {
 
     @Test
     fun opencvFloatMatrixTransfersReportByteCountsAndPreserveValues() {
+        assertTrue("The native image runtime could not be initialized.", OpenCvRuntime.ensureLoaded())
+
         val values = FloatArray(2 * 64) { index -> (index - 31).toFloat() / 17f }
         val matrix = Mat(2, 64, CvType.CV_32F)
         try {
