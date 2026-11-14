@@ -97,4 +97,18 @@ class FeatureMapDecoderTest {
         assertEquals(0f, descriptor.filterIndexed { index, _ -> index != 7 }.sum(), 1e-5f)
     }
 
+    @Test(expected = IllegalArgumentException::class)
+    fun rejectsInvalidDescriptorWidth() {
+        FeatureMapDecoder.decode(
+            frameIndex = 0,
+            inputWidth = 8,
+            inputHeight = 8,
+            descriptorMap = FloatArray(64),
+            keypointLogits = FloatArray(65),
+            reliabilityMap = floatArrayOf(1f),
+            maximumFeatures = 1,
+            descriptorChannels = 0
+        )
+    }
+
 }
