@@ -5,8 +5,12 @@ import androidx.test.platform.app.InstrumentationRegistry
 import com.trackstudio.ai.OnnxFeatureDetector
 import com.trackstudio.ai.OnnxFeatureMatcher
 import com.trackstudio.ai.TrackingFrame
+import org.junit.Assert.assertArrayEquals
+import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
+import org.opencv.core.CvType
+import org.opencv.core.Mat
 import org.junit.Test
 import org.junit.runner.RunWith
 import kotlin.math.abs
@@ -14,6 +18,22 @@ import kotlin.random.Random
 
 @RunWith(AndroidJUnit4::class)
 class AiFeatureRuntimeInstrumentedTest {
+
+    @Test
+    fun opencvFloatMatrixTransfersReportByteCountsAndPreserveValues() {
+        val values = FloatArray(2 * 64) { index -> (index - 31).toFloat() / 17f }
+        val matrix = Mat(2, 64, CvType.CV_32F)
+        try {
+            val expectedBytes = values.size * Float.SIZE_BYTES
+            assertEquals(expectedBytes, matrix.put(0, 0, values))
+
+            val restored = FloatArray(values.size)
+            assertEquals(expectedBytes, matrix.get(0, 0, restored))
+            assertArrayEquals(values, restored, 0f)
+        } finally {
+            matrix.release()
+        }
+    }
 
     @Test
     fun packagedModelsMatchTranslatedFramesAndRestoreSourceCoordinates() {

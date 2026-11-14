@@ -134,8 +134,11 @@ private class AiFeatureFrameAdapter(
             }
             val descriptors = Mat(observations.size, descriptorSize, CvType.CV_32F)
             try {
-                check(descriptors.put(0, 0, descriptorValues) == descriptorValues.size) {
-                    "Unable to pack learned feature descriptors."
+                val expectedTransferBytes = descriptorValues.size * Float.SIZE_BYTES
+                val writtenBytes = descriptors.put(0, 0, descriptorValues)
+                check(writtenBytes == expectedTransferBytes) {
+                    "Unable to pack learned feature descriptors: wrote $writtenBytes of " +
+                        "$expectedTransferBytes expected bytes (${descriptorValues.size} float values)."
                 }
                 val keypoints = Array(observations.size) { index ->
                     val observation = observations[index]
@@ -169,8 +172,14 @@ private class AiFeatureFrameAdapter(
         require(descriptorSize > 0 && second.descriptors.cols() == descriptorSize)
         val firstDescriptors = FloatArray(first.keypoints.size * descriptorSize)
         val secondDescriptors = FloatArray(second.keypoints.size * descriptorSize)
-        check(first.descriptors.get(0, 0, firstDescriptors) == firstDescriptors.size)
-        check(second.descriptors.get(0, 0, secondDescriptors) == secondDescriptors.size)
+        val expectedFirstBytes = firstDescriptors.size * Float.SIZE_BYTES
+        val expectedSecondBytes = secondDescriptors.size * Float.SIZE_BYTES
+        check(first.descriptors.get(0, 0, firstDescriptors) == expectedFirstBytes) {
+            "Unable to read the first learned feature descriptor matrix."
+        }
+        check(second.descriptors.get(0, 0, secondDescriptors) == expectedSecondBytes) {
+            "Unable to read the second learned feature descriptor matrix."
+        }
 
         val firstCoordinates = FloatArray(first.keypoints.size * 2)
         val secondCoordinates = FloatArray(second.keypoints.size * 2)
