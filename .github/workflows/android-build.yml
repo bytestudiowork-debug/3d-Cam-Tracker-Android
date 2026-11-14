@@ -94,6 +94,13 @@ jobs:
       - name: Build debug APKs for emulator test
         run: ./gradlew :app:assembleDebug :app:assembleDebugAndroidTest --stacktrace --no-daemon
 
+      - name: Enable KVM for Android emulator
+        run: |
+          echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' | sudo tee /etc/udev/rules.d/99-kvm4all.rules
+          sudo udevadm control --reload-rules
+          sudo udevadm trigger --name-match=kvm
+          ls -l /dev/kvm
+
       - name: Run on-device AI inference smoke test
         uses: ReactiveCircus/android-emulator-runner@v2
         with:
@@ -101,15 +108,17 @@ jobs:
           target: google_apis
           arch: x86_64
           profile: pixel_2
-          cores: 4
+          cores: 2
           emulator-boot-timeout: 900
-          # Keep the virtual device within the hosted runner's memory budget;
-          # avoid overcommitting RAM, which can destabilize Android system_server.
-          emulator-options: -no-window -gpu swiftshader -no-snapshot -noaudio -no-boot-anim -wipe-data -memory 2048 -cores 4
-          disable-animations: true
-          # Let Gradle's connected test task manage APK installation and
-          # instrumentation rather than maintaining a second manual ADB path.
+          # Start the ADB server before the emulator registers its transport.
+          pre-emulator-launch-script: adb start-server
+          emulator-options: -no-window -gpu swiftshader_indirect -no-snapshot -noaudio -no-boot-anim -wipe-data -memory 2048
+          # Avoid the early input-service call; animation settings are not
+          # required for the inference smoke test.
+          disable-animations: false
+          # Wait for the emulator transport before invoking the connected test task.
           script: |
+            adb wait-for-device
             adb devices -l
             adb shell getprop sys.boot_completed
             ./gradlew :app:connectedDebugAndroidTest --stacktrace --no-daemon
