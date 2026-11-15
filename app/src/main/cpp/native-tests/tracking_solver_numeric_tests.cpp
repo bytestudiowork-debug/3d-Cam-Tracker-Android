@@ -1,5 +1,6 @@
 #include "camera_pose_refiner_core.h"
 #include "global_bundle_adjuster_core.h"
+#include "least_absolute_deviations_core.h"
 #include "optimization_robust_policy.h"
 #include "positioning_direction_residual.h"
 
@@ -72,6 +73,51 @@ double Distance3(const double* first, const double* second) {
     const double dy = first[1] - second[1];
     const double dz = first[2] - second[2];
     return std::sqrt(dx * dx + dy * dy + dz * dz);
+}
+
+void TestSparseLadReferenceRecoveryWithOutlier() {
+    Eigen::SparseMatrix<double> matrix(5, 2);
+    const std::vector<Eigen::Triplet<double>> entries = {
+            {0, 0, 1.0}, {1, 0, 1.0}, {2, 1, 1.0},
+            {3, 1, 1.0}, {4, 0, 1.0}, {4, 1, 1.0}};
+    matrix.setFromTriplets(entries.begin(), entries.end());
+
+    Eigen::VectorXd observations(5);
+    observations << 1.0, 10.0, 2.0, 2.0, 3.0;
+    Eigen::VectorXd solution = Eigen::VectorXd::Zero(2);
+    tracking::LeastAbsoluteDeviationsOptions options;
+    options.max_num_iterations = 1000;
+    options.absolute_tolerance = 1e-8;
+    options.relative_tolerance = 1e-8;
+
+    Require(tracking::SolveLeastAbsoluteDeviations(
+                    options, matrix, observations, &solution),
+            "sparse LAD solver rejected a well-conditioned reference system");
+    Require(std::abs(solution[0] - 1.0) < 1e-4 &&
+                    std::abs(solution[1] - 2.0) < 1e-4,
+            "sparse LAD solver failed the unique outlier-resistant reference solution");
+}
+
+void TestSparseLadReturnsFiniteLastIterateAtIterationLimit() {
+    Eigen::SparseMatrix<double> matrix(5, 2);
+    const std::vector<Eigen::Triplet<double>> entries = {
+            {0, 0, 1.0}, {1, 0, 1.0}, {2, 1, 1.0},
+            {3, 1, 1.0}, {4, 0, 1.0}, {4, 1, 1.0}};
+    matrix.setFromTriplets(entries.begin(), entries.end());
+    Eigen::VectorXd observations(5);
+    observations << 1.0, 10.0, 2.0, 2.0, 3.0;
+    Eigen::VectorXd solution = Eigen::VectorXd::Zero(2);
+    tracking::LeastAbsoluteDeviationsOptions options;
+    options.max_num_iterations = 1;
+    options.absolute_tolerance = 0.0;
+    options.relative_tolerance = 0.0;
+
+    Require(tracking::SolveLeastAbsoluteDeviations(
+                    options, matrix, observations, &solution),
+            "sparse LAD solver changed its finite-last-iterate contract");
+    Require(std::abs(solution[0] - 4.375) < 1e-12 &&
+                    std::abs(solution[1] - 0.875) < 1e-12,
+            "sparse LAD solver changed the first ADMM update at the iteration limit");
 }
 
 void TestPoseRefinement() {
@@ -485,6 +531,8 @@ void TestMalformedRotationIsRejected() {
 int main() {
     try {
         TestPairwiseDirectionResidualReferenceValues();
+        TestSparseLadReferenceRecoveryWithOutlier();
+        TestSparseLadReturnsFiniteLastIterateAtIterationLimit();
         TestGlobalHuberLossPolicy();
         TestPoseRefinement();
         TestBundleAdjustmentJointRecoveryOutliersAndGauge();

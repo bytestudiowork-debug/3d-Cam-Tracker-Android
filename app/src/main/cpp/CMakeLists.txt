@@ -79,7 +79,9 @@ target_compile_options(trackstudio_glomap PRIVATE -O3 -fno-fast-math)
 
 add_library(trackstudio_camera SHARED
         camera_pose_refiner.cpp
-        camera_pose_refiner_core.cpp)
+        camera_pose_refiner_core.cpp
+        least_absolute_deviations_core.cpp
+        native_l1_solver_jni.cpp)
 target_link_libraries(trackstudio_camera PRIVATE Ceres::ceres)
 target_compile_options(trackstudio_camera PRIVATE -O3 -fno-fast-math)
 

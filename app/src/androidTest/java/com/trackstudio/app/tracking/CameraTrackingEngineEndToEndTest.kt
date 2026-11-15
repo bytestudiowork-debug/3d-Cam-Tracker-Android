@@ -18,7 +18,38 @@ import kotlin.math.roundToInt
 @RunWith(AndroidJUnit4::class)
 class CameraTrackingEngineEndToEndTest {
     @Test
+    fun nativeSparseL1BridgePreservesFrameAndAxisLayout() {
+        assertTrue("Native sparse solver library is unavailable", NativeL1Solver.isAvailable)
+        NativeL1Solver.resetSuccessfulInvocationsForTest()
+
+        val actual = NativeL1Solver.solve(
+            frameCount = 3,
+            firstFrames = intArrayOf(0, 1, 0),
+            secondFrames = intArrayOf(1, 2, 2),
+            residuals = doubleArrayOf(
+                0.1, -0.2, 0.3,
+                -0.5, 0.7, -0.9,
+                -0.4, 0.5, -0.6
+            ),
+            maxIterations = 10
+        ) ?: throw AssertionError("Native sparse solver rejected the bridge fixture")
+        val expected = doubleArrayOf(
+            0.0, 0.0, 0.0,
+            0.1, -0.2, 0.3,
+            -0.4, 0.5, -0.6
+        )
+
+        assertEquals("native bridge output size", expected.size, actual.size)
+        expected.indices.forEach { index ->
+            assertEquals("native bridge value at $index", expected[index], actual[index], 1e-10)
+        }
+        assertTrue("Native sparse solver did not complete a call", NativeL1Solver.successfulInvocations > 0)
+    }
+
+    @Test
     fun cleanAndDisplacedOutlierSequencesRunThroughNativeSolveAndExport() {
+        assertTrue("Native sparse solver library is unavailable", NativeL1Solver.isAvailable)
+        NativeL1Solver.resetSuccessfulInvocationsForTest()
         val cleanFrames = SyntheticSequence.render()
         val cleanResult = try {
             solve(cleanFrames)
@@ -26,6 +57,10 @@ class CameraTrackingEngineEndToEndTest {
             cleanFrames.forEach(Mat::release)
         }
         assertSuccessfulGlobalResult(cleanResult, "clean", requireBundleAdjustmentApplied = true)
+        assertTrue(
+            "Global rotation averaging did not invoke the native sparse solver",
+            NativeL1Solver.successfulInvocations > 0
+        )
 
         val cleanJson = StringBuilder().also { CameraSolveExporter.writeJson(cleanResult, it) }.toString()
         val cleanRoot = JSONObject(cleanJson)

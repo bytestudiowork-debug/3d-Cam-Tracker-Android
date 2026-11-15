@@ -234,11 +234,47 @@ internal object GlobalRotationAverager {
     }
 
     /**
-     * ADMM solution of the COLMAP/GLOMAP least-absolute-deviation subproblem
+     * ADMM solution of the sparse least-absolute-deviation subproblem
      * min_x ||A x - b||_1 for the anchored view-graph incidence matrix.
-     * The x-update solves (A^T A)x=A^T(b+z-u) with the sparse graph Laplacian.
+     * Android uses the Eigen sparse Cholesky implementation; host JVM tests use
+     * the bounded Kotlin fallback because Android JNI libraries are unavailable.
      */
     private fun solveL1Admm(
+        count: Int, index: Map<Int, Int>, edges: List<Edge>,
+        residuals: List<DoubleArray>, maxIterations: Int
+    ): Array<DoubleArray>? {
+        if (NativeL1Solver.isAvailable) {
+            val outputSize = count.toLong() * 3L
+            if (count < 2 || edges.isEmpty() || edges.size != residuals.size ||
+                outputSize > Int.MAX_VALUE || edges.size.toLong() * 3L > Int.MAX_VALUE
+            ) return null
+
+            val firstFrames = IntArray(edges.size)
+            val secondFrames = IntArray(edges.size)
+            val packedResiduals = DoubleArray(edges.size * 3)
+            edges.forEachIndexed { edgeIndex, edge ->
+                firstFrames[edgeIndex] = index[edge.firstFrame] ?: return null
+                secondFrames[edgeIndex] = index[edge.secondFrame] ?: return null
+                for (axis in 0..2) {
+                    val value = residuals[edgeIndex].getOrNull(axis) ?: return null
+                    if (!value.isFinite()) return null
+                    packedResiduals[edgeIndex * 3 + axis] = value
+                }
+            }
+            val packedDeltas = NativeL1Solver.solve(
+                count, firstFrames, secondFrames, packedResiduals, maxIterations.coerceAtLeast(1)
+            ) ?: return null
+            if (packedDeltas.size != outputSize.toInt() || packedDeltas.any { !it.isFinite() }) {
+                return null
+            }
+            return Array(count) { frame ->
+                doubleArrayOf(packedDeltas[frame * 3], packedDeltas[frame * 3 + 1], packedDeltas[frame * 3 + 2])
+            }
+        }
+        return solveL1AdmmKotlinFallback(count, index, edges, residuals, maxIterations)
+    }
+
+    private fun solveL1AdmmKotlinFallback(
         count: Int, index: Map<Int, Int>, edges: List<Edge>,
         residuals: List<DoubleArray>, maxIterations: Int
     ): Array<DoubleArray>? {
