@@ -276,15 +276,16 @@ internal object OpenCvInitialPairEvaluator {
     ): Double {
         val fx = cameraMatrix.get(0, 0)[0]
         val fy = cameraMatrix.get(1, 1)[0]
+        val skew = cameraMatrix.get(0, 1)[0]
         val cx = cameraMatrix.get(0, 2)[0]
         val cy = cameraMatrix.get(1, 2)[0]
         if (kotlin.math.abs(fx) < 1e-12 || kotlin.math.abs(fy) < 1e-12) return 0.0
+        val intrinsics = PinholeIntrinsics(fx, fy, skew, cx, cy)
 
         fun normalize(point: org.opencv.core.Point): DoubleArray {
-            val x = (point.x - cx) / fx
-            val y = (point.y - cy) / fy
-            val n = sqrt(x * x + y * y + 1.0)
-            return doubleArrayOf(x / n, y / n, 1.0 / n)
+            val ray = CameraProjectionMath.pixelToNormalized(point.x, point.y, intrinsics)
+            val n = sqrt(ray[0] * ray[0] + ray[1] * ray[1] + 1.0)
+            return doubleArrayOf(ray[0] / n, ray[1] / n, 1.0 / n)
         }
 
         val a = normalize(first)

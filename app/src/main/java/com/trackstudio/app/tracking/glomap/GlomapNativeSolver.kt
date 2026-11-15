@@ -23,7 +23,7 @@ internal class GlomapNativeSolver {
         frameCentersById: Map<Int, DoubleArray>,
         pointsByTrackId: Map<Int, DoubleArray>,
         maxIterations: Int = 100,
-        numThreads: Int = Runtime.getRuntime().availableProcessors().coerceAtLeast(1),
+        numThreads: Int = Runtime.getRuntime().availableProcessors().coerceIn(1, 4),
         onIteration: (Int, Int) -> Unit = { _, _ -> }
     ): Result? {
         require(maxIterations > 0 && numThreads > 0)

@@ -42,7 +42,12 @@ internal object CameraSolveExporter {
         line("    \"globalPositioningFinalCost\": ${jsonNumber(result.globalPositioningFinalCost)},")
         line("    \"globalPositioningIterations\": ${result.globalPositioningIterations},")
         line("    \"globalPositioningStatus\": ${jsonString(result.globalPositioningStatus)},")
-        line("    \"initialPairFrames\": ${result.initialPairFrames?.let { "[${it.first}, ${it.second}]" } ?: "null"}")
+        line("    \"globalBundleAdjustmentApplied\": ${result.globalBundleAdjustmentApplied},")
+        line("    \"globalBundleAdjustmentInitialCost\": ${jsonNumber(result.globalBundleAdjustmentInitialCost)},")
+        line("    \"globalBundleAdjustmentFinalCost\": ${jsonNumber(result.globalBundleAdjustmentFinalCost)},")
+        line("    \"globalBundleAdjustmentIterations\": ${result.globalBundleAdjustmentIterations},")
+        line("    \"globalBundleAdjustmentStatus\": ${jsonString(result.globalBundleAdjustmentStatus)},")
+        line("    \"initialPairFrames\": ${result.initialPairFrames?.let { \"[${it.first}, ${it.second}]\" } ?: \"null\"}")
         line("  },")
         line("  \"cameraPoses\": [")
         poses.forEachIndexed { index, pose ->

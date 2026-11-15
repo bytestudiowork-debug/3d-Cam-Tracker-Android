@@ -30,9 +30,13 @@ internal object MobileBundleAdjuster {
         if (landmarks.isEmpty() || cameraMatrix.empty()) return landmarks
         val fx = cameraMatrix.get(0, 0)?.firstOrNull() ?: return landmarks
         val fy = cameraMatrix.get(1, 1)?.firstOrNull() ?: return landmarks
+        val skew = cameraMatrix.get(0, 1)?.firstOrNull() ?: return landmarks
         val cx = cameraMatrix.get(0, 2)?.firstOrNull() ?: return landmarks
         val cy = cameraMatrix.get(1, 2)?.firstOrNull() ?: return landmarks
-        if (!fx.isFinite() || !fy.isFinite() || fx <= 0.0 || fy <= 0.0) return landmarks
+        if (!fx.isFinite() || !fy.isFinite() || !skew.isFinite() ||
+            !cx.isFinite() || !cy.isFinite() || fx <= 0.0 || fy <= 0.0
+        ) return landmarks
+        val intrinsics = PinholeIntrinsics(fx, fy, skew, cx, cy)
 
         val poseByFrame = poses.asSequence()
             .filter { it.status != CameraPoseStatus.HELD_LAST_VALID &&
@@ -60,7 +64,7 @@ internal object MobileBundleAdjuster {
             )
             if (point.any { !it.isFinite() }) return@mapIndexed landmark
 
-            var currentCost = robustCost(point, observations, fx, fy, cx, cy)
+            var currentCost = robustCost(point, observations, intrinsics)
             if (!currentCost.isFinite()) return@mapIndexed landmark
 
             repeat(MAX_ITERATIONS) {
@@ -72,10 +76,9 @@ internal object MobileBundleAdjuster {
                     val camera = worldToCamera(point, pose) ?: continue
                     val z = camera[2]
                     if (z <= 1e-5) continue
-                    val predictedX = fx * camera[0] / z + cx
-                    val predictedY = fy * camera[1] / z + cy
-                    val residualX = observation.x - predictedX
-                    val residualY = observation.y - predictedY
+                    val projected = CameraProjectionMath.project(camera, intrinsics)
+                    val residualX = observation.x - projected[0]
+                    val residualY = observation.y - projected[1]
                     val error = hypot(residualX, residualY)
                     if (!error.isFinite() || error > MAX_OBSERVATION_ERROR_PX) continue
                     val weight = if (error <= HUBER_DELTA_PX || error < 1e-9) {
@@ -84,12 +87,7 @@ internal object MobileBundleAdjuster {
                         HUBER_DELTA_PX / error
                     }
 
-                    val invZ = 1.0 / z
-                    val invZ2 = invZ * invZ
-                    val jCamera = arrayOf(
-                        doubleArrayOf(fx * invZ, 0.0, -fx * camera[0] * invZ2),
-                        doubleArrayOf(0.0, fy * invZ, -fy * camera[1] * invZ2)
-                    )
+                    val jCamera = CameraProjectionMath.jacobian(camera, intrinsics)
                     val jWorld = Array(2) { DoubleArray(3) }
                     for (row in 0..1) {
                         for (col in 0..2) {
@@ -120,7 +118,7 @@ internal object MobileBundleAdjuster {
                 if (!magnitude.isFinite() || magnitude < 1e-8) return@repeat
                 val scale = if (magnitude > 1.0) 1.0 / magnitude else 1.0
                 val candidate = DoubleArray(3) { point[it] + delta[it] * scale }
-                val candidateCost = robustCost(candidate, observations, fx, fy, cx, cy)
+                val candidateCost = robustCost(candidate, observations, intrinsics)
                 if (candidateCost.isFinite() && candidateCost < currentCost) {
                     point = candidate
                     currentCost = candidateCost
@@ -132,9 +130,9 @@ internal object MobileBundleAdjuster {
             val finalErrors = observations.mapNotNull { (observation, pose) ->
                 val camera = worldToCamera(point, pose) ?: return@mapNotNull null
                 if (camera[2] <= 1e-5) return@mapNotNull null
-                val dx = fx * camera[0] / camera[2] + cx - observation.x
-                val dy = fy * camera[1] / camera[2] + cy - observation.y
-                hypot(dx, dy).takeIf { it.isFinite() && it <= MAX_OBSERVATION_ERROR_PX }
+                val projected = CameraProjectionMath.project(camera, intrinsics)
+                hypot(projected[0] - observation.x, projected[1] - observation.y)
+                    .takeIf { it.isFinite() && it <= MAX_OBSERVATION_ERROR_PX }
             }
             if (finalErrors.size < 2) landmark else landmark.copy(
                 position = Point3(point[0], point[1], point[2]),
@@ -147,19 +145,15 @@ internal object MobileBundleAdjuster {
     private fun robustCost(
         point: DoubleArray,
         observations: List<Pair<CameraFeatureObservation, CameraPose>>,
-        fx: Double,
-        fy: Double,
-        cx: Double,
-        cy: Double
+        intrinsics: PinholeIntrinsics
     ): Double {
         var cost = 0.0
         var count = 0
         for ((observation, pose) in observations) {
             val camera = worldToCamera(point, pose) ?: continue
             if (camera[2] <= 1e-5) continue
-            val dx = fx * camera[0] / camera[2] + cx - observation.x
-            val dy = fy * camera[1] / camera[2] + cy - observation.y
-            val error = hypot(dx, dy)
+            val projected = CameraProjectionMath.project(camera, intrinsics)
+            val error = hypot(projected[0] - observation.x, projected[1] - observation.y)
             if (!error.isFinite() || error > MAX_OBSERVATION_ERROR_PX) continue
             cost += if (error <= HUBER_DELTA_PX) {
                 0.5 * error * error

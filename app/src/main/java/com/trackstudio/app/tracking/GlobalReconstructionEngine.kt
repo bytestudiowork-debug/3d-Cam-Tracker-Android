@@ -46,6 +46,11 @@ class GlobalReconstructionEngine(
     private val ratioThreshold: Float = 0.78f,
     private val maximumPairCount: Int = 420
 ) : ReconstructionEngine {
+    init {
+        require(maxFeatures in 500..4000)
+        require(ratioThreshold.isFinite() && ratioThreshold > 0f && ratioThreshold < 1f)
+        require(maximumPairCount > 0)
+    }
 
     internal data class FrameFeatures(
         val keypoints: Array<KeyPoint>,
@@ -313,16 +318,23 @@ class GlobalReconstructionEngine(
                     totalFrames = frameCount
                 )
             )
-            val positionResult = GlomapNativeSolver().solve(
-                problem = positioningProblem,
-                frameCentersById = initializer.frameTranslationsById,
-                pointsByTrackId = initializer.pointsByTrack.mapNotNull { (id, point) ->
-                    point?.let { id to it }
-                }.toMap(),
-                maxIterations = 100,
-                numThreads = if (activeFrames.size >= 300) 2 else Runtime.getRuntime().availableProcessors().coerceIn(1, 4),
-                onIteration = { iteration, total -> publishProgress("Global position solve " + iteration + "/" + total, 0.78f + 0.10f * iteration.toFloat() / total.coerceAtLeast(1)) }
-            ) ?: throw IllegalStateException("The global camera-position and point solve did not converge to a usable solution.")
+            val positionResult = try {
+                GlomapNativeSolver().solve(
+                    problem = positioningProblem,
+                    frameCentersById = initializer.frameTranslationsById,
+                    pointsByTrackId = initializer.pointsByTrack.mapNotNull { (id, point) ->
+                        point?.let { id to it }
+                    }.toMap(),
+                    maxIterations = 100,
+                    numThreads = if (activeFrames.size >= 300) 2 else Runtime.getRuntime().availableProcessors().coerceIn(1, 4),
+                    onIteration = { iteration, total -> publishProgress("Global position solve " + iteration + "/" + total, 0.78f + 0.10f * iteration.toFloat() / total.coerceAtLeast(1)) }
+                )
+            } catch (failure: LinkageError) {
+                throw IllegalStateException("The Android global-positioning library could not be loaded.", failure)
+            } ?: throw IllegalStateException("The global camera-position and point solve did not converge to a usable solution.")
+            if (!SolverObjective.didNotIncrease(positionResult.initialCost, positionResult.finalCost)) {
+                throw IllegalStateException("The global camera-position solve increased its objective; no result was published.")
+            }
 
             onProgress(
                 CameraTrackingProgress(
@@ -334,20 +346,34 @@ class GlobalReconstructionEngine(
                     totalFrames = frameCount
                 )
             )
-            val bundleResult = GlomapGlobalBundleAdjuster().solve(
-                frameCentersById = positionResult.frameCentersById,
-                rotationsByFrame = rotations,
-                pointsByTrackId = positionResult.pointsByTrackId,
-                tracks = tracks,
-                cameraMatrix = cameraMatrix,
-                maxIterations = 45,
-                numThreads = if (activeFrames.size >= 300) 2 else Runtime.getRuntime().availableProcessors().coerceIn(1, 4),
-                onIteration = { iteration, total -> publishProgress("Global bundle adjustment " + iteration + "/" + total, 0.88f + 0.05f * iteration.toFloat() / total.coerceAtLeast(1)) }
-            ) ?: throw IllegalStateException("Global bundle adjustment could not produce a usable joint camera-and-point solution.")
+            val bundleCandidate = try {
+                GlomapGlobalBundleAdjuster().solve(
+                    frameCentersById = positionResult.frameCentersById,
+                    rotationsByFrame = rotations,
+                    pointsByTrackId = positionResult.pointsByTrackId,
+                    tracks = tracks,
+                    cameraMatrix = cameraMatrix,
+                    maxIterations = 45,
+                    numThreads = if (activeFrames.size >= 300) 2 else Runtime.getRuntime().availableProcessors().coerceIn(1, 4),
+                    onIteration = { iteration, total -> publishProgress("Global bundle adjustment " + iteration + "/" + total, 0.88f + 0.05f * iteration.toFloat() / total.coerceAtLeast(1)) }
+                )
+            } catch (_: LinkageError) {
+                null
+            }
+            val bundleResult = bundleCandidate?.takeIf {
+                SolverObjective.didNotIncrease(it.initialCost, it.finalCost)
+            }
+            val bundleStatus = when {
+                bundleCandidate == null -> "Unavailable; retained global-positioning result"
+                bundleResult == null -> "Objective increased; retained global-positioning result"
+                else -> "Applied"
+            }
+            val finalCenters = bundleResult?.frameCentersById ?: positionResult.frameCentersById
+            val finalPoints = bundleResult?.pointsByTrackId ?: positionResult.pointsByTrackId
 
             val poses = activeFrames.mapNotNull { frame ->
                 val rotation = rotations[frame] ?: return@mapNotNull null
-                val center = bundleResult.frameCentersById[frame] ?: return@mapNotNull null
+                val center = finalCenters[frame] ?: return@mapNotNull null
                 val translation = doubleArrayOf(
                     -(rotation[0] * center[0] + rotation[1] * center[1] + rotation[2] * center[2]),
                     -(rotation[3] * center[0] + rotation[4] * center[1] + rotation[5] * center[2]),
@@ -374,7 +400,7 @@ class GlobalReconstructionEngine(
             )
             val poseByFrame = poses.associateBy { it.frameIndex }
             val bundleLandmarks = tracks.mapNotNull trackLoop@ { track ->
-                val point = bundleResult.pointsByTrackId[track.id] ?: return@trackLoop null
+                val point = finalPoints[track.id] ?: return@trackLoop null
                 val errors = track.observations.mapNotNull observationLoop@ { observation ->
                     val pose = poseByFrame[observation.frameIndex] ?: return@observationLoop null
                     reprojectionError(cameraMatrix, pose, point, observation)
@@ -421,19 +447,20 @@ class GlobalReconstructionEngine(
                 }
             }
             val frameMatchedCounts = IntArray(frameCount)
-            verifiedPairs.forEach { pair ->
+            activePairs.forEach { pair ->
                 val inliers = pair.inlierMatches.size
                 frameMatchedCounts[pair.first] += inliers
                 frameMatchedCounts[pair.second] += inliers
             }
-            val diagnostics = activeFrames.map { frame ->
-                val featureCount = frames[frame]?.keypoints?.size ?: 0
+            val activeFrameSet = activeFrames.toSet()
+            val diagnostics = (0 until frameCount).map { frame ->
                 FrameTrackingDiagnostic(
                     frameIndex = frame,
-                    detectedFeatures = featureCount,
+                    detectedFeatures = frames[frame]?.keypoints?.size ?: 0,
                     matchedFeatures = frameMatchedCounts[frame],
                     inlierFeatures = frameTrackCounts[frame],
-                    status = "Global reconstruction registered"
+                    status = if (frame in activeFrameSet) "Global reconstruction registered"
+                    else "Unregistered: outside the solved view-graph component"
                 )
             }
             val averageInlierRatio = verifiedPairs.map {
@@ -470,10 +497,15 @@ class GlobalReconstructionEngine(
                 viewGraphAcceptedEdgeCount = rotationPass.acceptedEdges.size,
                 globalRotationIterations = firstRotationPass.iterations + rotationPass.iterations,
                 globalPositioningApplied = true,
-                globalPositioningInitialCost = bundleResult.initialCost,
-                globalPositioningFinalCost = bundleResult.finalCost,
-                globalPositioningIterations = positionResult.iterations + bundleResult.iterations,
-                globalPositioningStatus = "Global positioning and bundle adjustment completed"
+                globalPositioningInitialCost = positionResult.initialCost,
+                globalPositioningFinalCost = positionResult.finalCost,
+                globalPositioningIterations = positionResult.iterations,
+                globalPositioningStatus = "Global camera positions and points solved",
+                globalBundleAdjustmentApplied = bundleResult != null,
+                globalBundleAdjustmentInitialCost = bundleCandidate?.initialCost ?: Double.NaN,
+                globalBundleAdjustmentFinalCost = bundleCandidate?.finalCost ?: Double.NaN,
+                globalBundleAdjustmentIterations = bundleCandidate?.iterations ?: 0,
+                globalBundleAdjustmentStatus = bundleStatus
             )
         } finally {
             frames.filterNotNull().forEach { it.descriptors.release() }

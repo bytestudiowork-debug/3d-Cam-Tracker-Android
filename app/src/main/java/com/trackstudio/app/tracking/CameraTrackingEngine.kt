@@ -15,6 +15,11 @@ class CameraTrackingEngine(
     private val maxFeatures: Int = 1800,
     private val ratioThreshold: Float = 0.78f
 ) : ReconstructionEngine {
+    init {
+        require(maxFeatures in 400..5000)
+        require(ratioThreshold.isFinite() && ratioThreshold > 0f && ratioThreshold < 1f)
+    }
+
     override suspend fun solve(
         frameCount: Int,
         cameraMatrix: Mat,
@@ -95,5 +100,10 @@ data class CameraTrackingResult(
     val globalPositioningInitialCost: Double = Double.NaN,
     val globalPositioningFinalCost: Double = Double.NaN,
     val globalPositioningIterations: Int = 0,
-    val globalPositioningStatus: String = "Not run"
+    val globalPositioningStatus: String = "Not run",
+    val globalBundleAdjustmentApplied: Boolean = false,
+    val globalBundleAdjustmentInitialCost: Double = Double.NaN,
+    val globalBundleAdjustmentFinalCost: Double = Double.NaN,
+    val globalBundleAdjustmentIterations: Int = 0,
+    val globalBundleAdjustmentStatus: String = "Not run"
 )

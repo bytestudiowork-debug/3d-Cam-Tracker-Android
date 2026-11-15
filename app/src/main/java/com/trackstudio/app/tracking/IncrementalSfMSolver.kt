@@ -786,7 +786,7 @@ internal class IncrementalSfMSolver(
                             frameCentersById = initialCameraCenters,
                             pointsByTrackId = initialPointsByTrack,
                             maxIterations = 100,
-                            numThreads = Runtime.getRuntime().availableProcessors().coerceAtLeast(1)
+                            numThreads = Runtime.getRuntime().availableProcessors().coerceIn(1, 4)
                         )
                         if (solution == null) {
                             globalPositioningStatus = "Ceres did not return a usable solution"
