@@ -10,3 +10,4 @@
 }
 -keep class com.trackstudio.app.tracking.glomap.GlomapNativeSolver { *; }
 -keep class com.trackstudio.app.tracking.CameraPoseRefiner { *; }
+-keep class com.trackstudio.app.tracking.NativeSiftOutput { *; }

@@ -83,6 +83,9 @@ jobs:
           cmake --build build/native-tests --parallel 2
           ctest --test-dir build/native-tests --output-on-failure
 
+      - name: Print native feature reference signature
+        run: build/native-tests/camera_sift_reference_tests --dump
+
       - name: Run tracking engine unit tests
         run: ./gradlew testReleaseUnitTest --stacktrace --no-daemon
 

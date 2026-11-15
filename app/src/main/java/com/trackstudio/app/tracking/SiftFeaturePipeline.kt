@@ -5,25 +5,14 @@ import org.opencv.core.CvType
 import org.opencv.core.Mat
 import org.opencv.core.MatOfDMatch
 import org.opencv.core.MatOfKeyPoint
-import org.opencv.core.Size
 import org.opencv.features2d.BFMatcher
-import org.opencv.features2d.SIFT
-import org.opencv.imgproc.Imgproc
+import org.opencv.core.KeyPoint
+import kotlin.math.floor
 import kotlin.math.sqrt
 
-internal class AndroidSiftFeatureExtractor(maxFeatures: Int) {
-    private val sift: SIFT
-
+internal class AndroidSiftFeatureExtractor(private val maxFeatures: Int) {
     init {
         require(maxFeatures > 0)
-        sift = SIFT.create(
-            maxFeatures,
-            3,
-            0.02,
-            10.0,
-            1.6,
-            CvType.CV_32F
-        )
     }
 
     fun detectAndCompute(
@@ -32,46 +21,84 @@ internal class AndroidSiftFeatureExtractor(maxFeatures: Int) {
         keypoints: MatOfKeyPoint,
         descriptors: Mat
     ) {
-        require(!image.empty() && image.channels() == 1)
-        val doubledImage = Mat()
-        val doubledMask = Mat()
-        val detectedKeypoints = MatOfKeyPoint()
-        try {
-            Imgproc.resize(
-                image,
-                doubledImage,
-                Size(image.cols() * 2.0, image.rows() * 2.0),
-                0.0,
-                0.0,
-                Imgproc.INTER_LINEAR
+        require(!image.empty() && image.type() == CvType.CV_8UC1)
+        val pixelCount = image.rows().toLong() * image.cols().toLong()
+        require(pixelCount in 1..MAX_IMAGE_PIXELS) {
+            "The grayscale image exceeds the native feature-extraction limit."
+        }
+        val grayscale = ByteArray(pixelCount.toInt())
+        require(image.get(0, 0, grayscale) == grayscale.size) {
+            "Could not read the grayscale image pixels."
+        }
+
+        val maskPixels = if (mask.empty()) {
+            null
+        } else {
+            require(mask.type() == CvType.CV_8UC1 &&
+                mask.rows() == image.rows() && mask.cols() == image.cols()
+            ) { "The feature mask must be an 8-bit single-channel image of equal dimensions." }
+            ByteArray(grayscale.size).also { pixels ->
+                require(mask.get(0, 0, pixels) == pixels.size) {
+                    "Could not read the feature mask pixels."
+                }
+            }
+        }
+
+        val output = NativeSiftExtractor.extract(
+            grayscale, image.cols(), image.rows(), maxFeatures
+        ) ?: throw IllegalStateException("The native feature extractor could not be loaded or run.")
+        require(output.keypointData.size % KEYPOINT_STRIDE == 0)
+        val nativeFeatureCount = output.keypointData.size / KEYPOINT_STRIDE
+        require(output.descriptorData.size.toLong() ==
+            nativeFeatureCount.toLong() * DESCRIPTOR_LENGTH
+        ) { "The native feature extractor returned inconsistent arrays." }
+
+        val selectedKeypoints = ArrayList<KeyPoint>(nativeFeatureCount)
+        val selectedDescriptors = ArrayList<ByteArray>(nativeFeatureCount)
+        for (index in 0 until nativeFeatureCount) {
+            val offset = index * KEYPOINT_STRIDE
+            val x = output.keypointData[offset]
+            val y = output.keypointData[offset + 1]
+            if (maskPixels != null) {
+                val pixelX = floor(x.toDouble()).toInt().coerceIn(0, image.cols() - 1)
+                val pixelY = floor(y.toDouble()).toInt().coerceIn(0, image.rows() - 1)
+                if ((maskPixels[pixelY * image.cols() + pixelX].toInt() and 0xff) == 0) {
+                    continue
+                }
+            }
+            val scale = output.keypointData[offset + 2]
+            val angleDegrees = Math.toDegrees(
+                output.keypointData[offset + 3].toDouble()
+            ).toFloat()
+            selectedKeypoints += KeyPoint(x, y, 2.0f * scale, angleDegrees, 0.0f, 0, -1)
+            selectedDescriptors += output.descriptorData.copyOfRange(
+                index * DESCRIPTOR_LENGTH,
+                (index + 1) * DESCRIPTOR_LENGTH
             )
-            if (!mask.empty()) {
-                Imgproc.resize(
-                    mask,
-                    doubledMask,
-                    doubledImage.size(),
-                    0.0,
-                    0.0,
-                    Imgproc.INTER_NEAREST
-                )
+        }
+
+        keypoints.release()
+        keypoints.fromArray(*selectedKeypoints.toTypedArray())
+        descriptors.release()
+        if (selectedDescriptors.isNotEmpty()) {
+            descriptors.create(selectedDescriptors.size, DESCRIPTOR_LENGTH, CvType.CV_8UC1)
+            val flattened = ByteArray(selectedDescriptors.size * DESCRIPTOR_LENGTH)
+            selectedDescriptors.forEachIndexed { index, row ->
+                System.arraycopy(row, 0, flattened, index * DESCRIPTOR_LENGTH, DESCRIPTOR_LENGTH)
             }
-            sift.detectAndCompute(doubledImage, doubledMask, detectedKeypoints, descriptors)
-            val originalScaleKeypoints = detectedKeypoints.toArray()
-            for (keypoint in originalScaleKeypoints) {
-                keypoint.pt.x *= 0.5
-                keypoint.pt.y *= 0.5
-                keypoint.size *= 0.5f
+            check(descriptors.put(0, 0, flattened) == flattened.size) {
+                "Could not write the native descriptors into the OpenCV matrix."
             }
-            keypoints.fromArray(*originalScaleKeypoints)
-            RootSiftDescriptorMath.normalizeAndQuantizeInPlace(descriptors)
-        } finally {
-            doubledImage.release()
-            doubledMask.release()
-            detectedKeypoints.release()
         }
     }
 
-    fun clear() = sift.clear()
+    fun clear() = NativeSiftExtractor.clear()
+
+    private companion object {
+        const val KEYPOINT_STRIDE = 4
+        const val DESCRIPTOR_LENGTH = 128
+        const val MAX_IMAGE_PIXELS = 32L * 1024L * 1024L
+    }
 }
 
 internal object RootSiftDescriptorMath {
@@ -157,17 +184,22 @@ internal object SiftMatchPolicy {
         val maximumDistanceInDescriptorUnits = maxDistance * RootSiftDescriptorMath.DESCRIPTOR_NORM
         for (row in rows) {
             val candidates = row.asSequence()
-                .filter { it.queryIndex >= 0 && it.trainIndex >= 0 && it.distance.isFinite() && it.distance >= 0.0 }
-                .sortedBy { it.distance }
+                .filter {
+                    it.queryIndex >= 0 && it.trainIndex >= 0 &&
+                        it.distance.isFinite() && it.distance >= 0.0
+                }
+                .sortedWith(compareBy<RankedDescriptorMatch> { it.distance }.thenBy { it.trainIndex })
                 .take(2)
                 .toList()
-            if (candidates.size < 2) continue
+            if (candidates.isEmpty()) continue
             val best = candidates[0]
-            val secondBest = candidates[1]
+            val secondBestDistance = candidates.getOrNull(1)?.distance ?: Double.MAX_VALUE
             if (best.distance > maximumDistanceInDescriptorUnits) continue
-            if (best.distance >= maxRatio * secondBest.distance) continue
+            if (best.distance >= maxRatio * secondBestDistance) continue
             val previous = accepted[best.queryIndex]
-            if (previous == null || best.distance < previous.distance) {
+            if (previous == null || best.distance < previous.distance ||
+                (best.distance == previous.distance && best.trainIndex < previous.trainIndex)
+            ) {
                 accepted[best.queryIndex] = best
             }
         }

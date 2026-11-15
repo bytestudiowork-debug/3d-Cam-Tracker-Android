@@ -1,5 +1,8 @@
 cmake_minimum_required(VERSION 3.22.1)
-project("trackstudio_native")
+project("trackstudio_native" LANGUAGES C CXX)
+
+set(CMAKE_C_STANDARD 99)
+set(CMAKE_C_STANDARD_REQUIRED ON)
 
 include(FetchContent)
 
@@ -81,8 +84,28 @@ add_library(trackstudio_camera SHARED
         camera_pose_refiner.cpp
         camera_pose_refiner_core.cpp
         least_absolute_deviations_core.cpp
-        native_l1_solver_jni.cpp)
-target_link_libraries(trackstudio_camera PRIVATE Ceres::ceres)
+        native_l1_solver_jni.cpp
+        native_sift_extractor_jni.cpp
+        sift_feature_core.cpp
+        sift_core/sift.c
+        sift_core/imopv.c
+        sift_core/mathop.c
+        sift_core/generic.c
+        sift_core/host.c
+        sift_core/random.c)
+set(SIFT_PORTABLE_C_SOURCES
+        sift_core/sift.c
+        sift_core/imopv.c
+        sift_core/mathop.c
+        sift_core/generic.c
+        sift_core/host.c
+        sift_core/random.c)
+set_source_files_properties(${SIFT_PORTABLE_C_SOURCES} PROPERTIES
+        COMPILE_DEFINITIONS "VL_DISABLE_SSE2;VL_DISABLE_AVX;VL_DISABLE_OPENMP;VL_DISABLE_THREADS"
+        COMPILE_OPTIONS "-ffp-contract=off")
+set_source_files_properties(sift_feature_core.cpp PROPERTIES
+        COMPILE_OPTIONS "-ffp-contract=off")
+target_link_libraries(trackstudio_camera PRIVATE Ceres::ceres m)
 target_compile_options(trackstudio_camera PRIVATE -O3 -fno-fast-math)
 
 add_library(trackstudio_native SHARED proxy_engine.cpp)

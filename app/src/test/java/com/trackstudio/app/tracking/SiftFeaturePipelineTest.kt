@@ -48,6 +48,16 @@ class SiftFeaturePipelineTest {
     }
 
     @Test
+    fun acceptsReciprocalSingletonRowsWithoutASecondNeighbor() {
+        val onlyCandidate = listOf(RankedDescriptorMatch(0, 0, 100.0))
+
+        assertEquals(
+            listOf(0 to 0),
+            SiftMatchPolicy.selectMutualMatches(listOf(onlyCandidate), listOf(onlyCandidate))
+        )
+    }
+
+    @Test
     fun appliesMaximumDescriptorDistanceAtThe512ScaleBoundary() {
         val maximumDistance = SiftMatchPolicy.DEFAULT_MAX_DISTANCE *
             RootSiftDescriptorMath.DESCRIPTOR_NORM
@@ -94,6 +104,23 @@ class SiftFeaturePipelineTest {
         assertEquals(
             listOf(0 to 0, 1 to 1),
             SiftMatchPolicy.selectMutualMatches(forward, reverse, maximumMatches = 2)
+        )
+    }
+
+    @Test
+    fun duplicateQueryRowsWithEqualDistancesChooseTheLowerTrainIndex() {
+        val forward = listOf(
+            row(0, 1, 10.0, 2, 30.0),
+            row(0, 0, 10.0, 2, 30.0)
+        )
+        val reverse = listOf(
+            row(0, 0, 10.0, 1, 30.0),
+            row(1, 0, 10.0, 1, 30.0)
+        )
+
+        assertEquals(
+            listOf(0 to 0),
+            SiftMatchPolicy.selectMutualMatches(forward, reverse)
         )
     }
 
