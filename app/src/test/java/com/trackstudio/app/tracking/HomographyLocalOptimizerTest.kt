@@ -80,13 +80,18 @@ class HomographyLocalOptimizerTest {
     fun boundedLocalRefitRecoversTransformAndReclassifiesGrossOutlier() {
         val firstPoints = (0 until 8).map { index ->
             doubleArrayOf(13.0 * index, 7.0 * (index % 3))
-        }
+        }.toMutableList()
         val truth = translation(3.0, -2.0)
         val truthTransform = HomographyGeometryMath.fromMatrix(truth)!!
         val secondPoints = firstPoints.map { point ->
             HomographyGeometryMath.project(truthTransform, point[0], point[1])!!
         }.toMutableList()
-        secondPoints += doubleArrayOf(secondPoints.last()[0] + 25.0, secondPoints.last()[1] - 18.0)
+        val outlierSource = firstPoints.last().copyOf()
+        val expectedOutlier = HomographyGeometryMath.project(
+            truthTransform, outlierSource[0], outlierSource[1]
+        )!!
+        firstPoints += outlierSource
+        secondPoints += doubleArrayOf(expectedOutlier[0] + 25.0, expectedOutlier[1] - 18.0)
         val initialTransform = HomographyGeometryMath.fromMatrix(translation(3.6, -1.4))!!
 
         val result = LocalConsensusOptimizer.refine(
