@@ -18,11 +18,17 @@ internal object NativeL1Solver {
         firstFrames: IntArray,
         secondFrames: IntArray,
         residuals: DoubleArray,
+        anchorResidual: DoubleArray,
         maxIterations: Int
     ): DoubleArray? {
-        if (!isAvailable) return null
+        if (!isAvailable || frameCount < 2 || firstFrames.isEmpty() ||
+            firstFrames.size != secondFrames.size ||
+            residuals.size.toLong() != firstFrames.size.toLong() * 3L ||
+            anchorResidual.size != 3 || anchorResidual.any { !it.isFinite() } ||
+            residuals.any { !it.isFinite() } || maxIterations <= 0
+        ) return null
         val result = nativeSolve(
-            frameCount, firstFrames, secondFrames, residuals, maxIterations
+            frameCount, firstFrames, secondFrames, residuals, anchorResidual, maxIterations
         )
         if (result != null) successfulInvocations++
         return result
@@ -38,6 +44,7 @@ internal object NativeL1Solver {
         firstFrames: IntArray,
         secondFrames: IntArray,
         residuals: DoubleArray,
+        anchorResidual: DoubleArray,
         maxIterations: Int
     ): DoubleArray?
 }

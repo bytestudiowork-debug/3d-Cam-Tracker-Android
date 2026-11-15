@@ -120,6 +120,32 @@ void TestSparseLadReturnsFiniteLastIterateAtIterationLimit() {
             "sparse LAD solver changed the first ADMM update at the iteration limit");
 }
 
+void TestSparseLadExplicitAnchorRow() {
+    Eigen::SparseMatrix<double> matrix(4, 3);
+    const std::vector<Eigen::Triplet<double>> entries = {
+            {0, 0, -1.0}, {0, 1, 1.0},
+            {1, 1, -1.0}, {1, 2, 1.0},
+            {2, 0, -1.0}, {2, 2, 1.0},
+            {3, 0, 1.0}};
+    matrix.setFromTriplets(entries.begin(), entries.end());
+
+    Eigen::VectorXd observations(4);
+    observations << 0.1, -0.5, -0.4, 0.02;
+    Eigen::VectorXd solution = Eigen::VectorXd::Zero(3);
+    tracking::LeastAbsoluteDeviationsOptions options;
+    options.max_num_iterations = 1000;
+    options.absolute_tolerance = 1e-8;
+    options.relative_tolerance = 1e-8;
+
+    Require(tracking::SolveLeastAbsoluteDeviations(
+                    options, matrix, observations, &solution),
+            "sparse LAD solver rejected a full-column anchored incidence system");
+    Require(std::abs(solution[0] - 0.02) < 1e-8 &&
+                    std::abs(solution[1] - 0.12) < 1e-8 &&
+                    std::abs(solution[2] + 0.38) < 1e-8,
+            "sparse LAD solver failed the explicit anchor-row reference solution");
+}
+
 void TestPoseRefinement() {
     const std::vector<double> intrinsics = {800.0, 0.0, 640.0, 820.0, 360.0};
     const double truth[6] = {0.04, -0.06, 0.025, 0.15, -0.08, 0.3};
@@ -533,6 +559,7 @@ int main() {
         TestPairwiseDirectionResidualReferenceValues();
         TestSparseLadReferenceRecoveryWithOutlier();
         TestSparseLadReturnsFiniteLastIterateAtIterationLimit();
+        TestSparseLadExplicitAnchorRow();
         TestGlobalHuberLossPolicy();
         TestPoseRefinement();
         TestBundleAdjustmentJointRecoveryOutliersAndGauge();

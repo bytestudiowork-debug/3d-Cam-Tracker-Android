@@ -31,12 +31,13 @@ class CameraTrackingEngineEndToEndTest {
                 -0.5, 0.7, -0.9,
                 -0.4, 0.5, -0.6
             ),
-            maxIterations = 10
+            anchorResidual = doubleArrayOf(0.02, -0.03, 0.04),
+            maxIterations = 1000
         ) ?: throw AssertionError("Native sparse solver rejected the bridge fixture")
         val expected = doubleArrayOf(
-            0.0, 0.0, 0.0,
-            0.1, -0.2, 0.3,
-            -0.4, 0.5, -0.6
+            0.02, -0.03, 0.04,
+            0.12, -0.23, 0.34,
+            -0.38, 0.47, -0.56
         )
 
         assertEquals("native bridge output size", expected.size, actual.size)

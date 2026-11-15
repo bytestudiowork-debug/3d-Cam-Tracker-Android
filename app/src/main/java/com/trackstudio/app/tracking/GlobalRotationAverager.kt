@@ -65,11 +65,13 @@ internal object GlobalRotationAverager {
         }
         val root = activeFrames.first()
         val rotations = initializeMst(activeFrames, activeEdges, root) ?: return null
+        val fixedRotation = rotations.getValue(root).copyOf()
         var iterations = 0
 
         fun refine(edgesToUse: List<Edge>, initialL1: Boolean): Boolean {
             if (edgesToUse.isEmpty()) return false
             var residuals = computeResiduals(activeFrames, activeIndex, edgesToUse, rotations)
+            var gaugeResidual = anchorResidual(fixedRotation, rotations.getValue(root))
             val rounds = if (initialL1) l1Iterations else irlsIterations
             var admmInnerIterations = 10
             var lastStepNorm = 0.0
@@ -77,7 +79,10 @@ internal object GlobalRotationAverager {
             repeat(rounds.coerceAtLeast(0)) {
                 lastStepNorm = currentStepNorm
                 val deltas = if (initialL1) {
-                    solveL1Admm(activeFrames.size, activeIndex, edgesToUse, residuals, admmInnerIterations)
+                    solveL1Admm(
+                        activeFrames.size, activeIndex, edgesToUse, residuals,
+                        gaugeResidual, admmInnerIterations
+                    )
                         .also { admmInnerIterations = min(admmInnerIterations * 2, 100) }
                 } else {
                     val sigma = Math.toRadians(sigmaDegrees)
@@ -85,19 +90,22 @@ internal object GlobalRotationAverager {
                         val squared = norm3(residuals[e]).let { it * it }
                         gemanMcClureWeight(squared, sigma)
                     }
-                    solveTangentUpdates(activeFrames.size, activeIndex, edgesToUse, residuals, weights)
+                    solveTangentUpdates(
+                        activeFrames.size, activeIndex, edgesToUse, residuals,
+                        weights, gaugeResidual
+                    )
                 } ?: return false
                 currentStepNorm = sqrt(deltas.sumOf { dot(it, it) })
                 for (i in activeFrames.indices) {
-                    if (activeFrames[i] == root) continue
                     val d = deltas[i]
                     rotations[activeFrames[i]] = projectToRotation(multiply(
                         rotations.getValue(activeFrames[i]), expRotation(doubleArrayOf(-d[0], -d[1], -d[2]))
                     ))
                 }
                 iterations++
-                val averageStep = averageUpdateMagnitude(deltas, activeIndex.getValue(root))
+                val averageStep = averageUpdateMagnitude(deltas)
                 residuals = computeResiduals(activeFrames, activeIndex, edgesToUse, rotations)
+                gaugeResidual = anchorResidual(fixedRotation, rotations.getValue(root))
                 // Stop on the default L1 and IRLS step threshold (0.001), or
                 // on the additional L1 step-norm stagnation check (EPS=1e-12).
                 if (averageStep < 1e-3 ||
@@ -136,13 +144,11 @@ internal object GlobalRotationAverager {
         return sigmaSquared / (denominator * denominator)
     }
 
-    internal fun averageUpdateMagnitude(deltas: Array<DoubleArray>, fixedIndex: Int): Double {
-        if (deltas.isEmpty() || fixedIndex !in deltas.indices ||
+    internal fun averageUpdateMagnitude(deltas: Array<DoubleArray>): Double {
+        if (deltas.isEmpty() ||
             deltas.any { it.size != 3 || it.any { value -> !value.isFinite() } }
         ) return Double.NaN
-        return deltas.indices.asSequence()
-            .filter { it != fixedIndex }
-            .sumOf { norm3(deltas[it]) } / deltas.size
+        return deltas.sumOf { norm3(it) } / deltas.size
     }
 
     /**
@@ -192,46 +198,88 @@ internal object GlobalRotationAverager {
     }
 
     private fun initializeMst(frames: List<Int>, edges: List<Edge>, root: Int): MutableMap<Int, DoubleArray>? {
-        val adjacency = frames.associateWith { mutableListOf<Edge>() }
-        edges.forEach {
-            adjacency[it.firstFrame]?.add(it)
-            adjacency[it.secondFrame]?.add(it)
+        if (frames.size < 2) return null
+        val frameIndex = frames.withIndex().associate { it.value to it.index }
+        val rootIndex = frameIndex[root] ?: return null
+        val disjointSet = IntArray(frames.size) { it }
+        val componentSize = IntArray(frames.size) { 1 }
+
+        fun find(start: Int): Int {
+            var current = start
+            while (disjointSet[current] != current) {
+                disjointSet[current] = disjointSet[disjointSet[current]]
+                current = disjointSet[current]
+            }
+            return current
         }
-        val visited = mutableSetOf(root)
+
+        fun join(first: Int, second: Int): Boolean {
+            var firstRoot = find(first)
+            var secondRoot = find(second)
+            if (firstRoot == secondRoot) return false
+            if (componentSize[firstRoot] < componentSize[secondRoot] ||
+                (componentSize[firstRoot] == componentSize[secondRoot] && firstRoot > secondRoot)
+            ) {
+                val swap = firstRoot
+                firstRoot = secondRoot
+                secondRoot = swap
+            }
+            disjointSet[secondRoot] = firstRoot
+            componentSize[firstRoot] += componentSize[secondRoot]
+            return true
+        }
+
+        val tree = Array(frames.size) { mutableListOf<Pair<Int, Edge>>() }
+        var selectedEdges = 0
+        for (edge in edges.sortedWith(::compareEdges)) {
+            val first = frameIndex[edge.firstFrame] ?: return null
+            val second = frameIndex[edge.secondFrame] ?: return null
+            if (first == second) return null
+            if (join(first, second)) {
+                tree[first] += second to edge
+                tree[second] += first to edge
+                selectedEdges++
+                if (selectedEdges == frames.size - 1) break
+            }
+        }
+        if (selectedEdges != frames.size - 1) return null
+
+        val visited = BooleanArray(frames.size)
+        visited[rootIndex] = true
         val rotations = mutableMapOf(root to identity())
-        while (visited.size < frames.size) {
-            var best: Edge? = null
-            var from = -1
-            for (node in visited) for (edge in adjacency[node].orEmpty()) {
-                val other = if (edge.firstFrame == node) edge.secondFrame else edge.firstFrame
-                if (other !in visited && (best == null || edge.inlierCount > best!!.inlierCount ||
-                        (edge.inlierCount == best!!.inlierCount && compareEdges(edge, best!!) < 0))) {
-                    best = edge
-                    from = node
+        val queue = ArrayDeque<Int>()
+        queue.add(rootIndex)
+        while (queue.isNotEmpty()) {
+            val fromIndex = queue.removeFirst()
+            val fromFrame = frames[fromIndex]
+            for ((toIndex, edge) in tree[fromIndex].sortedBy { it.first }) {
+                if (visited[toIndex]) continue
+                val toFrame = frames[toIndex]
+                val relative = edge.relativeRotation
+                rotations[toFrame] = if (edge.firstFrame == fromFrame) {
+                    multiply(relative, rotations.getValue(fromFrame))
+                } else {
+                    multiply(transpose(relative), rotations.getValue(fromFrame))
                 }
+                visited[toIndex] = true
+                queue.add(toIndex)
             }
-            val edge = best ?: return null
-            val to = if (edge.firstFrame == from) edge.secondFrame else edge.firstFrame
-            val relative = edge.relativeRotation
-            rotations[to] = if (edge.firstFrame == from) {
-                multiply(relative, rotations.getValue(from))
-            } else {
-                multiply(transpose(relative), rotations.getValue(from))
-            }
-            visited.add(to)
         }
-        return rotations
+        return if (visited.all { it }) rotations else null
     }
 
     private fun computeResiduals(
         frames: List<Int>, index: Map<Int, Int>, edges: List<Edge>, rotations: Map<Int, DoubleArray>
     ): List<DoubleArray> = edges.map { relativeResidual(it, rotations) }
 
-    private fun relativeResidual(edge: Edge, rotations: Map<Int, DoubleArray>): DoubleArray {
+    internal fun relativeResidual(edge: Edge, rotations: Map<Int, DoubleArray>): DoubleArray {
         val r1 = rotations.getValue(edge.firstFrame)
         val r2 = rotations.getValue(edge.secondFrame)
         return scale(logRotation(multiply(transpose(r2), multiply(edge.relativeRotation, r1))), -1.0)
     }
+
+    internal fun anchorResidual(fixedRotation: DoubleArray, currentRotation: DoubleArray): DoubleArray =
+        logRotation(multiply(transpose(fixedRotation), currentRotation))
 
     /**
      * ADMM solution of the sparse least-absolute-deviation subproblem
@@ -239,14 +287,16 @@ internal object GlobalRotationAverager {
      * Android uses the Eigen sparse Cholesky implementation; host JVM tests use
      * the bounded Kotlin fallback because Android JNI libraries are unavailable.
      */
-    private fun solveL1Admm(
+    internal fun solveL1Admm(
         count: Int, index: Map<Int, Int>, edges: List<Edge>,
-        residuals: List<DoubleArray>, maxIterations: Int
+        residuals: List<DoubleArray>, anchorResidual: DoubleArray, maxIterations: Int
     ): Array<DoubleArray>? {
         if (NativeL1Solver.isAvailable) {
             val outputSize = count.toLong() * 3L
             if (count < 2 || edges.isEmpty() || edges.size != residuals.size ||
-                outputSize > Int.MAX_VALUE || edges.size.toLong() * 3L > Int.MAX_VALUE
+                anchorResidual.size != 3 || anchorResidual.any { !it.isFinite() } ||
+                residuals.any { it.size != 3 || it.any { value -> !value.isFinite() } } ||
+                outputSize > Int.MAX_VALUE || (edges.size.toLong() + 1L) * 3L > Int.MAX_VALUE
             ) return null
 
             val firstFrames = IntArray(edges.size)
@@ -262,7 +312,8 @@ internal object GlobalRotationAverager {
                 }
             }
             val packedDeltas = NativeL1Solver.solve(
-                count, firstFrames, secondFrames, packedResiduals, maxIterations.coerceAtLeast(1)
+                count, firstFrames, secondFrames, packedResiduals,
+                anchorResidual, maxIterations.coerceAtLeast(1)
             ) ?: return null
             if (packedDeltas.size != outputSize.toInt() || packedDeltas.any { !it.isFinite() }) {
                 return null
@@ -271,74 +322,88 @@ internal object GlobalRotationAverager {
                 doubleArrayOf(packedDeltas[frame * 3], packedDeltas[frame * 3 + 1], packedDeltas[frame * 3 + 2])
             }
         }
-        return solveL1AdmmKotlinFallback(count, index, edges, residuals, maxIterations)
+        return solveL1AdmmKotlinFallback(
+            count, index, edges, residuals, anchorResidual, maxIterations
+        )
     }
 
-    private fun solveL1AdmmKotlinFallback(
+    internal fun solveL1AdmmKotlinFallback(
         count: Int, index: Map<Int, Int>, edges: List<Edge>,
-        residuals: List<DoubleArray>, maxIterations: Int
+        residuals: List<DoubleArray>, anchorResidual: DoubleArray, maxIterations: Int
     ): Array<DoubleArray>? {
-        val root = 0
-        val freeCount = count - 1
+        if (count < 2 || edges.isEmpty() || residuals.size != edges.size ||
+            anchorResidual.size != 3 || anchorResidual.any { !it.isFinite() } ||
+            residuals.any { it.size != 3 || it.any { value -> !value.isFinite() } } ||
+            edges.size == Int.MAX_VALUE
+        ) return null
+        val fixedIndex = 0
+        val rowCount = edges.size + 1
         val result = Array(count) { DoubleArray(3) }
-        if (freeCount <= 0) return result
-        val diagonal = DoubleArray(freeCount)
+        val diagonal = DoubleArray(count)
         val links = ArrayList<Triple<Int, Int, Double>>(edges.size)
         for (edge in edges) {
             val a = index[edge.firstFrame] ?: return null
             val b = index[edge.secondFrame] ?: return null
-            if (a != root) diagonal[a - 1] += 1.0
-            if (b != root) diagonal[b - 1] += 1.0
-            if (a != root && b != root) links += Triple(a - 1, b - 1, 1.0)
+            if (a !in 0 until count || b !in 0 until count || a == b) return null
+            diagonal[a] += 1.0
+            diagonal[b] += 1.0
+            links += Triple(a, b, 1.0)
         }
+        diagonal[fixedIndex] += 1.0
         if (diagonal.any { it <= 0.0 }) return null
 
-        fun aTimes(x: DoubleArray): DoubleArray = DoubleArray(edges.size) { e ->
-            val a = index.getValue(edges[e].firstFrame)
-            val b = index.getValue(edges[e].secondFrame)
-            (if (b == root) 0.0 else x[b - 1]) -
-                (if (a == root) 0.0 else x[a - 1])
+        fun aTimes(x: DoubleArray): DoubleArray = DoubleArray(rowCount) { row ->
+            if (row == edges.size) {
+                x[fixedIndex]
+            } else {
+                val a = index.getValue(edges[row].firstFrame)
+                val b = index.getValue(edges[row].secondFrame)
+                x[b] - x[a]
+            }
         }
         fun atTimes(y: DoubleArray): DoubleArray {
-            val out = DoubleArray(freeCount)
+            val out = DoubleArray(count)
             edges.forEachIndexed { e, edge ->
                 val a = index.getValue(edge.firstFrame)
                 val b = index.getValue(edge.secondFrame)
-                if (a != root) out[a - 1] -= y[e]
-                if (b != root) out[b - 1] += y[e]
+                out[a] -= y[e]
+                out[b] += y[e]
             }
+            out[fixedIndex] += y[edges.size]
             return out
         }
 
         val rho = 1.0
         val alpha = 1.0
-        val sqrtRows = sqrt(edges.size.toDouble())
-        val sqrtCols = sqrt(freeCount.toDouble())
+        val sqrtRows = sqrt(rowCount.toDouble())
+        val sqrtCols = sqrt(count.toDouble())
         for (axis in 0..2) {
-            val b = DoubleArray(edges.size) { residuals[it][axis] }
+            val b = DoubleArray(rowCount) { row ->
+                if (row == edges.size) anchorResidual[axis] else residuals[row][axis]
+            }
             val bNorm = sqrt(dot(b, b))
-            var z = DoubleArray(edges.size)
-            var u = DoubleArray(edges.size)
-            var x = DoubleArray(freeCount)
+            var z = DoubleArray(rowCount)
+            var u = DoubleArray(rowCount)
+            var x = DoubleArray(count)
             for (iteration in 0 until maxIterations.coerceAtLeast(1)) {
-                val rhs = atTimes(DoubleArray(edges.size) { e -> b[e] + z[e] - u[e] })
+                val rhs = atTimes(DoubleArray(rowCount) { row -> b[row] + z[row] - u[row] })
                 x = conjugateGradient(diagonal, links, rhs) ?: return null
                 val ax = aTimes(x)
-                val axHat = DoubleArray(edges.size) { e ->
-                    alpha * ax[e] + (1.0 - alpha) * (z[e] + b[e])
+                val axHat = DoubleArray(rowCount) { row ->
+                    alpha * ax[row] + (1.0 - alpha) * (z[row] + b[row])
                 }
                 val zOld = z
-                z = DoubleArray(edges.size) { e ->
-                    val value = axHat[e] - b[e] + u[e]
+                z = DoubleArray(rowCount) { row ->
+                    val value = axHat[row] - b[row] + u[row]
                     when {
                         value > 1.0 / rho -> value - 1.0 / rho
                         value < -1.0 / rho -> value + 1.0 / rho
                         else -> 0.0
                     }
                 }
-                for (e in u.indices) u[e] += axHat[e] - z[e] - b[e]
-                val primal = DoubleArray(edges.size) { e -> ax[e] - z[e] - b[e] }
-                val deltaZ = DoubleArray(edges.size) { e -> z[e] - zOld[e] }
+                for (row in u.indices) u[row] += axHat[row] - z[row] - b[row]
+                val primal = DoubleArray(rowCount) { row -> ax[row] - z[row] - b[row] }
+                val deltaZ = DoubleArray(rowCount) { row -> z[row] - zOld[row] }
                 val dualVector = atTimes(deltaZ)
                 val rNorm = sqrt(dot(primal, primal))
                 val sNorm = rho * sqrt(dot(dualVector, dualVector))
@@ -349,41 +414,43 @@ internal object GlobalRotationAverager {
                 val epsDual = sqrtCols * 1e-4 + 1e-2 * rho * atUNorm
                 if (rNorm < epsPri && sNorm < epsDual) break
             }
-            for (i in 1 until count) result[i][axis] = x[i - 1]
+            for (i in 0 until count) result[i][axis] = x[i]
         }
         return result
     }
 
-    private fun solveTangentUpdates(
-        count: Int, index: Map<Int, Int>, edges: List<Edge>, residuals: List<DoubleArray>, weights: DoubleArray
+    internal fun solveTangentUpdates(
+        count: Int, index: Map<Int, Int>, edges: List<Edge>, residuals: List<DoubleArray>,
+        weights: DoubleArray, anchorResidual: DoubleArray
     ): Array<DoubleArray>? {
-        val root = 0
-        val freeCount = count - 1
+        if (count < 2 || edges.isEmpty() || residuals.size != edges.size ||
+            weights.size != edges.size || anchorResidual.size != 3 ||
+            anchorResidual.any { !it.isFinite() } ||
+            residuals.any { it.size != 3 || it.any { value -> !value.isFinite() } }
+        ) return null
+        val fixedIndex = 0
         val result = Array(count) { DoubleArray(3) }
-        if (freeCount <= 0) return result
         for (axis in 0..2) {
-            val diagonal = DoubleArray(freeCount)
-            val rhs = DoubleArray(freeCount)
+            val diagonal = DoubleArray(count)
+            val rhs = DoubleArray(count)
             val links = ArrayList<Triple<Int, Int, Double>>(edges.size)
             edges.forEachIndexed { e, edge ->
-                val a = index.getValue(edge.firstFrame)
-                val b = index.getValue(edge.secondFrame)
-                val w = weights[e].coerceAtLeast(1e-10)
+                val a = index[edge.firstFrame] ?: return null
+                val b = index[edge.secondFrame] ?: return null
+                if (a !in 0 until count || b !in 0 until count || a == b) return null
+                val w = weights[e]
                 val target = residuals[e][axis]
-                if (a != root) {
-                    val ai = a - 1
-                    diagonal[ai] += w
-                    rhs[ai] -= w * target
-                }
-                if (b != root) {
-                    val bi = b - 1
-                    diagonal[bi] += w
-                    rhs[bi] += w * target
-                }
-                if (a != root && b != root) links += Triple(a - 1, b - 1, w)
+                if (!w.isFinite() || w < 0.0 || !target.isFinite()) return null
+                diagonal[a] += w
+                diagonal[b] += w
+                rhs[a] -= w * target
+                rhs[b] += w * target
+                if (w > 0.0) links += Triple(a, b, w)
             }
+            diagonal[fixedIndex] += 1.0
+            rhs[fixedIndex] += anchorResidual[axis]
             val x = conjugateGradient(diagonal, links, rhs) ?: return null
-            for (i in 1 until count) result[i][axis] = x[i - 1]
+            for (i in 0 until count) result[i][axis] = x[i]
         }
         return result
     }

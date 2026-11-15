@@ -127,15 +127,15 @@ class GlobalRotationAveragerTest {
         assertTrue(GlobalRotationAverager.gemanMcClureWeight(1.0, sigma) < expected)
     }
 
-    @Test fun averageUpdateUsesAllRegisteredFramesIncludingTheFixedGauge() {
+    @Test fun averageUpdateUsesMeanEuclideanNormAcrossAllFramesIncludingGauge() {
         val deltas = arrayOf(
-            doubleArrayOf(0.0, 0.0, 0.0),
+            doubleArrayOf(0.003, 0.004, 0.0),
             doubleArrayOf(0.003, 0.0, 0.0),
             doubleArrayOf(0.0, 0.006, 0.0),
             doubleArrayOf(0.0, 0.0, 0.009)
         )
 
-        assertEquals(0.0045, GlobalRotationAverager.averageUpdateMagnitude(deltas, 0), 1e-12)
+        assertEquals(0.00575, GlobalRotationAverager.averageUpdateMagnitude(deltas), 1e-12)
     }
 
     @Test fun rootGaugeIsDeterministicAndNormalizesAllExpectedRotations() {
@@ -152,6 +152,131 @@ class GlobalRotationAveragerTest {
         truth.forEach { (frame, rotation) ->
             val normalized = multiply(rotation, rootTranspose)
             assertTrue(relativeAngle(solved.rotationsByFrame.getValue(frame), normalized) < 1e-7)
+        }
+    }
+
+    @Test fun maximumInlierTreeUsesKruskalPathAndReversedEdgeDirection() {
+        val truth = mapOf(
+            2 to rot(0.12, -0.08, 0.03),
+            5 to rot(-0.10, 0.25, 0.04),
+            7 to rot(0.16, 0.12, -0.06)
+        )
+        val edges = listOf(
+            GlobalRotationAverager.Edge(2, 5, multiply(truth.getValue(5), transpose(truth.getValue(2))), 30),
+            GlobalRotationAverager.Edge(7, 5, multiply(truth.getValue(5), transpose(truth.getValue(7))), 20),
+            GlobalRotationAverager.Edge(2, 7, multiply(truth.getValue(7), transpose(truth.getValue(2))), 10)
+        )
+
+        val solved = GlobalRotationAverager.solve(
+            frameIndices = listOf(7, 2, 5),
+            edges = edges,
+            rotationOutlierDegrees = 180.0,
+            l1Iterations = 0,
+            irlsIterations = 0
+        )!!
+        val rootTranspose = transpose(truth.getValue(2))
+
+        assertEquals(2, solved.rootFrame)
+        truth.forEach { (frame, rotation) ->
+            assertTrue(
+                "frame=$frame",
+                relativeAngle(solved.rotationsByFrame.getValue(frame), multiply(rotation, rootTranspose)) < 1e-7
+            )
+        }
+    }
+
+    @Test fun equalWeightKruskalTiesAreStableAcrossPermutationAndReversal() {
+        val truth = mapOf(
+            2 to rot(0.0, 0.0, 0.0),
+            5 to rot(0.0, 0.1, 0.0),
+            7 to rot(0.0, 0.2, 0.0)
+        )
+        val consistentFirst = edge(2, 5, truth)
+        val consistentSecond = edge(2, 7, truth)
+        val conflicting = GlobalRotationAverager.Edge(7, 5, rot(0.0, -0.4, 0.0), 100)
+        val edges = listOf(conflicting, consistentSecond, consistentFirst)
+        val reversed = edges.reversed().map {
+            GlobalRotationAverager.Edge(
+                it.secondFrame, it.firstFrame, transpose(it.relativeRotation), it.inlierCount
+            )
+        }
+        val first = GlobalRotationAverager.solve(
+            truth.keys.toList(), edges, rotationOutlierDegrees = 180.0,
+            l1Iterations = 0, irlsIterations = 0
+        )!!
+        val second = GlobalRotationAverager.solve(
+            truth.keys.toList(), reversed, rotationOutlierDegrees = 180.0,
+            l1Iterations = 0, irlsIterations = 0
+        )!!
+
+        truth.keys.forEach { frame ->
+            assertTrue(
+                "frame=$frame",
+                relativeAngle(first.rotationsByFrame.getValue(frame), second.rotationsByFrame.getValue(frame)) < 1e-8
+            )
+            assertTrue(relativeAngle(first.rotationsByFrame.getValue(frame), truth.getValue(frame)) < 1e-7)
+        }
+    }
+
+    @Test fun l1AndIrlsSystemsUseTheExplicitThreeAxisAnchorRow() {
+        val index = mapOf(2 to 0, 5 to 1, 7 to 2)
+        val identity = rot(0.0, 0.0, 0.0)
+        val edges = listOf(
+            GlobalRotationAverager.Edge(2, 5, identity, 100),
+            GlobalRotationAverager.Edge(5, 7, identity, 100),
+            GlobalRotationAverager.Edge(2, 7, identity, 100)
+        )
+        val residuals = listOf(
+            doubleArrayOf(0.1, -0.2, 0.3),
+            doubleArrayOf(-0.5, 0.7, -0.9),
+            doubleArrayOf(-0.4, 0.5, -0.6)
+        )
+        val anchor = doubleArrayOf(0.02, -0.03, 0.04)
+        val expected = arrayOf(
+            doubleArrayOf(0.02, -0.03, 0.04),
+            doubleArrayOf(0.12, -0.23, 0.34),
+            doubleArrayOf(-0.38, 0.47, -0.56)
+        )
+
+        val l1 = GlobalRotationAverager.solveL1AdmmKotlinFallback(
+            3, index, edges, residuals, anchor, 1000
+        )!!
+        val irls = GlobalRotationAverager.solveTangentUpdates(
+            3, index, edges, residuals, doubleArrayOf(1.0, 0.7, 1.4), anchor
+        )!!
+        for (frame in 0..2) for (axis in 0..2) {
+            assertEquals("L1 frame=$frame axis=$axis", expected[frame][axis], l1[frame][axis], 1e-8)
+            assertEquals("IRLS frame=$frame axis=$axis", expected[frame][axis], irls[frame][axis], 1e-8)
+        }
+    }
+
+    @Test fun edgeAndAnchorResidualJacobiansMatchIncidenceSigns() {
+        val first = rot(0.12, -0.05, 0.08)
+        val second = rot(-0.08, 0.18, -0.04)
+        val edge = GlobalRotationAverager.Edge(
+            4, 9, multiply(second, transpose(first)), 100
+        )
+        val epsilon = 1e-7
+        for (axis in 0..2) {
+            val tangent = DoubleArray(3).also { it[axis] = epsilon }
+            val increment = rot(tangent[0], tangent[1], tangent[2])
+            val firstResidual = GlobalRotationAverager.relativeResidual(
+                edge, mapOf(4 to multiply(first, increment), 9 to second)
+            )
+            val secondResidual = GlobalRotationAverager.relativeResidual(
+                edge, mapOf(4 to first, 9 to multiply(second, increment))
+            )
+            val gaugeResidual = GlobalRotationAverager.anchorResidual(
+                first, multiply(first, increment)
+            )
+            for (component in 0..2) {
+                val expectedEdgeFirst = if (component == axis) -epsilon else 0.0
+                val expectedEdgeSecond = if (component == axis) epsilon else 0.0
+                val expectedGauge = if (component == axis) epsilon else 0.0
+                assertEquals(expectedEdgeFirst, firstResidual[component], 2e-8)
+                assertEquals(expectedEdgeSecond, secondResidual[component], 2e-8)
+                assertEquals(expectedGauge, gaugeResidual[component], 2e-8)
+            }
         }
     }
 
