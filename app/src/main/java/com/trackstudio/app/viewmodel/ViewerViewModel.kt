@@ -11,6 +11,8 @@ import androidx.lifecycle.viewModelScope
 import com.trackstudio.app.playback.FrameSource
 import com.trackstudio.app.playback.PlaybackController
 import com.trackstudio.app.playback.PlaybackState
+import com.trackstudio.app.tracking.CameraLandmark
+import com.trackstudio.app.tracking.CameraPose
 import com.trackstudio.app.tracking.CameraTrackingEngine
 import com.trackstudio.app.tracking.GlobalReconstructionEngine
 import com.trackstudio.app.tracking.ReconstructionMode
@@ -83,6 +85,8 @@ data class ViewerUiState(
     val reconstructionMode: ReconstructionMode = ReconstructionMode.GLOBAL,
     val trackingPointsByFrame: Map<Int, List<com.trackstudio.app.tracking.CameraFeatureObservation>> = emptyMap(),
     val cameraSolveAvailable: Boolean = false,
+    val cameraPoses: List<CameraPose> = emptyList(),
+    val cameraLandmarks: List<CameraLandmark> = emptyList(),
     val trackingExportMessage: String? = null,
     val anchorSegmentsByFrame: Map<Int, List<TrackingAnchorSegment>> = emptyMap(),
     val anchorPositionX: Double = 0.0,
@@ -267,6 +271,8 @@ class ViewerViewModel(
                         trackingSummary = saved.summary,
                         trackingPointsByFrame = saved.pointsByFrame,
                         cameraSolveAvailable = saved.cameraSolveAvailable,
+                        cameraPoses = saved.cameraPoses,
+                        cameraLandmarks = saved.cameraLandmarks,
                         trackingExportMessage = null,
                         anchorSegmentsByFrame = saved.anchorSegmentsByFrame,
                         anchorPositionX = saved.anchorX,
@@ -433,6 +439,8 @@ class ViewerViewModel(
                 trackingSummary = null,
                 trackingError = null,
                 cameraSolveAvailable = false,
+                cameraPoses = emptyList(),
+                cameraLandmarks = emptyList(),
                 trackingExportMessage = null,
                 trackingPointsByFrame = emptyMap(),
                 anchorSegmentsByFrame = emptyMap()
@@ -475,6 +483,8 @@ class ViewerViewModel(
                 trackingError = null,
                 trackingSummary = null,
                 cameraSolveAvailable = false,
+                cameraPoses = emptyList(),
+                cameraLandmarks = emptyList(),
                 trackingExportMessage = null,
                 trackingPointsByFrame = emptyMap(),
                 anchorSegmentsByFrame = emptyMap()
@@ -608,6 +618,8 @@ class ViewerViewModel(
                         trackingProgress = CameraTrackingProgress(totalFrames, totalFrames, "Camera solve complete", 1f, totalFrames, totalFrames),
                         trackingSummary = completedSummary,
                         cameraSolveAvailable = false,
+                        cameraPoses = result.poses,
+                        cameraLandmarks = result.landmarks,
                         trackingExportMessage = null,
                         trackingPointsByFrame = pointsByFrame,
                         anchorSegmentsByFrame = anchorSegments,

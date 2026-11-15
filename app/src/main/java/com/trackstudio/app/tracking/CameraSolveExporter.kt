@@ -46,7 +46,7 @@ internal object CameraSolveExporter {
         line("  },")
         line("  \"cameraPoses\": [")
         poses.forEachIndexed { index, pose ->
-            val center = cameraCenter(pose)
+            val center = CameraPoseGeometry.cameraCenterWorld(pose)
             output.append("    {\"frameIndex\": ${pose.frameIndex}, \"status\": ${jsonString(pose.status.name)}, ")
             output.append("\"rotationWorldToCameraRowMajor\": ${jsonArray(pose.rotation)}, ")
             output.append("\"translationWorldToCamera\": ${jsonArray(pose.translation)}, ")
@@ -72,16 +72,6 @@ internal object CameraSolveExporter {
         }
         line("  ]")
         line("}")
-    }
-
-    private fun cameraCenter(pose: CameraPose): DoubleArray {
-        val rotation = pose.rotation
-        val translation = pose.translation
-        return doubleArrayOf(
-            -(rotation[0] * translation[0] + rotation[3] * translation[1] + rotation[6] * translation[2]),
-            -(rotation[1] * translation[0] + rotation[4] * translation[1] + rotation[7] * translation[2]),
-            -(rotation[2] * translation[0] + rotation[5] * translation[1] + rotation[8] * translation[2])
-        )
     }
 
     private fun jsonArray(values: DoubleArray): String =

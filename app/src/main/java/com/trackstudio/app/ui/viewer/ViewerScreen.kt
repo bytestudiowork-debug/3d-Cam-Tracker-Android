@@ -132,6 +132,7 @@ fun ViewerScreen(
     var showAnchorOverlay by remember { mutableStateOf(true) }
     var anchorLineWidthDp by remember { mutableFloatStateOf(2.2f) }
     var activeToolPopup by remember { mutableStateOf<String?>(null) }
+    var showReconstructionViewport by remember { mutableStateOf(false) }
 
     BoxWithConstraints(
         modifier = Modifier
@@ -150,6 +151,7 @@ fun ViewerScreen(
 
         BackHandler {
             when {
+                showReconstructionViewport -> showReconstructionViewport = false
                 panelOpen && !inlinePanel -> panelOpen = false
                 fullscreen -> fullscreen = false
                 else -> onBack()
@@ -246,6 +248,7 @@ fun ViewerScreen(
                             onToggleTrackingPause = { if (state.isTrackingPaused) viewModel.resumeAutoTrack() else viewModel.pauseAutoTrack() },
                             onOpen3DTest = { activeToolPopup = "Anchor" },
                             onOpenTrackerTools = { activeToolPopup = "Tracker Tools" },
+                            onOpenReconstruction = { showReconstructionViewport = true },
                             modifier = Modifier
                                 .width(panelWidth)
                                 .fillMaxHeight()
@@ -282,6 +285,7 @@ fun ViewerScreen(
                         onToggleTrackingPause = { if (state.isTrackingPaused) viewModel.resumeAutoTrack() else viewModel.pauseAutoTrack() },
                         onOpen3DTest = { activeToolPopup = "Anchor" },
                         onOpenTrackerTools = { activeToolPopup = "Tracker Tools" },
+                        onOpenReconstruction = { showReconstructionViewport = true },
                         modifier = Modifier
                             .align(Alignment.CenterEnd)
                             .width(drawerWidth)
@@ -308,6 +312,15 @@ fun ViewerScreen(
                     color = TextSecondary, fontSize = 11.sp
                 )
             }
+        }
+
+        if (showReconstructionViewport) {
+            ReconstructionViewportDialog(
+                poses = state.cameraPoses,
+                landmarks = state.cameraLandmarks,
+                currentFrame = state.playback.currentFrame,
+                onDismiss = { showReconstructionViewport = false }
+            )
         }
 
         if (activeToolPopup != null) {

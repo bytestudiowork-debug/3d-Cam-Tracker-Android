@@ -1,6 +1,7 @@
 package com.trackstudio.app.tracking
 
 import org.junit.Assert.assertFalse
+import org.junit.Assert.assertArrayEquals
 import org.junit.Assert.assertTrue
 import org.junit.Test
 import org.opencv.core.Point3
@@ -66,5 +67,18 @@ class CameraSolveExporterTest {
 
         assertTrue(json.contains("\"globalPositioningInitialCost\": null"))
         assertTrue(json.contains("\"globalPositioningFinalCost\": null"))
+    }
+
+    @Test
+    fun cameraSpaceVectorUsesTransposeForWorldDirection() {
+        val rotationWorldToCamera = doubleArrayOf(
+            0.0, -1.0, 0.0,
+            1.0, 0.0, 0.0,
+            0.0, 0.0, 1.0
+        )
+
+        val worldDirection = CameraPoseGeometry.cameraVectorToWorld(rotationWorldToCamera, 1.0, 0.0, 0.0)
+
+        assertArrayEquals(doubleArrayOf(0.0, -1.0, 0.0), worldDirection, 1e-12)
     }
 }

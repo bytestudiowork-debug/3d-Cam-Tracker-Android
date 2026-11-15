@@ -2,14 +2,21 @@ package com.trackstudio.app.viewmodel
 
 import android.content.Context
 import android.net.Uri
+import android.util.JsonReader
+import android.util.JsonToken
+import com.trackstudio.app.tracking.CameraLandmark
 import com.trackstudio.app.tracking.CameraFeatureObservation
+import com.trackstudio.app.tracking.CameraPose
+import com.trackstudio.app.tracking.CameraPoseStatus
 import com.trackstudio.app.tracking.CameraSolveExporter
 import com.trackstudio.app.tracking.CameraTrackingResult
 import com.trackstudio.app.tracking.TrackingAnchorSegment
 import com.trackstudio.app.util.FileUtils
 import org.json.JSONArray
 import org.json.JSONObject
+import org.opencv.core.Point3
 import java.io.File
+import java.io.InputStreamReader
 
 /**
  * Stores the viewer-facing tracking result inside the project cache.
@@ -29,7 +36,14 @@ internal object TrackingResultStore {
         val defaultAnchorZ: Double,
         val anchorAxisLength: Double,
         val cameraSolveResult: CameraTrackingResult? = null,
-        val cameraSolveAvailable: Boolean = false
+        val cameraSolveAvailable: Boolean = false,
+        val cameraPoses: List<CameraPose> = emptyList(),
+        val cameraLandmarks: List<CameraLandmark> = emptyList()
+    )
+
+    private data class CameraGeometry(
+        val poses: List<CameraPose>,
+        val landmarks: List<CameraLandmark>
     )
 
     private fun file(context: Context, projectId: String) =
@@ -146,6 +160,7 @@ internal object TrackingResultStore {
                 )
             }
             val anchor = json.optJSONObject("anchor") ?: JSONObject()
+            val cameraGeometry = runCatching { readCameraGeometry(cameraSolveFile(context, projectId)) }.getOrNull()
             Snapshot(
                 points.mapValues { it.value.toList() },
                 segments.mapValues { it.value.toList() },
@@ -153,7 +168,9 @@ internal object TrackingResultStore {
                 anchor.optDouble("x"), anchor.optDouble("y"), anchor.optDouble("z"),
                 anchor.optDouble("defaultX"), anchor.optDouble("defaultY"), anchor.optDouble("defaultZ"),
                 anchor.optDouble("axisLength", 0.1),
-                cameraSolveAvailable = cameraSolveFile(context, projectId).isFile
+                cameraSolveAvailable = cameraSolveFile(context, projectId).isFile,
+                cameraPoses = cameraGeometry?.poses.orEmpty(),
+                cameraLandmarks = cameraGeometry?.landmarks.orEmpty()
             )
         }.getOrNull()
     }
@@ -183,4 +200,93 @@ internal object TrackingResultStore {
             error("Could not save the camera solve.")
         }
     }
+
+    private fun readCameraGeometry(source: File): CameraGeometry? {
+        if (!source.isFile) return null
+        val poses = mutableListOf<CameraPose>()
+        val landmarks = mutableListOf<CameraLandmark>()
+        JsonReader(InputStreamReader(source.inputStream(), Charsets.UTF_8)).use { reader ->
+            reader.beginObject()
+            while (reader.hasNext()) {
+                when (reader.nextName()) {
+                    "cameraPoses" -> {
+                        reader.beginArray()
+                        while (reader.hasNext()) readCameraPose(reader)?.let(poses::add)
+                        reader.endArray()
+                    }
+                    "landmarks" -> {
+                        reader.beginArray()
+                        while (reader.hasNext()) readLandmark(reader)?.let(landmarks::add)
+                        reader.endArray()
+                    }
+                    else -> reader.skipValue()
+                }
+            }
+            reader.endObject()
+        }
+        return CameraGeometry(poses.sortedBy { it.frameIndex }, landmarks)
+    }
+
+    private fun readCameraPose(reader: JsonReader): CameraPose? {
+        var frameIndex = -1
+        var status = CameraPoseStatus.RELATIVE_ESTIMATE
+        var rotation = doubleArrayOf()
+        var translation = doubleArrayOf()
+        reader.beginObject()
+        while (reader.hasNext()) {
+            when (reader.nextName()) {
+                "frameIndex" -> frameIndex = reader.nextInt()
+                "status" -> status = runCatching { CameraPoseStatus.valueOf(reader.nextString()) }
+                    .getOrDefault(CameraPoseStatus.RELATIVE_ESTIMATE)
+                "rotationWorldToCameraRowMajor" -> rotation = readDoubleArray(reader)
+                "translationWorldToCamera" -> translation = readDoubleArray(reader)
+                else -> reader.skipValue()
+            }
+        }
+        reader.endObject()
+        if (frameIndex < 0 || rotation.size != 9 || translation.size != 3 ||
+            rotation.any { !it.isFinite() } || translation.any { !it.isFinite() }
+        ) return null
+        return CameraPose(frameIndex, rotation, translation, status)
+    }
+
+    private fun readLandmark(reader: JsonReader): CameraLandmark? {
+        var trackId = -1
+        var position = doubleArrayOf()
+        var observationCount = 0
+        var meanError = Double.NaN
+        var angle = 0.0
+        reader.beginObject()
+        while (reader.hasNext()) {
+            when (reader.nextName()) {
+                "trackId" -> trackId = reader.nextInt()
+                "positionWorld" -> position = readDoubleArray(reader)
+                "observationCount" -> observationCount = reader.nextInt()
+                "meanReprojectionErrorPx" -> meanError = readNullableDouble(reader)
+                "triangulationAngleDegrees" -> angle = readNullableDouble(reader)
+                else -> reader.skipValue()
+            }
+        }
+        reader.endObject()
+        if (trackId < 0 || position.size != 3 || position.any { !it.isFinite() } ||
+            observationCount < 0 || !meanError.isFinite()
+        ) return null
+        return CameraLandmark(trackId, Point3(position[0], position[1], position[2]), observationCount, meanError, angle)
+    }
+
+    private fun readDoubleArray(reader: JsonReader): DoubleArray {
+        val values = mutableListOf<Double>()
+        reader.beginArray()
+        while (reader.hasNext()) values += readNullableDouble(reader)
+        reader.endArray()
+        return values.toDoubleArray()
+    }
+
+    private fun readNullableDouble(reader: JsonReader): Double =
+        if (reader.peek() == JsonToken.NULL) {
+            reader.nextNull()
+            Double.NaN
+        } else {
+            reader.nextDouble()
+        }
 }

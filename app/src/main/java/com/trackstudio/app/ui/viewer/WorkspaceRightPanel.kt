@@ -87,6 +87,7 @@ fun WorkspaceRightPanel(
     onToggleTrackingPause: () -> Unit,
     onOpen3DTest: () -> Unit,
     onOpenTrackerTools: () -> Unit,
+    onOpenReconstruction: () -> Unit,
     modifier: Modifier = Modifier
 ) {
     var selectedTab by remember(projectName) { mutableStateOf("Tracking") }
@@ -129,7 +130,7 @@ fun WorkspaceRightPanel(
 
         when (selectedTab) {
             "Tracking" -> TrackingToolsCard(isAutoTracking, isTrackingPaused, trackingProgress, trackingError, trackingSummary, hasCameraSolve, trackingExportMessage, onExportCameraSolve, reconstructionMode, onReconstructionModeChanged, onAutoTrack, onCancelAutoTrack, onToggleTrackingPause)
-            "Tools" -> QuickActionsCard(onOpen3DTest, onOpenTrackerTools)
+            "Tools" -> QuickActionsCard(onOpen3DTest, onOpenTrackerTools, onOpenReconstruction)
             else -> ProjectSummaryCard(projectName, fps, frameCount)
         }
     }
@@ -474,7 +475,8 @@ private fun TrackPointsSection() {
 @Composable
 private fun QuickActionsCard(
     onOpen3DTest: () -> Unit,
-    onOpenTrackerTools: () -> Unit
+    onOpenTrackerTools: () -> Unit,
+    onOpenReconstruction: () -> Unit
 ) {
     PanelCard(modifier = Modifier.fillMaxWidth()) {
         Column(
@@ -483,6 +485,7 @@ private fun QuickActionsCard(
         ) {
             ToolEntry("Anchor", "Set a world-space XYZ anchor and coordinate axes", Icons.Outlined.GpsFixed, onOpen3DTest)
             ToolEntry("Tracker Tools", "Inspect feature tracks and overlay visibility", Icons.Outlined.ScatterPlot, onOpenTrackerTools)
+            ToolEntry("3D Reconstruction", "Inspect the solved camera path and 3D landmarks", Icons.Outlined.ViewInAr, onOpenReconstruction)
         }
     }
 }
