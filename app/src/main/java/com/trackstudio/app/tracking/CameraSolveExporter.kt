@@ -50,6 +50,13 @@ internal object CameraSolveExporter {
         line("    \"globalBundleAdjustmentPositiveDepthRatio\": ${jsonNumber(result.globalBundleAdjustmentPositiveDepthRatio)},")
         line("    \"initialPairFrames\": ${result.initialPairFrames?.let { "[${it.first}, ${it.second}]" } ?: "null"}")
         line("  },")
+        val intrinsics = result.refinedCameraIntrinsics
+        val intrinsicsJson = intrinsics?.let {
+            "{\"fx\": ${jsonNumber(it.fx)}, \"skew\": ${jsonNumber(it.skew)}, " +
+                "\"cx\": ${jsonNumber(it.cx)}, \"fy\": ${jsonNumber(it.fy)}, " +
+                "\"cy\": ${jsonNumber(it.cy)}}"
+        } ?: "null"
+        line("  \"refinedCameraIntrinsics\": $intrinsicsJson,")
         line("  \"cameraPoses\": [")
         poses.forEachIndexed { index, pose ->
             val center = CameraPoseGeometry.cameraCenterWorld(pose)

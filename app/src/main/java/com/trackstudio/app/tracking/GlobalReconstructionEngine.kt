@@ -14,6 +14,7 @@ import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.withContext
 import org.opencv.calib3d.Calib3d
 import org.opencv.core.Mat
+import org.opencv.core.CvType
 import org.opencv.core.Point3
 import org.opencv.core.MatOfPoint2f
 import org.opencv.core.KeyPoint
@@ -34,8 +35,9 @@ import kotlinx.coroutines.sync.withLock
  * and points together with the global direction-constraint positioner.
  *
  * The final sparse points are retriangulated and robustly refined with the
- * mobile landmark block optimizer. Camera intrinsics are currently assumed
- * known/approximated by the caller; metric scale remains a reconstruction gauge.
+ * mobile landmark block optimizer. Joint bundle adjustment refines poses and
+ * focal lengths; skew and principal point remain supplied, while metric scale
+ * remains a reconstruction gauge.
  */
 class GlobalReconstructionEngine(
     private val maxFeatures: Int = 1400,
@@ -86,6 +88,7 @@ class GlobalReconstructionEngine(
         }
         val featureExtractor = AndroidSiftFeatureExtractor(featureBudget)
         val frames = arrayOfNulls<FrameFeatures>(frameCount)
+        var refinedCameraMatrix: Mat? = null
         var decodedFrames = 0
         val solveContext = currentCoroutineContext()
         fun publishProgress(phase: String, fraction: Float) {
@@ -364,10 +367,18 @@ class GlobalReconstructionEngine(
                 else -> "Applied"
             }
             val finalCenters = bundleResult?.frameCentersById ?: positionResult.frameCentersById
+            val finalRotations = bundleResult?.rotationsByFrame ?: rotations
             val finalPoints = bundleResult?.pointsByTrackId ?: positionResult.pointsByTrackId
+            val refinedIntrinsics = bundleResult?.intrinsics
+            val resultCameraMatrix = if (refinedIntrinsics != null) {
+                Mat(3, 3, CvType.CV_64F).also { matrix ->
+                    refinedCameraMatrix = matrix
+                    matrix.put(0, 0, *refinedIntrinsics.toRowMajorMatrix())
+                }
+            } else cameraMatrix
 
             val poses = activeFrames.mapNotNull { frame ->
-                val rotation = rotations[frame] ?: return@mapNotNull null
+                val rotation = finalRotations[frame] ?: return@mapNotNull null
                 val center = finalCenters[frame] ?: return@mapNotNull null
                 val translation = doubleArrayOf(
                     -(rotation[0] * center[0] + rotation[1] * center[1] + rotation[2] * center[2]),
@@ -388,7 +399,7 @@ class GlobalReconstructionEngine(
                 )
             )
             val triangulated = SfMTriangulator.triangulate(
-                tracks, poses, cameraMatrix,
+                tracks, poses, resultCameraMatrix,
                 onProgress = { completed, total ->
                     publishProgress("Triangulating landmarks " + completed + "/" + total, 0.94f + 0.02f * completed.toFloat() / total.coerceAtLeast(1))
                 }
@@ -398,7 +409,7 @@ class GlobalReconstructionEngine(
                 val point = finalPoints[track.id] ?: return@trackLoop null
                 val errors = track.observations.mapNotNull observationLoop@ { observation ->
                     val pose = poseByFrame[observation.frameIndex] ?: return@observationLoop null
-                    reprojectionError(cameraMatrix, pose, point, observation)
+                    reprojectionError(resultCameraMatrix, pose, point, observation)
                 }
                 if (errors.size < 2) return@trackLoop null
                 CameraLandmark(
@@ -420,7 +431,7 @@ class GlobalReconstructionEngine(
                 featureTracks = tracks,
                 landmarks = mergedLandmarks.values.toList(),
                 poses = poses,
-                cameraMatrix = cameraMatrix,
+                cameraMatrix = resultCameraMatrix,
                 onProgress = { completed, total ->
                     publishProgress("Refining landmarks " + completed + "/" + total, 0.96f + 0.03f * completed.toFloat() / total.coerceAtLeast(1))
                 }
@@ -487,7 +498,7 @@ class GlobalReconstructionEngine(
                 initialPairFrames = activePairs.maxByOrNull { it.inlierMatches.size }
                     ?.let { it.first to it.second },
                 registeredCameraCount = poses.size,
-                globalRotationsByFrame = rotations,
+                globalRotationsByFrame = finalRotations,
                 viewGraphEdgeCount = verifiedPairs.size,
                 viewGraphAcceptedEdgeCount = rotationPass.acceptedEdges.size,
                 globalRotationIterations = firstRotationPass.iterations + rotationPass.iterations,
@@ -497,15 +508,17 @@ class GlobalReconstructionEngine(
                 globalPositioningIterations = positionResult.iterations,
                 globalPositioningStatus = "Global camera positions and points solved",
                 globalBundleAdjustmentApplied = bundleResult != null,
-                globalBundleAdjustmentInitialCost = bundleCandidate?.initialCost ?: Double.NaN,
-                globalBundleAdjustmentFinalCost = bundleCandidate?.finalCost ?: Double.NaN,
-                globalBundleAdjustmentIterations = bundleCandidate?.iterations ?: 0,
+                globalBundleAdjustmentInitialCost = bundleResult?.initialCost ?: Double.NaN,
+                globalBundleAdjustmentFinalCost = bundleResult?.finalCost ?: Double.NaN,
+                globalBundleAdjustmentIterations = bundleResult?.iterations ?: 0,
                 globalBundleAdjustmentStatus = bundleStatus,
                 globalBundleAdjustmentPositiveDepthRatio =
-                    bundleCandidate?.positiveDepthRatio ?: Double.NaN
+                    bundleResult?.positiveDepthRatio ?: Double.NaN,
+                refinedCameraIntrinsics = refinedIntrinsics
             )
         } finally {
             frames.filterNotNull().forEach { it.descriptors.release() }
+            refinedCameraMatrix?.release()
             featureExtractor.clear()
         }
     }

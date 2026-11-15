@@ -69,6 +69,20 @@ data class CameraPose(
     val status: CameraPoseStatus = CameraPoseStatus.RELATIVE_ESTIMATE
 )
 
+data class CameraIntrinsics(
+    val fx: Double,
+    val skew: Double,
+    val cx: Double,
+    val fy: Double,
+    val cy: Double
+) {
+    fun toRowMajorMatrix(): DoubleArray = doubleArrayOf(
+        fx, skew, cx,
+        0.0, fy, cy,
+        0.0, 0.0, 1.0
+    )
+}
+
 data class FrameTrackingDiagnostic(
     val frameIndex: Int,
     val detectedFeatures: Int,
@@ -91,7 +105,7 @@ data class CameraTrackingResult(
     val triangulationStats: TriangulationStats = TriangulationStats(),
     val initialPairFrames: Pair<Int, Int>? = null,
     val registeredCameraCount: Int = 0,
-    /** Global rotations estimated from the verified sparse view graph; not yet fused with PnP translations. */
+    /** Global-path rotations after view-graph averaging and optional joint bundle refinement. */
     val globalRotationsByFrame: Map<Int, DoubleArray> = emptyMap(),
     val viewGraphEdgeCount: Int = 0,
     val viewGraphAcceptedEdgeCount: Int = 0,
@@ -106,5 +120,6 @@ data class CameraTrackingResult(
     val globalBundleAdjustmentFinalCost: Double = Double.NaN,
     val globalBundleAdjustmentIterations: Int = 0,
     val globalBundleAdjustmentStatus: String = "Not run",
-    val globalBundleAdjustmentPositiveDepthRatio: Double = Double.NaN
+    val globalBundleAdjustmentPositiveDepthRatio: Double = Double.NaN,
+    val refinedCameraIntrinsics: CameraIntrinsics? = null
 )

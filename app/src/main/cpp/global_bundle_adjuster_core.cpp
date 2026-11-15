@@ -2,9 +2,11 @@
 
 #include <ceres/ceres.h>
 #include <ceres/manifold.h>
+#include <ceres/rotation.h>
 
 #include <algorithm>
 #include <cmath>
+#include <limits>
 #include <memory>
 #include <numeric>
 #include <utility>
@@ -14,41 +16,42 @@ namespace tracking {
 namespace {
 
 struct ReprojectionResidual {
-    ReprojectionResidual(const double* rotation,
-                         double observed_x,
+    ReprojectionResidual(double observed_x,
                          double observed_y,
                          const double* intrinsics)
             : observed_x(observed_x),
               observed_y(observed_y),
-              fx(intrinsics[0]),
               skew(intrinsics[1]),
               cx(intrinsics[2]),
-              fy(intrinsics[3]),
-              cy(intrinsics[4]) {
-        std::copy(rotation, rotation + 9, this->rotation);
-    }
+              cy(intrinsics[4]) {}
 
     template <typename T>
-    bool operator()(const T* camera_center, const T* point, T* residuals) const {
-        const T dx = point[0] - camera_center[0];
-        const T dy = point[1] - camera_center[1];
-        const T dz = point[2] - camera_center[2];
-        const T x = T(rotation[0]) * dx + T(rotation[1]) * dy + T(rotation[2]) * dz;
-        const T y = T(rotation[3]) * dx + T(rotation[4]) * dy + T(rotation[5]) * dz;
-        const T z = T(rotation[6]) * dx + T(rotation[7]) * dy + T(rotation[8]) * dz;
-        const T safe_z = z > T(1e-8) ? z : T(1e-8);
-        residuals[0] = T(fx) * x / safe_z + T(skew) * y / safe_z + T(cx) - T(observed_x);
-        residuals[1] = T(fy) * y / safe_z + T(cy) - T(observed_y);
+    bool operator()(const T* angle_axis,
+                    const T* camera_center,
+                    const T* point,
+                    const T* focal_lengths,
+                    T* residuals) const {
+        const T delta[3] = {
+                point[0] - camera_center[0],
+                point[1] - camera_center[1],
+                point[2] - camera_center[2]};
+        T camera_point[3];
+        ceres::AngleAxisRotatePoint(angle_axis, delta, camera_point);
+        const T safe_z = camera_point[2] > T(1e-8)
+                ? camera_point[2]
+                : T(1e-8);
+        residuals[0] = focal_lengths[0] * camera_point[0] / safe_z +
+                       T(skew) * camera_point[1] / safe_z +
+                       T(cx - observed_x);
+        residuals[1] = focal_lengths[1] * camera_point[1] / safe_z +
+                       T(cy - observed_y);
         return true;
     }
 
-    double rotation[9];
     double observed_x;
     double observed_y;
-    double fx;
     double skew;
     double cx;
-    double fy;
     double cy;
 };
 
@@ -84,7 +87,8 @@ private:
 
 class ProgressCallback final : public ceres::IterationCallback {
 public:
-    ProgressCallback(const std::function<bool(int, int)>& callback, int total_iterations)
+    ProgressCallback(const std::function<bool(int, int)>& callback,
+                     int total_iterations)
             : callback_(callback), total_iterations_(total_iterations) {}
 
     ceres::CallbackReturnType operator()(const ceres::IterationSummary& summary) override {
@@ -145,12 +149,14 @@ bool RunGlobalBundleAdjustment(const std::vector<double>& initial_camera_centers
         initial_camera_centers.size() % 3 != 0 || initial_points.empty() ||
         initial_points.size() % 3 != 0 || frame_indices.size() < 2 ||
         track_indices.size() != frame_indices.size() ||
+        frame_indices.size() > std::numeric_limits<size_t>::max() / 2 ||
         image_points.size() != frame_indices.size() * 2 || intrinsics.size() != 5 ||
         max_iterations <= 0 || num_threads <= 0 ||
         rotations.size() != (initial_camera_centers.size() / 3) * 9 ||
         !AllFinite(initial_camera_centers) || !AllFinite(rotations) ||
         !AllFinite(initial_points) || !AllFinite(image_points) ||
-        !AllFinite(intrinsics) || intrinsics[0] <= 0.0 || intrinsics[3] <= 0.0) {
+        !AllFinite(intrinsics) || intrinsics[0] < 1e-3 || intrinsics[3] < 1e-3 ||
+        intrinsics[0] > 1e8 || intrinsics[3] > 1e8) {
         return false;
     }
 
@@ -176,7 +182,7 @@ bool RunGlobalBundleAdjustment(const std::vector<double>& initial_camera_centers
     for (int frame = 0; frame < frame_count; ++frame) {
         if (components.Find(frame) != graph_root) return false;
     }
-    for (int count : observations_per_track) if (count == 1) return false;
+    for (int count : observations_per_track) if (count < 3) return false;
 
     std::vector<double> centers = initial_camera_centers;
     std::vector<double> points = initial_points;
@@ -202,24 +208,43 @@ bool RunGlobalBundleAdjustment(const std::vector<double>& initial_camera_centers
         for (int axis = 0; axis < 3; ++axis) points[i + axis] = (points[i + axis] - origin[axis]) / world_scale;
     }
 
+    std::vector<double> angle_axes(static_cast<size_t>(frame_count) * 3);
+    for (int frame = 0; frame < frame_count; ++frame) {
+        ceres::RotationMatrixToAngleAxis(
+                ceres::RowMajorAdapter3x3(rotations.data() + frame * 9),
+                angle_axes.data() + frame * 3);
+    }
+    std::vector<double> focal_lengths = {intrinsics[0], intrinsics[3]};
+
     ceres::Problem problem;
     auto ordering = std::make_shared<ceres::ParameterBlockOrdering>();
     for (size_t i = 0; i < frame_indices.size(); ++i) {
         const int frame = frame_indices[i];
         const int track = track_indices[i];
+        double* angle_axis = angle_axes.data() + frame * 3;
         double* center = centers.data() + frame * 3;
         double* point = points.data() + track * 3;
-        const double* rotation = rotations.data() + frame * 9;
-        auto* cost = new ceres::AutoDiffCostFunction<ReprojectionResidual, 2, 3, 3>(
-                new ReprojectionResidual(rotation, image_points[i * 2],
+        auto* cost = new ceres::AutoDiffCostFunction<ReprojectionResidual, 2, 3, 3, 3, 2>(
+                new ReprojectionResidual(image_points[i * 2],
                                          image_points[i * 2 + 1], intrinsics.data()));
-        problem.AddResidualBlock(cost, new ceres::HuberLoss(1.0), center, point);
+        problem.AddResidualBlock(cost, new ceres::HuberLoss(1.0),
+                                 angle_axis, center, point, focal_lengths.data());
         if (problem.HasParameterBlock(point)) ordering->AddElementToGroup(point, 0);
+        if (problem.HasParameterBlock(angle_axis)) ordering->AddElementToGroup(angle_axis, 1);
         if (problem.HasParameterBlock(center)) ordering->AddElementToGroup(center, 1);
     }
+    ordering->AddElementToGroup(focal_lengths.data(), 1);
 
+    problem.SetParameterBlockConstant(angle_axes.data());
     problem.SetParameterBlockConstant(centers.data());
     problem.SetManifold(centers.data() + scale_anchor * 3, new ceres::SphereManifold<3>());
+    for (int focal = 0; focal < 2; ++focal) {
+        const double initial_focal = focal_lengths[focal];
+        problem.SetParameterLowerBound(focal_lengths.data(), focal,
+                                       std::max(1e-3, initial_focal * 0.25));
+        problem.SetParameterUpperBound(focal_lengths.data(), focal,
+                                       initial_focal * 4.0);
+    }
 
     ceres::Solver::Options options;
     if (frame_count <= 100) options.linear_solver_type = ceres::DENSE_SCHUR;
@@ -244,8 +269,17 @@ bool RunGlobalBundleAdjustment(const std::vector<double>& initial_camera_centers
     if (!summary.IsSolutionUsable() || !std::isfinite(summary.initial_cost) ||
         !std::isfinite(summary.final_cost) ||
         summary.final_cost > summary.initial_cost + allowed_cost_increase ||
-        !AllFinite(centers) || !AllFinite(points)) {
+        !AllFinite(centers) || !AllFinite(points) || !AllFinite(angle_axes) ||
+        !AllFinite(focal_lengths)) {
         return false;
+    }
+
+    std::vector<double> solved_rotations(static_cast<size_t>(frame_count) * 9);
+    for (int frame = 0; frame < frame_count; ++frame) {
+        ceres::AngleAxisToRotationMatrix(
+                angle_axes.data() + frame * 3,
+                ceres::RowMajorAdapter3x3(solved_rotations.data() + frame * 9));
+        if (!IsValidRotationMatrix(solved_rotations.data() + frame * 9)) return false;
     }
 
     size_t positive_depth_count = 0;
@@ -258,7 +292,7 @@ bool RunGlobalBundleAdjustment(const std::vector<double>& initial_camera_centers
                 points[track * 3 + 1] - centers[frame * 3 + 1],
                 points[track * 3 + 2] - centers[frame * 3 + 2]};
         double camera_point[3];
-        ApplyRotation(rotations.data() + frame * 9, delta, camera_point);
+        ApplyRotation(solved_rotations.data() + frame * 9, delta, camera_point);
         if (camera_point[2] > 1e-8) {
             ++positive_depth_count;
             ++positive_by_track[track];
@@ -280,7 +314,10 @@ bool RunGlobalBundleAdjustment(const std::vector<double>& initial_camera_centers
     if (!AllFinite(centers) || !AllFinite(points)) return false;
 
     result->camera_centers = std::move(centers);
+    result->rotations = std::move(solved_rotations);
     result->points = std::move(points);
+    result->intrinsics = {focal_lengths[0], intrinsics[1], intrinsics[2],
+                          focal_lengths[1], intrinsics[4]};
     result->initial_cost = summary.initial_cost;
     result->final_cost = summary.final_cost;
     result->positive_depth_ratio = positive_depth_ratio;

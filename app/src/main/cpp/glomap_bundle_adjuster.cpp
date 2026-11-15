@@ -95,9 +95,13 @@ Java_com_trackstudio_app_tracking_glomap_GlomapGlobalBundleAdjuster_nativeSolve(
         }
         if (progress_callback.aborted()) return nullptr;
 
-        const size_t output_size = 5 + solution.camera_centers.size() + solution.points.size();
-        if (output_size > static_cast<size_t>(std::numeric_limits<jsize>::max())) {
-            return EmptyResult(env);
+        const size_t maximum_output_size =
+                static_cast<size_t>(std::numeric_limits<jsize>::max());
+        size_t output_size = 5;
+        for (size_t field_size : {solution.camera_centers.size(), solution.rotations.size(),
+                                  solution.points.size(), solution.intrinsics.size()}) {
+            if (field_size > maximum_output_size - output_size) return EmptyResult(env);
+            output_size += field_size;
         }
         std::vector<double> output;
         output.reserve(output_size);
@@ -107,7 +111,9 @@ Java_com_trackstudio_app_tracking_glomap_GlomapGlobalBundleAdjuster_nativeSolve(
         output.push_back(static_cast<double>(solution.iterations));
         output.push_back(solution.positive_depth_ratio);
         output.insert(output.end(), solution.camera_centers.begin(), solution.camera_centers.end());
+        output.insert(output.end(), solution.rotations.begin(), solution.rotations.end());
         output.insert(output.end(), solution.points.begin(), solution.points.end());
+        output.insert(output.end(), solution.intrinsics.begin(), solution.intrinsics.end());
 
         jdoubleArray result = env->NewDoubleArray(static_cast<jsize>(output.size()));
         if (result == nullptr) return nullptr;

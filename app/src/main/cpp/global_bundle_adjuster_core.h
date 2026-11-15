@@ -7,7 +7,9 @@ namespace tracking {
 
 struct GlobalBundleAdjustmentResult {
     std::vector<double> camera_centers;
+    std::vector<double> rotations;
     std::vector<double> points;
+    std::vector<double> intrinsics;
     double initial_cost = 0.0;
     double final_cost = 0.0;
     double positive_depth_ratio = 0.0;

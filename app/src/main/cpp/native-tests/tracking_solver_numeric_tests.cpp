@@ -52,6 +52,24 @@ void Project(const double* center,
     image_point[1] = intrinsics[3] * y / z + intrinsics[4];
 }
 
+double RotationError(const double* first, const double* second) {
+    double relative_trace = 0.0;
+    for (int row = 0; row < 3; ++row) {
+        for (int column = 0; column < 3; ++column) {
+            relative_trace += first[row * 3 + column] * second[row * 3 + column];
+        }
+    }
+    const double cosine = std::clamp((relative_trace - 1.0) * 0.5, -1.0, 1.0);
+    return std::acos(cosine);
+}
+
+double Distance3(const double* first, const double* second) {
+    const double dx = first[0] - second[0];
+    const double dy = first[1] - second[1];
+    const double dz = first[2] - second[2];
+    return std::sqrt(dx * dx + dy * dy + dz * dz);
+}
+
 void TestPoseRefinement() {
     const std::vector<double> intrinsics = {800.0, 0.0, 640.0, 820.0, 360.0};
     const double truth[6] = {0.04, -0.06, 0.025, 0.15, -0.08, 0.3};
@@ -102,17 +120,26 @@ void TestPoseRefinement() {
             "pose refinement translation did not recover the synthetic truth");
 }
 
-void TestBundleAdjustmentRecovery() {
-    const std::vector<double> intrinsics = {700.0, 0.0, 640.0, 710.0, 360.0};
+void TestBundleAdjustmentJointRecoveryOutliersAndGauge() {
+    const std::vector<double> truth_intrinsics = {700.0, 0.0, 640.0, 710.0, 360.0};
+    const std::vector<double> initial_intrinsics = {665.0, 0.0, 640.0, 675.0, 360.0};
     std::vector<double> truth_centers = {
             0.0, 0.0, 0.0,
-            0.9, 0.05, 0.0,
-            1.8, 0.12, 0.03,
-            2.7, 0.20, 0.07};
-    std::vector<double> rotations;
+            0.85, 0.18, 0.08,
+            1.7, 0.48, 0.22,
+            2.55, 0.75, 0.35};
+    std::vector<double> truth_rotations;
+    std::vector<double> initial_rotations;
     for (int frame = 0; frame < 4; ++frame) {
-        const auto rotation = RotationFromVector(0.003 * frame, 0.018 * frame, -0.009 * frame);
-        rotations.insert(rotations.end(), rotation.begin(), rotation.end());
+        const double angle_axis[3] = {0.01 * frame, 0.025 * frame, -0.015 * frame};
+        const auto truth_rotation = RotationFromVector(angle_axis);
+        truth_rotations.insert(truth_rotations.end(), truth_rotation.begin(), truth_rotation.end());
+        const auto initial_rotation = frame == 0
+                ? truth_rotation
+                : RotationFromVector(angle_axis[0] + 0.012,
+                                     angle_axis[1] - 0.009,
+                                     angle_axis[2] + 0.007);
+        initial_rotations.insert(initial_rotations.end(), initial_rotation.begin(), initial_rotation.end());
     }
 
     std::vector<double> truth_points;
@@ -129,9 +156,9 @@ void TestBundleAdjustmentRecovery() {
         for (int frame = 0; frame < 4; ++frame) {
             double image[2];
             Project(truth_centers.data() + frame * 3,
-                    rotations.data() + frame * 9,
+                    truth_rotations.data() + frame * 9,
                     truth_points.data() + track * 3,
-                    intrinsics.data(), image);
+                    truth_intrinsics.data(), image);
             frame_indices.push_back(frame);
             track_indices.push_back(track);
             image_points.insert(image_points.end(), image, image + 2);
@@ -159,13 +186,26 @@ void TestBundleAdjustmentRecovery() {
 
     tracking::GlobalBundleAdjustmentResult result;
     Require(tracking::RunGlobalBundleAdjustment(
-                    initial_centers, rotations, initial_points, frame_indices,
-                    track_indices, image_points, intrinsics, 60, 1, &result),
+                    initial_centers, initial_rotations, initial_points, frame_indices,
+                    track_indices, image_points, initial_intrinsics, 60, 1, &result),
             "global bundle adjustment did not produce a usable result");
-    Require(result.final_cost < result.initial_cost * 0.05,
-            "global bundle adjustment did not substantially reduce reprojection cost");
+    Require(result.final_cost < result.initial_cost * 0.1,
+            "joint bundle adjustment did not substantially reduce robust reprojection cost");
     Require(result.positive_depth_ratio == 1.0,
             "synthetic reconstruction failed the positive-depth quality gate");
+    Require(result.rotations.size() == truth_rotations.size() && result.intrinsics.size() == 5,
+            "joint bundle adjustment did not return camera rotations and calibration");
+
+    Require(Distance3(result.camera_centers.data(), initial_centers.data()) < 1e-12,
+            "reference camera center moved despite the translation gauge");
+    Require(RotationError(result.rotations.data(), initial_rotations.data()) < 1e-10,
+            "reference camera rotation moved despite the rotation gauge");
+    const double initial_anchor_length = Distance3(initial_centers.data() + 9,
+                                                   initial_centers.data());
+    const double final_anchor_length = Distance3(result.camera_centers.data() + 9,
+                                                 result.camera_centers.data());
+    Require(std::abs(initial_anchor_length - final_anchor_length) < 1e-8,
+            "baseline norm changed despite the scale gauge");
 
     for (int frame = 0; frame < 4; ++frame) {
         double error_squared = 0.0;
@@ -173,8 +213,15 @@ void TestBundleAdjustmentRecovery() {
             const double error = result.camera_centers[frame * 3 + axis] - truth_centers[frame * 3 + axis];
             error_squared += error * error;
         }
-        Require(std::sqrt(error_squared) < 0.035,
-                "bundle adjustment camera center did not recover synthetic truth");
+        const double center_error = std::sqrt(error_squared);
+        Require(center_error < 0.08,
+                "bundle adjustment camera center did not recover frame " +
+                        std::to_string(frame) + "; error=" + std::to_string(center_error));
+        const double rotation_error = RotationError(result.rotations.data() + frame * 9,
+                                                    truth_rotations.data() + frame * 9);
+        Require(rotation_error < 0.012,
+                "bundle adjustment rotation did not recover frame " + std::to_string(frame) +
+                        "; error=" + std::to_string(rotation_error));
     }
     double mean_point_error = 0.0;
     for (int track = 0; track < 40; ++track) {
@@ -186,8 +233,69 @@ void TestBundleAdjustmentRecovery() {
         mean_point_error += std::sqrt(error_squared);
     }
     mean_point_error /= 40.0;
-    Require(mean_point_error < 0.035,
-            "bundle adjustment points did not recover synthetic truth");
+    Require(mean_point_error < 0.08,
+            "joint bundle adjustment points did not recover clean synthetic truth");
+    Require(std::abs(result.intrinsics[0] - truth_intrinsics[0]) < 8.0 &&
+                    std::abs(result.intrinsics[3] - truth_intrinsics[3]) < 8.0,
+            "joint bundle adjustment focal lengths did not recover synthetic truth");
+
+    std::vector<double> outlier_image_points = image_points;
+    const size_t outlier_observation = 3;
+    outlier_image_points[outlier_observation * 2] += 45.0;
+    outlier_image_points[outlier_observation * 2 + 1] -= 32.0;
+    tracking::GlobalBundleAdjustmentResult robust_result;
+    Require(tracking::RunGlobalBundleAdjustment(
+                    truth_centers, truth_rotations, truth_points, frame_indices,
+                    track_indices, outlier_image_points, truth_intrinsics,
+                    60, 1, &robust_result),
+            "robust bundle adjustment rejected a solvable scene with one gross observation outlier");
+    Require(robust_result.final_cost < robust_result.initial_cost &&
+                    robust_result.positive_depth_ratio == 1.0,
+            "robust outlier solve did not reduce its objective or preserve cheirality");
+    Require(Distance3(robust_result.camera_centers.data(), truth_centers.data()) < 1e-12 &&
+                    RotationError(robust_result.rotations.data(), truth_rotations.data()) < 1e-10,
+            "robust outlier solve changed the fixed reference pose");
+    Require(std::abs(Distance3(robust_result.camera_centers.data() + 9,
+                               robust_result.camera_centers.data()) - initial_anchor_length) < 1e-8,
+            "robust outlier solve violated the baseline scale gauge");
+    double robust_mean_point_error = 0.0;
+    for (int frame = 0; frame < 4; ++frame) {
+        const double center_error = Distance3(robust_result.camera_centers.data() + frame * 3,
+                                              truth_centers.data() + frame * 3);
+        Require(center_error < 0.03,
+                "robust outlier solve moved frame " + std::to_string(frame) +
+                        " center; error=" + std::to_string(center_error));
+        const double rotation_error = RotationError(robust_result.rotations.data() + frame * 9,
+                                                    truth_rotations.data() + frame * 9);
+        Require(rotation_error < 0.01,
+                "robust outlier solve moved frame " + std::to_string(frame) +
+                        " rotation; error=" + std::to_string(rotation_error));
+    }
+    for (int track = 0; track < 40; ++track) {
+        robust_mean_point_error += Distance3(robust_result.points.data() + track * 3,
+                                             truth_points.data() + track * 3);
+    }
+    robust_mean_point_error /= 40.0;
+    const double outlier_track_error = Distance3(robust_result.points.data(), truth_points.data());
+    Require(robust_mean_point_error < 0.08,
+            "robust outlier solve moved landmarks away from truth; mean=" +
+                    std::to_string(robust_mean_point_error) + "; outlier_track=" +
+                    std::to_string(outlier_track_error));
+    double clean_track_mean_error = 0.0;
+    for (int track = 1; track < 40; ++track) {
+        clean_track_mean_error += Distance3(robust_result.points.data() + track * 3,
+                                            truth_points.data() + track * 3);
+    }
+    clean_track_mean_error /= 39.0;
+    Require(outlier_track_error < 0.1 && clean_track_mean_error < 0.05,
+            "Huber outlier recovery exceeded its bounds; outlier_track=" +
+                    std::to_string(outlier_track_error) + "; clean_mean=" +
+                    std::to_string(clean_track_mean_error));
+    Require(robust_result.intrinsics[0] > 0.25 * truth_intrinsics[0] &&
+                    robust_result.intrinsics[0] < 4.0 * truth_intrinsics[0] &&
+                    robust_result.intrinsics[3] > 0.25 * truth_intrinsics[3] &&
+                    robust_result.intrinsics[3] < 4.0 * truth_intrinsics[3],
+            "robust outlier solve produced an unbounded focal length");
 }
 
 void TestBundleAdjustmentRejectsDisconnectedGraph() {
@@ -223,7 +331,7 @@ void TestMalformedRotationIsRejected() {
 int main() {
     try {
         TestPoseRefinement();
-        TestBundleAdjustmentRecovery();
+        TestBundleAdjustmentJointRecoveryOutliersAndGauge();
         TestBundleAdjustmentRejectsDisconnectedGraph();
         TestMalformedRotationIsRejected();
         std::cout << "Native numerical regression tests passed.\n";

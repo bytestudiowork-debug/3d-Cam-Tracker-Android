@@ -1,17 +1,20 @@
 package com.trackstudio.app.tracking.glomap
 
 import com.trackstudio.app.tracking.CameraFeatureTrack
+import com.trackstudio.app.tracking.CameraIntrinsics
 import org.opencv.core.Mat
 
 /**
  * Joint reprojection bundle adjustment for the independent global pipeline.
- * Camera rotations are held at the robust view-graph solution; camera centres
- * and 3D points are jointly optimized in the same sparse Schur problem.
+ * Rotations, centers, points, and shared focal lengths are jointly optimized;
+ * the reference pose and baseline norm fix the gauges, and skew/principal point stay fixed.
  */
 internal class GlomapGlobalBundleAdjuster {
     data class Result(
         val frameCentersById: Map<Int, DoubleArray>,
+        val rotationsByFrame: Map<Int, DoubleArray>,
         val pointsByTrackId: Map<Int, DoubleArray>,
+        val intrinsics: CameraIntrinsics,
         val initialCost: Double,
         val finalCost: Double,
         val positiveDepthRatio: Double,
@@ -89,9 +92,11 @@ internal class GlomapGlobalBundleAdjuster {
             imagePoints, intrinsics, maxIterations, numThreads,
             GlomapSolverProgressListener(onIteration)
         ) ?: return null
-        val expected = 5 + centers.size + points.size
-        if (packed.size != expected || packed[0] != 1.0 ||
+        val expected = 10L + centers.size + rotations.size + points.size
+        if (packed.size.toLong() != expected || packed[0] != 1.0 ||
             !packed[1].isFinite() || !packed[2].isFinite() ||
+            !packed[3].isFinite() || packed[3] < 0.0 ||
+            packed[3] > Int.MAX_VALUE.toDouble() || packed[3] != packed[3].toInt().toDouble() ||
             !packed[4].isFinite() || packed[4] < 0.9 || packed[4] > 1.0
         ) return null
 
@@ -101,18 +106,40 @@ internal class GlomapGlobalBundleAdjuster {
             solvedCenters[id] = packed.copyOfRange(offset, offset + 3)
             offset += 3
         }
+        val solvedRotations = LinkedHashMap<Int, DoubleArray>(frameIds.size)
+        for (id in frameIds) {
+            val rotation = packed.copyOfRange(offset, offset + 9)
+            if (!isRotationMatrix(rotation)) return null
+            solvedRotations[id] = rotation
+            offset += 9
+        }
         val solvedPoints = LinkedHashMap<Int, DoubleArray>(trackIds.size)
         for (id in trackIds) {
             solvedPoints[id] = packed.copyOfRange(offset, offset + 3)
             offset += 3
         }
+        val solvedIntrinsicValues = packed.copyOfRange(offset, offset + 5)
+        if (solvedIntrinsicValues.any { !it.isFinite() } ||
+            solvedIntrinsicValues[0] <= 0.0 || solvedIntrinsicValues[3] <= 0.0 ||
+            solvedIntrinsicValues[1] != intrinsics[1] ||
+            solvedIntrinsicValues[2] != intrinsics[2] ||
+            solvedIntrinsicValues[4] != intrinsics[4]
+        ) return null
         if (solvedCenters.values.any { it.any { value -> !value.isFinite() } } ||
             solvedPoints.values.any { it.any { value -> !value.isFinite() } }
         ) return null
 
         return Result(
             frameCentersById = solvedCenters,
+            rotationsByFrame = solvedRotations,
             pointsByTrackId = solvedPoints,
+            intrinsics = CameraIntrinsics(
+                fx = solvedIntrinsicValues[0],
+                skew = solvedIntrinsicValues[1],
+                cx = solvedIntrinsicValues[2],
+                fy = solvedIntrinsicValues[3],
+                cy = solvedIntrinsicValues[4]
+            ),
             initialCost = packed[1],
             finalCost = packed[2],
             positiveDepthRatio = packed[4],

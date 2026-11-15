@@ -38,6 +38,7 @@ class CameraSolveExporterTest {
             globalBundleAdjustmentIterations = 5,
             globalBundleAdjustmentStatus = "Applied",
             globalBundleAdjustmentPositiveDepthRatio = 0.97,
+            refinedCameraIntrinsics = CameraIntrinsics(700.0, 0.0, 640.0, 710.0, 360.0),
             viewGraphEdgeCount = 4,
             viewGraphAcceptedEdgeCount = 3,
             globalRotationIterations = 8
@@ -55,9 +56,21 @@ class CameraSolveExporterTest {
         assertTrue(json.contains("\"globalPositioningInitialCost\": 15.0"))
         assertTrue(json.contains("\"globalBundleAdjustmentInitialCost\": 2.5"))
         assertTrue(json.contains("\"globalBundleAdjustmentPositiveDepthRatio\": 0.97"))
+        assertTrue(json.contains("\"refinedCameraIntrinsics\": {\"fx\": 700.0, \"skew\": 0.0"))
         assertTrue(json.contains("\"status\": \"Global reconstruction registered\""))
         assertFalse(json.contains("NaN"))
         assertFalse(json.contains("Infinity"))
+    }
+
+    @Test
+    fun refinedIntrinsicsUseOpenCvRowMajorMatrixOrder() {
+        val matrix = CameraIntrinsics(700.0, 2.0, 640.0, 710.0, 360.0).toRowMajorMatrix()
+
+        assertArrayEquals(
+            doubleArrayOf(700.0, 2.0, 640.0, 0.0, 710.0, 360.0, 0.0, 0.0, 1.0),
+            matrix,
+            0.0
+        )
     }
 
     @Test
@@ -80,6 +93,7 @@ class CameraSolveExporterTest {
         assertTrue(json.contains("\"globalBundleAdjustmentInitialCost\": null"))
         assertTrue(json.contains("\"globalBundleAdjustmentFinalCost\": null"))
         assertTrue(json.contains("\"globalBundleAdjustmentPositiveDepthRatio\": null"))
+        assertTrue(json.contains("\"refinedCameraIntrinsics\": null"))
     }
 
     @Test
