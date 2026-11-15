@@ -122,7 +122,7 @@ internal object OpenCvTwoViewLocalOptimizer {
         val rotation = Mat()
         val translation = Mat()
         try {
-            essential.put(0, 0, consensus.model.essential)
+            essential.put(0, 0, *consensus.model.essential)
             first.fromArray(*firstPoints)
             second.fromArray(*secondPoints)
             val inliers = Calib3d.recoverPose(

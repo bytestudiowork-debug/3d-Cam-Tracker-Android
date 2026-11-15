@@ -13,7 +13,9 @@ internal object EpipolarGeometryMath {
             essential.any { !it.isFinite() } || cameraMatrix.any { !it.isFinite() }
         ) return null
         val inverseCamera = invert3x3(cameraMatrix) ?: return null
-        val fundamental = multiply(transpose(inverseCamera), multiply(essential, inverseCamera))
+        val fundamental = multiply3x3(
+            transpose(inverseCamera), multiply3x3(essential, inverseCamera)
+        )
         val scale = fundamental.maxOf { abs(it) }
         if (!scale.isFinite() || scale <= 1e-15) return null
         return DoubleArray(9) { fundamental[it] / scale }
@@ -32,8 +34,8 @@ internal object EpipolarGeometryMath {
         ) return Double.POSITIVE_INFINITY
         val first = doubleArrayOf(firstX, firstY, 1.0)
         val second = doubleArrayOf(secondX, secondY, 1.0)
-        val lineSecond = multiply(fundamental, first)
-        val lineFirst = multiply(transpose(fundamental), second)
+        val lineSecond = multiply3x1(fundamental, first)
+        val lineFirst = multiply3x1(transpose(fundamental), second)
         val numerator = abs(second[0] * lineSecond[0] +
             second[1] * lineSecond[1] + lineSecond[2])
         val secondNorm = sqrt(lineSecond[0] * lineSecond[0] + lineSecond[1] * lineSecond[1])
@@ -65,7 +67,7 @@ internal object EpipolarGeometryMath {
         matrix[2], matrix[5], matrix[8]
     )
 
-    private fun multiply(first: DoubleArray, second: DoubleArray): DoubleArray {
+    private fun multiply3x3(first: DoubleArray, second: DoubleArray): DoubleArray {
         val output = DoubleArray(9)
         for (row in 0..2) for (column in 0..2) for (k in 0..2) {
             output[row * 3 + column] += first[row * 3 + k] * second[k * 3 + column]
@@ -73,7 +75,7 @@ internal object EpipolarGeometryMath {
         return output
     }
 
-    private fun multiply(matrix: DoubleArray, vector: DoubleArray): DoubleArray = doubleArrayOf(
+    private fun multiply3x1(matrix: DoubleArray, vector: DoubleArray): DoubleArray = doubleArrayOf(
         matrix[0] * vector[0] + matrix[1] * vector[1] + matrix[2] * vector[2],
         matrix[3] * vector[0] + matrix[4] * vector[1] + matrix[5] * vector[2],
         matrix[6] * vector[0] + matrix[7] * vector[1] + matrix[8] * vector[2]
