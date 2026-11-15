@@ -37,7 +37,20 @@ internal object MobileBundleAdjuster {
             !cx.isFinite() || !cy.isFinite() || fx <= 0.0 || fy <= 0.0
         ) return landmarks
         val intrinsics = PinholeIntrinsics(fx, fy, skew, cx, cy)
+        return optimizeLandmarks(featureTracks, landmarks, poses, intrinsics, onProgress)
+    }
 
+    internal fun optimizeLandmarks(
+        featureTracks: List<CameraFeatureTrack>,
+        landmarks: List<CameraLandmark>,
+        poses: List<CameraPose>,
+        intrinsics: PinholeIntrinsics,
+        onProgress: (Int, Int) -> Unit = { _, _ -> }
+    ): List<CameraLandmark> {
+        if (landmarks.isEmpty() || !intrinsics.fx.isFinite() || !intrinsics.fy.isFinite() ||
+            !intrinsics.skew.isFinite() || !intrinsics.cx.isFinite() || !intrinsics.cy.isFinite() ||
+            intrinsics.fx <= 0.0 || intrinsics.fy <= 0.0
+        ) return landmarks
         val poseByFrame = poses.asSequence()
             .filter { it.status != CameraPoseStatus.HELD_LAST_VALID &&
                 it.status != CameraPoseStatus.UNREGISTERED }

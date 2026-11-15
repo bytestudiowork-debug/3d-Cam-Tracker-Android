@@ -5,6 +5,7 @@ import org.opencv.core.Mat
 import org.opencv.core.MatOfPoint2f
 import org.opencv.core.KeyPoint
 import org.opencv.core.CvType
+import org.opencv.core.CvException
 import kotlin.math.acos
 import kotlin.math.sqrt
 
@@ -104,18 +105,38 @@ internal object OpenCvInitialPairEvaluator {
                 } finally {
                     estimatedFundamental.release()
                 }
-                val essentialToFundamentalRatio = if (fundamentalInlierCount == 0) {
-                    Double.MAX_VALUE
-                } else {
-                    essentialInlierCount.toDouble() / fundamentalInlierCount
+                var homographyInlierCount = 0
+                try {
+                    val estimatedHomography = Calib3d.findHomography(
+                        points1, points2, Calib3d.RANSAC, HOMOGRAPHY_THRESHOLD_PX,
+                        homographyMask, 10000, 0.999
+                    )
+                    try {
+                        homographyInlierCount = countMaskInliers(homographyMask, matchCount)
+                        val initialHomography = DoubleArray(9)
+                        if (estimatedHomography.rows() == 3 && estimatedHomography.cols() == 3 &&
+                            estimatedHomography.get(0, 0, initialHomography) == initialHomography.size
+                        ) {
+                            val polished = OpenCvHomographyLocalOptimizer.refine(
+                                matchedFirst.toTypedArray(),
+                                matchedSecond.toTypedArray(),
+                                initialHomography,
+                                OpenCvTwoViewLocalOptimizer.inliersFromMask(homographyMask, matchCount),
+                                HOMOGRAPHY_THRESHOLD_PX,
+                                maximumRefitRounds = 2
+                            )
+                            if (polished != null &&
+                                polished.inlierIndices.size >= homographyInlierCount
+                            ) {
+                                homographyInlierCount = polished.inlierIndices.size
+                            }
+                        }
+                    } finally {
+                        estimatedHomography.release()
+                    }
+                } catch (_: CvException) {
+                    homographyInlierCount = 0
                 }
-
-                val estimatedHomography = Calib3d.findHomography(
-                    points1, points2, Calib3d.RANSAC, 4.0, homographyMask, 10000, 0.999
-                )
-                estimatedHomography.release()
-                val homographyInliers = countMaskInliers(homographyMask, matchCount)
-                val homographyRatio = homographyInliers.toDouble() / essentialInlierCount
 
                 var bestPoseInliers = 0
                 var bestPoseMask: Mat? = null
@@ -224,6 +245,13 @@ internal object OpenCvInitialPairEvaluator {
                     return rejected(firstFrame, secondFrame, "Invalid cheirality inlier mask", matchCount)
                 }
                 val inlierCount = inlierIndices.size
+                val essentialToFundamentalRatio = if (fundamentalInlierCount == 0) {
+                    Double.MAX_VALUE
+                } else {
+                    selectedEssentialSupport.toDouble() / fundamentalInlierCount
+                }
+                val homographyRatio =
+                    homographyInlierCount.toDouble() / selectedEssentialSupport.coerceAtLeast(1)
                 val coverage = occupiedGridCells(
                     inlierIndices.map { matchedFirst[it] }, frameWidth, frameHeight
                 )
@@ -364,6 +392,8 @@ internal object OpenCvInitialPairEvaluator {
         val index = (fraction * (sorted.size - 1)).toInt().coerceIn(0, sorted.lastIndex)
         return sorted[index]
     }
+
+    private const val HOMOGRAPHY_THRESHOLD_PX = 4.0
 
     private fun countMaskInliers(mask: Mat, expectedSize: Int): Int {
         if (mask.empty() || mask.channels() != 1 || mask.total().toInt() != expectedSize) return 0
