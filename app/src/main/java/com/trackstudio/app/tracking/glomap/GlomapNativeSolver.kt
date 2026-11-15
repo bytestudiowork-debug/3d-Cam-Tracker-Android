@@ -96,7 +96,9 @@ internal class GlomapNativeSolver {
             GlomapSolverProgressListener(onIteration)
         )
         val expectedSize = 4 + initialFrames.size + initialPoints.size + scales.size
-        if (packed.size != expectedSize || packed[0] != 1.0) return null
+        if (packed.size != expectedSize || packed[0] != 1.0 ||
+            !packed[1].isFinite() || !packed[2].isFinite()
+        ) return null
 
         var offset = 4
         val solvedFrames = LinkedHashMap<Int, DoubleArray>(orderedFrameIds.size)

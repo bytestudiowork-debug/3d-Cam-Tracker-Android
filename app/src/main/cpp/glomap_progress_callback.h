@@ -13,10 +13,14 @@ public:
         env_->DeleteLocalRef(listener_class);
     }
     bool valid() const { return method_ != nullptr; }
+    bool aborted() const { return aborted_; }
     ceres::CallbackReturnType operator()(const ceres::IterationSummary& summary) override {
         if (valid()) {
             env_->CallVoidMethod(listener_, method_, static_cast<jint>(summary.iteration + 1), total_iterations_);
-            if (env_->ExceptionCheck()) env_->ExceptionClear();
+            if (env_->ExceptionCheck()) {
+                aborted_ = true;
+                return ceres::SOLVER_ABORT;
+            }
         }
         return ceres::SOLVER_CONTINUE;
     }
@@ -25,5 +29,6 @@ private:
     jobject listener_;
     jint total_iterations_;
     jmethodID method_ = nullptr;
+    bool aborted_ = false;
 };
 }  // namespace trackstudio

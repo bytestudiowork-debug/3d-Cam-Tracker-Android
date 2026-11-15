@@ -313,6 +313,6 @@ private fun Image.toArgbBitmap(outputScale: Float): Bitmap {
         }
         return bitmap
     } finally {
-        close()
+        this.close()
     }
 }

@@ -192,6 +192,7 @@ Java_com_trackstudio_app_tracking_glomap_GlomapGlobalBundleAdjuster_nativeSolve(
     if (progress_callback.valid()) options.callbacks.push_back(&progress_callback);
     ceres::Solver::Summary summary;
     ceres::Solve(options, &problem, &summary);
+    if (progress_callback.aborted()) return nullptr;
     const std::string solver_report = summary.FullReport();
     __android_log_print(ANDROID_LOG_INFO, "TrackStudioGlobalBA", "%s", solver_report.c_str());
     if (!summary.IsSolutionUsable() || !std::isfinite(summary.initial_cost) ||

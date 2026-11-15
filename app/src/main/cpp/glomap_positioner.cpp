@@ -166,10 +166,12 @@ Java_com_trackstudio_app_tracking_glomap_GlomapNativeSolver_nativeSolve(
     if (progress_callback.valid()) options.callbacks.push_back(&progress_callback);
     ceres::Solver::Summary summary;
     ceres::Solve(options, &problem, &summary);
+    if (progress_callback.aborted()) return nullptr;
     const std::string solver_report = summary.FullReport();
     __android_log_print(ANDROID_LOG_INFO, "TrackStudioGlobalPosition", "%s", solver_report.c_str());
 
-    if (!summary.IsSolutionUsable() || !AllFinite(frame_centers) ||
+    if (!summary.IsSolutionUsable() || !std::isfinite(summary.initial_cost) ||
+        !std::isfinite(summary.final_cost) || !AllFinite(frame_centers) ||
         !AllFinite(points) || !AllFinite(scales)) {
         return env->NewDoubleArray(0);
     }

@@ -452,6 +452,7 @@ class ViewerViewModel(
         trackingJob = viewModelScope.launch {
             var intrinsics: Mat? = null
             var sequentialDecoder: SequentialVideoFrameDecoder? = null
+            var firstTrackingFrame: Bitmap? = null
             var uris: List<Uri> = emptyList()
             var decodeLimit = maxDecodeDimension
             try {
@@ -468,19 +469,21 @@ class ViewerViewModel(
                 decodeLimit = if (videoUri == null && useOriginals) Int.MAX_VALUE else maxDecodeDimension
                 check(OpenCvRuntime.ensureLoaded()) { "OpenCV could not be initialized on this device." }
                 val dimensions = if (videoUri != null && uris.isEmpty()) {
-                    ((sourceVideoWidth * sourceVideoTrackingScale).toInt().coerceAtLeast(1)) to
-                        ((sourceVideoHeight * sourceVideoTrackingScale).toInt().coerceAtLeast(1))
+                    sequentialDecoder = withContext(Dispatchers.IO) {
+                        SequentialVideoFrameDecoder(appContext, videoUri, sourceVideoRotation, sourceVideoTrackingScale)
+                    }
+                    firstTrackingFrame = withContext(Dispatchers.IO) {
+                        sequentialDecoder!!.nextFrame()
+                            ?: error("Unable to decode the first video frame for tracking.")
+                    }
+                    firstTrackingFrame!!.width to firstTrackingFrame!!.height
                 } else {
                     withContext(Dispatchers.IO) {
                         val bitmap = decodeSampled(uris.first(), decodeLimit, Bitmap.Config.ARGB_8888)
                         try { bitmap.width to bitmap.height } finally { bitmap.recycle() }
                     }
                 }
-                if (videoUri != null && uris.isEmpty()) {
-                    sequentialDecoder = withContext(Dispatchers.IO) {
-                        SequentialVideoFrameDecoder(appContext, videoUri, sourceVideoRotation, sourceVideoTrackingScale)
-                    }
-                } else if (videoUri != null && uris.size != totalFrames) {
+                if (videoUri != null && uris.isNotEmpty() && uris.size != totalFrames) {
                     error("The tracking proxy sequence is incomplete; no frames were skipped.")
                 }
                 val width = dimensions.first
@@ -497,8 +500,13 @@ class ViewerViewModel(
                     frameProvider = { index ->
                         withContext(Dispatchers.IO) {
                             val bitmap = if (sequentialDecoder != null) {
-                                sequentialDecoder!!.nextFrame()
-                                    ?: error("Video decoder ended before frame " + (index + 1) + ".")
+                                if (index == 0) {
+                                    firstTrackingFrame.also { firstTrackingFrame = null }
+                                        ?: error("Video decoder ended before frame 1.")
+                                } else {
+                                    sequentialDecoder!!.nextFrame()
+                                        ?: error("Video decoder ended before frame " + (index + 1) + ".")
+                                }
                             } else {
                                 decodeSampled(uris[index], decodeLimit, Bitmap.Config.ARGB_8888)
                             }
@@ -606,6 +614,7 @@ class ViewerViewModel(
             } catch (failure: Throwable) {
                 _uiState.update { it.copy(isAutoTracking = false, isTrackingPaused = false, trackingError = failure.message ?: "Camera tracking failed.") }
             } finally {
+                firstTrackingFrame?.recycle()
                 sequentialDecoder?.close()
                 intrinsics?.release()
                 trackingJob = null
