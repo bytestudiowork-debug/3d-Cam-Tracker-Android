@@ -81,6 +81,7 @@ class HomographyLocalOptimizerTest {
         val firstPoints = (0 until 8).map { index ->
             doubleArrayOf(13.0 * index, 7.0 * (index % 3))
         }.toMutableList()
+        val initialInlierCount = firstPoints.size
         val truth = translation(3.0, -2.0)
         val truthTransform = HomographyGeometryMath.fromMatrix(truth)!!
         val secondPoints = firstPoints.map { point ->
@@ -96,8 +97,8 @@ class HomographyLocalOptimizerTest {
 
         val result = LocalConsensusOptimizer.refine(
             initialModel = initialTransform,
-            observationCount = firstPoints.size + 1,
-            initialInliers = (0 until firstPoints.size).toList(),
+            observationCount = firstPoints.size,
+            initialInliers = (0 until initialInlierCount).toList(),
             minimumInliers = 4,
             threshold = 1.0,
             maximumRefitRounds = 2,
