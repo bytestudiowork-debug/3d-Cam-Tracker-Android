@@ -714,7 +714,7 @@ internal class GlobalTrackGraphBuilder(
         activeFrames: Set<Int>,
         observationForNode: (Int, Int) -> CameraFeatureObservation?
     ): List<CameraFeatureTrack> {
-        val observations = HashMap<Long, MutableList<CameraFeatureObservation>>()
+        val observations = HashMap<Int, MutableList<CameraFeatureObservation>>()
         for ((node, nodeIndex) in nodeIndexByKey) {
             val root = find(nodeIndex)
             val frame = (node ushr 32).toInt()

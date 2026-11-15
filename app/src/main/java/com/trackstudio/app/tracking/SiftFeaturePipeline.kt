@@ -103,7 +103,7 @@ internal object RootSiftDescriptorMath {
         for (index in 0 until descriptors.rows()) {
             descriptors.get(index, 0, row)
             normalizeDescriptorInPlace(row)
-            descriptors.put(index, 0, *row)
+            descriptors.put(index, 0, row)
         }
         val quantized = Mat()
         try {
