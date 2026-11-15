@@ -65,9 +65,7 @@ import java.util.Locale
 import kotlin.math.roundToInt
 
 /**
- * Right-hand tool panel. Every control here is a placeholder that only
- * keeps its own local state - real tracking tools will replace these in
- * later modules.
+ * Right-hand tool panel for tracking, reconstruction output, and workspace tools.
  */
 @Composable
 fun WorkspaceRightPanel(
@@ -79,6 +77,9 @@ fun WorkspaceRightPanel(
     trackingProgress: CameraTrackingProgress?,
     trackingError: String?,
     trackingSummary: CameraTrackingSummary?,
+    hasCameraSolve: Boolean,
+    trackingExportMessage: String?,
+    onExportCameraSolve: () -> Unit,
     reconstructionMode: ReconstructionMode,
     onReconstructionModeChanged: (ReconstructionMode) -> Unit,
     onAutoTrack: () -> Unit,
@@ -127,7 +128,7 @@ fun WorkspaceRightPanel(
         }
 
         when (selectedTab) {
-            "Tracking" -> TrackingToolsCard(isAutoTracking, isTrackingPaused, trackingProgress, trackingError, trackingSummary, reconstructionMode, onReconstructionModeChanged, onAutoTrack, onCancelAutoTrack, onToggleTrackingPause)
+            "Tracking" -> TrackingToolsCard(isAutoTracking, isTrackingPaused, trackingProgress, trackingError, trackingSummary, hasCameraSolve, trackingExportMessage, onExportCameraSolve, reconstructionMode, onReconstructionModeChanged, onAutoTrack, onCancelAutoTrack, onToggleTrackingPause)
             "Tools" -> QuickActionsCard(onOpen3DTest, onOpenTrackerTools)
             else -> ProjectSummaryCard(projectName, fps, frameCount)
         }
@@ -225,6 +226,9 @@ private fun TrackingToolsCard(
     progress: CameraTrackingProgress?,
     error: String?,
     summary: CameraTrackingSummary?,
+    hasCameraSolve: Boolean,
+    trackingExportMessage: String?,
+    onExportCameraSolve: () -> Unit,
     reconstructionMode: ReconstructionMode,
     onReconstructionModeChanged: (ReconstructionMode) -> Unit,
     onAutoTrack: () -> Unit,
@@ -310,6 +314,21 @@ private fun TrackingToolsCard(
                     color = if (summary.meanReprojectionErrorPx <= 2.0) AccentSuccess else AccentError,
                     fontSize = 11.sp
                 )
+                if (hasCameraSolve) {
+                    ChromeButton(
+                        text = "Export Camera Solve",
+                        onClick = onExportCameraSolve,
+                        modifier = Modifier.fillMaxWidth(),
+                        enabled = !isAutoTracking
+                    )
+                    trackingExportMessage?.let { message ->
+                        Text(
+                            message,
+                            color = if (message.startsWith("Camera solve exported")) AccentSuccess else TextSecondary,
+                            fontSize = 10.sp
+                        )
+                    }
+                }
             }
         }
         SectionDivider()
@@ -326,6 +345,11 @@ private fun TrackingToolsCard(
                 summary?.let { "${String.format(Locale.US, "%.2f", it.meanReprojectionErrorPx)} px" } ?: "—"
             )
             ProjectDetailRow("Initial pair", summary?.initialPairFrames?.let { "${it.first + 1} – ${it.second + 1}" } ?: "—")
+            ProjectDetailRow(
+                "View graph edges",
+                summary?.let { "${it.viewGraphAcceptedEdgeCount} / ${it.viewGraphEdgeCount} accepted" } ?: "—"
+            )
+            ProjectDetailRow("Global rotation iterations", summary?.globalRotationIterations?.toString() ?: "—")
             ProjectDetailRow(
                 "Global positioning",
                 summary?.let {

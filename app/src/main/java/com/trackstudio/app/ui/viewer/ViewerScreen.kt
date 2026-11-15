@@ -3,6 +3,8 @@ package com.trackstudio.app.ui.viewer
 import android.graphics.Bitmap
 import android.net.Uri
 import androidx.activity.compose.BackHandler
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
@@ -78,6 +80,16 @@ fun ViewerScreen(
     onBack: () -> Unit
 ) {
     val state by viewModel.uiState.collectAsState()
+    val cameraSolveExportLauncher = rememberLauncherForActivityResult(
+        ActivityResultContracts.CreateDocument("application/json")
+    ) { uri ->
+        if (uri != null) viewModel.exportCameraSolve(uri)
+    }
+    val exportCameraSolve = {
+        val safeProjectName = projectName.ifBlank { "camera_solve" }
+            .replace(Regex("[^A-Za-z0-9._-]"), "_")
+        cameraSolveExportLauncher.launch("${safeProjectName}_camera_solve.json")
+    }
     var timelinePoster by remember(projectName, frameUris) {
         mutableStateOf<Bitmap?>(null)
     }
@@ -224,6 +236,9 @@ fun ViewerScreen(
                             trackingProgress = state.trackingProgress,
                             trackingError = state.trackingError,
                             trackingSummary = state.trackingSummary,
+                            hasCameraSolve = state.cameraSolveAvailable,
+                            trackingExportMessage = state.trackingExportMessage,
+                            onExportCameraSolve = exportCameraSolve,
                             reconstructionMode = state.reconstructionMode,
                             onReconstructionModeChanged = viewModel::setReconstructionMode,
                             onAutoTrack = viewModel::startAutoTrack,
@@ -257,8 +272,11 @@ fun ViewerScreen(
                         trackingProgress = state.trackingProgress,
                         trackingError = state.trackingError,
                         trackingSummary = state.trackingSummary,
-                            reconstructionMode = state.reconstructionMode,
-                            onReconstructionModeChanged = viewModel::setReconstructionMode,
+                        hasCameraSolve = state.cameraSolveAvailable,
+                        trackingExportMessage = state.trackingExportMessage,
+                        onExportCameraSolve = exportCameraSolve,
+                        reconstructionMode = state.reconstructionMode,
+                        onReconstructionModeChanged = viewModel::setReconstructionMode,
                         onAutoTrack = viewModel::startAutoTrack,
                         onCancelAutoTrack = viewModel::cancelAutoTrack,
                         onToggleTrackingPause = { if (state.isTrackingPaused) viewModel.resumeAutoTrack() else viewModel.pauseAutoTrack() },

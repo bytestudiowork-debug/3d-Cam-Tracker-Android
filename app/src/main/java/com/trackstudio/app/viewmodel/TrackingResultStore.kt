@@ -1,7 +1,10 @@
 package com.trackstudio.app.viewmodel
 
 import android.content.Context
+import android.net.Uri
 import com.trackstudio.app.tracking.CameraFeatureObservation
+import com.trackstudio.app.tracking.CameraSolveExporter
+import com.trackstudio.app.tracking.CameraTrackingResult
 import com.trackstudio.app.tracking.TrackingAnchorSegment
 import com.trackstudio.app.util.FileUtils
 import org.json.JSONArray
@@ -24,11 +27,16 @@ internal object TrackingResultStore {
         val defaultAnchorX: Double,
         val defaultAnchorY: Double,
         val defaultAnchorZ: Double,
-        val anchorAxisLength: Double
+        val anchorAxisLength: Double,
+        val cameraSolveResult: CameraTrackingResult? = null,
+        val cameraSolveAvailable: Boolean = false
     )
 
     private fun file(context: Context, projectId: String) =
         File(FileUtils.projectCacheDir(context, projectId), "tracking_result.json")
+
+    private fun cameraSolveFile(context: Context, projectId: String) =
+        File(FileUtils.projectCacheDir(context, projectId), "camera_solve.json")
 
     fun save(context: Context, projectId: String, snapshot: Snapshot) {
         if (projectId.isBlank()) return
@@ -47,6 +55,9 @@ internal object TrackingResultStore {
                 put("globalPositioningFinalCost", snapshot.summary.globalPositioningFinalCost.takeIf { it.isFinite() } ?: JSONObject.NULL)
                 put("globalPositioningIterations", snapshot.summary.globalPositioningIterations)
                 put("globalPositioningStatus", snapshot.summary.globalPositioningStatus)
+                put("viewGraphEdgeCount", snapshot.summary.viewGraphEdgeCount)
+                put("viewGraphAcceptedEdgeCount", snapshot.summary.viewGraphAcceptedEdgeCount)
+                put("globalRotationIterations", snapshot.summary.globalRotationIterations)
             })
             put("anchor", JSONObject().apply {
                 put("x", snapshot.anchorX); put("y", snapshot.anchorY); put("z", snapshot.anchorZ)
@@ -80,6 +91,9 @@ internal object TrackingResultStore {
             temporary.delete()
             error("Could not save the tracking result.")
         }
+        snapshot.cameraSolveResult?.let { cameraSolve ->
+            writeCameraSolveAtomically(cameraSolveFile(context, projectId), cameraSolve)
+        }
     }
 
     fun load(context: Context, projectId: String): Snapshot? {
@@ -104,7 +118,10 @@ internal object TrackingResultStore {
                 globalPositioningInitialCost = summaryJson.optDouble("globalPositioningInitialCost", Double.NaN),
                 globalPositioningFinalCost = summaryJson.optDouble("globalPositioningFinalCost", Double.NaN),
                 globalPositioningIterations = summaryJson.optInt("globalPositioningIterations"),
-                globalPositioningStatus = summaryJson.optString("globalPositioningStatus", "Not run")
+                globalPositioningStatus = summaryJson.optString("globalPositioningStatus", "Not run"),
+                viewGraphEdgeCount = summaryJson.optInt("viewGraphEdgeCount"),
+                viewGraphAcceptedEdgeCount = summaryJson.optInt("viewGraphAcceptedEdgeCount"),
+                globalRotationIterations = summaryJson.optInt("globalRotationIterations")
             )
             val points = linkedMapOf<Int, MutableList<CameraFeatureObservation>>()
             val pointArray = json.optJSONArray("points") ?: JSONArray()
@@ -135,8 +152,35 @@ internal object TrackingResultStore {
                 summary,
                 anchor.optDouble("x"), anchor.optDouble("y"), anchor.optDouble("z"),
                 anchor.optDouble("defaultX"), anchor.optDouble("defaultY"), anchor.optDouble("defaultZ"),
-                anchor.optDouble("axisLength", 0.1)
+                anchor.optDouble("axisLength", 0.1),
+                cameraSolveAvailable = cameraSolveFile(context, projectId).isFile
             )
         }.getOrNull()
+    }
+
+    fun exportCameraSolve(context: Context, projectId: String, destination: Uri) {
+        require(projectId.isNotBlank()) { "The project has no saved camera solve." }
+        val source = cameraSolveFile(context, projectId)
+        require(source.isFile) { "The saved camera solve is unavailable. Run Auto Track again." }
+        val output = context.contentResolver.openOutputStream(destination, "wt")
+            ?: error("Could not open the selected export destination.")
+        output.use { destinationStream ->
+            source.inputStream().buffered().use { input -> input.copyTo(destinationStream) }
+        }
+    }
+
+    private fun writeCameraSolveAtomically(destination: File, result: CameraTrackingResult) {
+        val temporary = File(destination.parentFile, destination.name + ".tmp")
+        temporary.bufferedWriter(Charsets.UTF_8).use { writer ->
+            CameraSolveExporter.writeJson(result, writer)
+        }
+        if (destination.exists() && !destination.delete()) {
+            temporary.delete()
+            error("Could not replace the previous camera solve.")
+        }
+        if (!temporary.renameTo(destination)) {
+            temporary.delete()
+            error("Could not save the camera solve.")
+        }
     }
 }

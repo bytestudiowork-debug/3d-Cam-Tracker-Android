@@ -63,7 +63,10 @@ data class CameraTrackingSummary(
     val globalPositioningInitialCost: Double = Double.NaN,
     val globalPositioningFinalCost: Double = Double.NaN,
     val globalPositioningIterations: Int = 0,
-    val globalPositioningStatus: String = "Not run"
+    val globalPositioningStatus: String = "Not run",
+    val viewGraphEdgeCount: Int = 0,
+    val viewGraphAcceptedEdgeCount: Int = 0,
+    val globalRotationIterations: Int = 0
 )
 
 data class ViewerUiState(
@@ -77,8 +80,10 @@ data class ViewerUiState(
     val trackingProgress: CameraTrackingProgress? = null,
     val trackingError: String? = null,
     val trackingSummary: CameraTrackingSummary? = null,
-    val reconstructionMode: ReconstructionMode = ReconstructionMode.CUSTOM,
+    val reconstructionMode: ReconstructionMode = ReconstructionMode.GLOBAL,
     val trackingPointsByFrame: Map<Int, List<com.trackstudio.app.tracking.CameraFeatureObservation>> = emptyMap(),
+    val cameraSolveAvailable: Boolean = false,
+    val trackingExportMessage: String? = null,
     val anchorSegmentsByFrame: Map<Int, List<TrackingAnchorSegment>> = emptyMap(),
     val anchorPositionX: Double = 0.0,
     val anchorPositionY: Double = 0.0,
@@ -261,6 +266,8 @@ class ViewerViewModel(
                     state.copy(
                         trackingSummary = saved.summary,
                         trackingPointsByFrame = saved.pointsByFrame,
+                        cameraSolveAvailable = saved.cameraSolveAvailable,
+                        trackingExportMessage = null,
                         anchorSegmentsByFrame = saved.anchorSegmentsByFrame,
                         anchorPositionX = saved.anchorX,
                         anchorPositionY = saved.anchorY,
@@ -367,6 +374,26 @@ class ViewerViewModel(
         _uiState.update { it.copy(errorMessage = null, trackingError = null) }
     }
 
+    fun exportCameraSolve(destination: Uri) {
+        if (!_uiState.value.cameraSolveAvailable) {
+            _uiState.update { it.copy(trackingExportMessage = "Run Auto Track before exporting a camera solve.") }
+            return
+        }
+        val projectId = activeProjectId
+        _uiState.update { it.copy(trackingExportMessage = "Saving camera solve…") }
+        viewModelScope.launch(Dispatchers.IO) {
+            val result = runCatching {
+                TrackingResultStore.exportCameraSolve(appContext, projectId, destination)
+            }
+            _uiState.update {
+                it.copy(
+                    trackingExportMessage = result.exceptionOrNull()?.message
+                        ?: "Camera solve exported successfully."
+                )
+            }
+        }
+    }
+
     fun setAnchorPosition(x: Double, y: Double, z: Double) {
         if (!x.isFinite() || !y.isFinite() || !z.isFinite()) return
         val context = anchorProjectionContext
@@ -405,6 +432,8 @@ class ViewerViewModel(
                 reconstructionMode = mode,
                 trackingSummary = null,
                 trackingError = null,
+                cameraSolveAvailable = false,
+                trackingExportMessage = null,
                 trackingPointsByFrame = emptyMap(),
                 anchorSegmentsByFrame = emptyMap()
             )
@@ -445,10 +474,13 @@ class ViewerViewModel(
                 trackingProgress = CameraTrackingProgress(0, totalFrames, "Preparing reduced-resolution tracking footage", 0f, 0, totalFrames),
                 trackingError = null,
                 trackingSummary = null,
+                cameraSolveAvailable = false,
+                trackingExportMessage = null,
                 trackingPointsByFrame = emptyMap(),
                 anchorSegmentsByFrame = emptyMap()
             )
         }
+        val trackingProjectId = activeProjectId
         trackingJob = viewModelScope.launch {
             var intrinsics: Mat? = null
             var sequentialDecoder: SequentialVideoFrameDecoder? = null
@@ -565,13 +597,18 @@ class ViewerViewModel(
                     result.globalPositioningInitialCost,
                     result.globalPositioningFinalCost,
                     result.globalPositioningIterations,
-                    result.globalPositioningStatus
+                    result.globalPositioningStatus,
+                    result.viewGraphEdgeCount,
+                    result.viewGraphAcceptedEdgeCount,
+                    result.globalRotationIterations
                 )
                 val completedState = _uiState.value.copy(
                     isAutoTracking = false,
                         isTrackingPaused = false,
                         trackingProgress = CameraTrackingProgress(totalFrames, totalFrames, "Camera solve complete", 1f, totalFrames, totalFrames),
                         trackingSummary = completedSummary,
+                        cameraSolveAvailable = false,
+                        trackingExportMessage = null,
                         trackingPointsByFrame = pointsByFrame,
                         anchorSegmentsByFrame = anchorSegments,
                         anchorPositionX = defaultAnchor.x,
@@ -584,14 +621,15 @@ class ViewerViewModel(
                         trackingError = if (result.registeredCameraCount < 3) "Only ${result.registeredCameraCount} cameras registered. The solve may be incomplete; try footage with stronger parallax." else null
                 )
                 _uiState.value = completedState
-                if (activeProjectId.isNotBlank()) {
+                if (trackingProjectId.isNotBlank()) {
                     withContext(Dispatchers.IO) {
                         TrackingResultStore.save(
-                            appContext, activeProjectId,
+                            appContext, trackingProjectId,
                             TrackingResultStore.Snapshot(
                                 pointsByFrame = pointsByFrame,
                                 anchorSegmentsByFrame = anchorSegments,
                                 summary = completedSummary,
+                                cameraSolveResult = result,
                                 anchorX = defaultAnchor.x,
                                 anchorY = defaultAnchor.y,
                                 anchorZ = defaultAnchor.z,
@@ -601,6 +639,9 @@ class ViewerViewModel(
                                 anchorAxisLength = defaultAxisLength
                             )
                         )
+                    }
+                    if (activeProjectId == trackingProjectId) {
+                        _uiState.update { it.copy(cameraSolveAvailable = true) }
                     }
                 }
                 // The viewer initially opens on frame 0, which can be before the
