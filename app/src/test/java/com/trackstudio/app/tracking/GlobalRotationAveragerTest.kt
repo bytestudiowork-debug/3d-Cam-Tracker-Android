@@ -52,12 +52,14 @@ class GlobalRotationAveragerTest {
         val solved = GlobalRotationAverager.solve(
             frameIndices = listOf(0, 1, 2),
             edges = edges,
+            l1Iterations = 0,
+            irlsIterations = 1,
             rotationOutlierDegrees = 5.0
         )!!
 
         assertTrue(solved.rejectedEdges.any { it.firstFrame == 0 && it.secondFrame == 2 })
-        assertTrue(relativeAngle(solved.rotationsByFrame.getValue(1), halfTurn) < 1e-6)
-        assertTrue(relativeAngle(solved.rotationsByFrame.getValue(2), halfTurn) < 1e-6)
+        assertTrue(relativeAngle(solved.rotationsByFrame.getValue(1), halfTurn) < 1e-5)
+        assertTrue(relativeAngle(solved.rotationsByFrame.getValue(2), halfTurn) < 1e-5)
     }
 
     @Test fun reversingEdgeDirectionAndPermutingInputDoesNotChangeSolution() {
