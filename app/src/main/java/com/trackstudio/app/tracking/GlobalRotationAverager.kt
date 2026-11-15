@@ -54,9 +54,8 @@ internal object GlobalRotationAverager {
             .toList()
         if (validEdges.isEmpty()) return null
 
-        // Follow the GLOMAP controller order: largest connected component
-        // first, then rotation estimation and post-estimation outlier filtering.
-        // An extra cycle pre-filter is intentionally not applied here.
+        // Estimate only the largest connected component, then filter residual
+        // outliers; no additional cycle pre-filter is applied.
         val component = largestComponent(frames, validEdges)
         if (component.size < 2) return null
         val activeFrames = frames.filter { it in component }
@@ -101,8 +100,8 @@ internal object GlobalRotationAverager {
                 iterations++
                 averageStep /= (activeFrames.size - 1).coerceAtLeast(1)
                 residuals = computeResiduals(activeFrames, activeIndex, edgesToUse, rotations)
-                // Match GLOMAP's default L1 and IRLS step threshold (0.001)
-                // and its additional L1 step-norm stagnation check (EPS=1e-12).
+                // Stop on the default L1 and IRLS step threshold (0.001), or
+                // on the additional L1 step-norm stagnation check (EPS=1e-12).
                 if (averageStep < 1e-3 ||
                     (initialL1 && abs(lastStepNorm - currentStepNorm) < 1e-12)
                 ) return true
