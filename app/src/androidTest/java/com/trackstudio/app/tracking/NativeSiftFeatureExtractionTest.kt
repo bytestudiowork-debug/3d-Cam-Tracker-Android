@@ -60,6 +60,18 @@ class NativeSiftFeatureExtractionTest {
             ) ?: throw AssertionError("The native feature extractor returned no result.")
             assertEquals(firstPoints.size * 4, nativeOutput.keypointData.size)
             assertArrayEquals(firstBytes, nativeOutput.descriptorData)
+            val featureCount = nativeOutput.keypointData.size / 4
+            val featureHash = goldenHash(nativeOutput)
+            assertEquals(
+                "Android feature count changed: count=$featureCount hash=$featureHash",
+                EXPECTED_FEATURE_COUNT,
+                featureCount
+            )
+            assertEquals(
+                "Android feature golden changed: count=$featureCount hash=$featureHash",
+                EXPECTED_FEATURE_HASH,
+                featureHash
+            )
             firstPoints.indices.forEach { index ->
                 val offset = index * 4
                 assertEquals(
@@ -82,7 +94,7 @@ class NativeSiftFeatureExtractionTest {
 
             Log.i(
                 "SiftFeatureGolden",
-                "FEATURE_GOLDEN count=${firstPoints.size} hash=${goldenHash(nativeOutput)}"
+                "FEATURE_GOLDEN count=$featureCount hash=$featureHash"
             )
         } finally {
             extractor.clear()
@@ -204,5 +216,7 @@ class NativeSiftFeatureExtractionTest {
         const val IMAGE_SIZE = 256
         const val MAX_FEATURES = 400
         const val DESCRIPTOR_LENGTH = 128
+        const val EXPECTED_FEATURE_COUNT = 275
+        const val EXPECTED_FEATURE_HASH = "709ccd0d8eeda160"
     }
 }
