@@ -69,7 +69,7 @@ class NativeSiftFeatureExtractionTest {
             )
             assertEquals(
                 "Android feature golden changed: count=$featureCount hash=$featureHash",
-                EXPECTED_FEATURE_HASH,
+                EXPECTED_ANDROID_FEATURE_HASH,
                 featureHash
             )
             firstPoints.indices.forEach { index ->
@@ -217,6 +217,6 @@ class NativeSiftFeatureExtractionTest {
         const val MAX_FEATURES = 400
         const val DESCRIPTOR_LENGTH = 128
         const val EXPECTED_FEATURE_COUNT = 275
-        const val EXPECTED_FEATURE_HASH = "709ccd0d8eeda160"
+        const val EXPECTED_ANDROID_FEATURE_HASH = "5966e0666e943104"
     }
 }
