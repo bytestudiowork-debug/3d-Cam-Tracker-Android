@@ -2,6 +2,7 @@ package com.trackstudio.app.tracking.glomap
 
 import com.trackstudio.app.tracking.CameraFeatureTrack
 import com.trackstudio.app.tracking.CameraIntrinsics
+import com.trackstudio.app.tracking.PrincipalPointRefinementPolicy
 import org.opencv.core.Mat
 
 /**
