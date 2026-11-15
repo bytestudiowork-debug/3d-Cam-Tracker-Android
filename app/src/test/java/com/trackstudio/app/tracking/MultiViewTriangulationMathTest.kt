@@ -1,0 +1,145 @@
+package com.trackstudio.app.tracking
+
+import org.junit.Assert.assertArrayEquals
+import org.junit.Assert.assertEquals
+import org.junit.Assert.assertNotNull
+import org.junit.Assert.assertNull
+import org.junit.Assert.assertTrue
+import org.junit.Test
+
+class MultiViewTriangulationMathTest {
+    private val intrinsics = PinholeIntrinsics(
+        fx = 760.0,
+        fy = 810.0,
+        skew = 18.0,
+        cx = 320.0,
+        cy = 240.0
+    )
+
+    @Test
+    fun twoViewDltRecoversKnownPointWithSkewedIntrinsics() {
+        val worldPoint = doubleArrayOf(0.25, -0.17, 4.7)
+        val first = view(frame = 0, centerX = 0.0, centerY = 0.0, point = worldPoint)
+        val second = view(frame = 1, centerX = 1.2, centerY = 0.1, point = worldPoint)
+
+        val estimate = MultiViewTriangulationMath.triangulateDlt(listOf(first, second), intrinsics)
+
+        assertNotNull(estimate)
+        assertArrayEquals(worldPoint, estimate!!, 1e-6)
+    }
+
+    @Test
+    fun multiViewProjectorDltRecoversPointFromThreeCameras() {
+        val worldPoint = doubleArrayOf(-0.3, 0.22, 5.4)
+        val observations = listOf(
+            view(0, 0.0, 0.0, worldPoint),
+            view(1, 0.8, -0.1, worldPoint),
+            view(2, 1.7, 0.15, worldPoint)
+        )
+
+        val estimate = MultiViewTriangulationMath.estimate(
+            observations = observations,
+            intrinsics = intrinsics,
+            minimumParallaxDegrees = 0.1,
+            maximumAngularErrorDegrees = 0.05,
+            minimumInlierRatio = 1.0
+        )
+
+        assertNotNull(estimate)
+        assertArrayEquals(worldPoint, estimate!!.pointWorld, 1e-6)
+        assertEquals(listOf(0, 1, 2), estimate.inlierIndices)
+        assertTrue(estimate.triangulationAngleDegrees > 0.1)
+    }
+
+    @Test
+    fun boundedPairConsensusRejectsOneLargeAngularOutlierThenRefitsAllInliers() {
+        val worldPoint = doubleArrayOf(0.12, -0.08, 6.0)
+        val observations = listOf(
+            view(0, 0.0, 0.0, worldPoint),
+            view(1, 0.5, 0.0, worldPoint),
+            view(2, 1.0, 0.1, worldPoint),
+            view(3, 1.5, -0.1, worldPoint).let { it.copy(pixelX = it.pixelX + 120.0) }
+        )
+
+        val estimate = MultiViewTriangulationMath.estimate(
+            observations = observations,
+            intrinsics = intrinsics,
+            minimumParallaxDegrees = 0.1,
+            maximumAngularErrorDegrees = 1.0,
+            minimumInlierRatio = 0.7
+        )
+
+        assertNotNull(estimate)
+        assertEquals(listOf(0, 1, 2), estimate!!.inlierIndices)
+        assertArrayEquals(worldPoint, estimate.pointWorld, 1e-5)
+    }
+
+    @Test
+    fun pixelConsensusRejectsModerateAngularResidualBeyondFinalPixelLimit() {
+        val worldPoint = doubleArrayOf(0.12, -0.08, 6.0)
+        val observations = listOf(
+            view(0, 0.0, 0.0, worldPoint),
+            view(1, 0.5, 0.0, worldPoint),
+            view(2, 1.0, 0.1, worldPoint),
+            view(3, 1.5, -0.1, worldPoint).let { it.copy(pixelX = it.pixelX + 20.0) }
+        )
+
+        val estimate = MultiViewTriangulationMath.estimate(
+            observations = observations,
+            intrinsics = intrinsics,
+            minimumParallaxDegrees = 0.1,
+            maximumAngularErrorDegrees = 2.0,
+            minimumInlierRatio = 0.75,
+            maximumReprojectionErrorPx = 4.0
+        )
+
+        assertNotNull(estimate)
+        assertEquals(listOf(0, 1, 2), estimate!!.inlierIndices)
+        assertArrayEquals(worldPoint, estimate.pointWorld, 1e-5)
+    }
+
+    @Test
+    fun coincidentCameraCentersCannotSeedDepthEvenWithDifferentViewingRays() {
+        val first = view(0, 0.0, 0.0, doubleArrayOf(0.0, 0.0, 5.0))
+        val rotatedAtSameCenter = first.copy(
+            pose = CameraPose(
+                frameIndex = 1,
+                rotation = doubleArrayOf(0.0, -1.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 1.0),
+                translation = doubleArrayOf(0.0, 0.0, 0.0),
+                status = CameraPoseStatus.PNP_REGISTERED
+            )
+        )
+
+        val estimate = MultiViewTriangulationMath.estimate(
+            listOf(first, rotatedAtSameCenter),
+            intrinsics,
+            minimumParallaxDegrees = 0.001
+        )
+
+        assertNull(estimate)
+    }
+
+    private fun view(frame: Int, centerX: Double, centerY: Double, point: DoubleArray): TriangulationView {
+        val pose = CameraPose(
+            frameIndex = frame,
+            rotation = IDENTITY.copyOf(),
+            translation = doubleArrayOf(-centerX, -centerY, 0.0),
+            status = if (frame == 0) CameraPoseStatus.REFERENCE else CameraPoseStatus.PNP_REGISTERED
+        )
+        val cameraPoint = doubleArrayOf(
+            point[0] - centerX,
+            point[1] - centerY,
+            point[2]
+        )
+        val pixel = CameraProjectionMath.project(cameraPoint, intrinsics)
+        return TriangulationView(pixel[0], pixel[1], pose)
+    }
+
+    private companion object {
+        val IDENTITY = doubleArrayOf(
+            1.0, 0.0, 0.0,
+            0.0, 1.0, 0.0,
+            0.0, 0.0, 1.0
+        )
+    }
+}

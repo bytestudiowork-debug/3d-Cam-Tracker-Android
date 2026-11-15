@@ -27,13 +27,21 @@ internal object IncrementalCameraRegistrar {
         featureTracks: List<CameraFeatureTrack>,
         landmarks: Collection<CameraLandmark>,
         cameraMatrix: Mat,
-        minimumCorrespondences: Int = 30,
-        minimumInlierRatio: Double = 0.25,
-        maximumReprojectionErrorPx: Float = 4.0f,
-        minimumOccupiedGridCells: Int = 4
+        minimumCorrespondences: Int = CameraRegistrationPolicy.MINIMUM_CORRESPONDENCES,
+        minimumInlierRatio: Double = CameraRegistrationPolicy.MINIMUM_INLIER_RATIO,
+        maximumReprojectionErrorPx: Float = CameraRegistrationPolicy.FINAL_REPROJECTION_ERROR_PX,
+        minimumOccupiedGridCells: Int = CameraRegistrationPolicy.MINIMUM_OCCUPIED_GRID_CELLS,
+        ransacReprojectionErrorPx: Float = CameraRegistrationPolicy.RANSAC_REPROJECTION_ERROR_PX,
+        minimumCheiralityRatio: Double = CameraRegistrationPolicy.MINIMUM_CHEIRALITY_RATIO
     ): CameraRegistrationResult {
         require(frameWidth > 0 && frameHeight > 0)
         require(cameraMatrix.rows() == 3 && cameraMatrix.cols() == 3 && !cameraMatrix.empty())
+        require(minimumCorrespondences >= 4)
+        require(minimumInlierRatio.isFinite() && minimumInlierRatio in 0.0..1.0)
+        require(maximumReprojectionErrorPx.isFinite() && maximumReprojectionErrorPx > 0f)
+        require(minimumOccupiedGridCells in 0..16)
+        require(ransacReprojectionErrorPx.isFinite() && ransacReprojectionErrorPx > 0f)
+        require(minimumCheiralityRatio.isFinite() && minimumCheiralityRatio in 0.0..1.0)
 
         val observationsByTrack = featureTracks.associate { track ->
             track.id to track.observations.firstOrNull { it.frameIndex == frameIndex }
@@ -83,11 +91,11 @@ internal object IncrementalCameraRegistrar {
                 rotationVector,
                 translationVector,
                 false,
-                2000,
-                maximumReprojectionErrorPx,
-                0.999,
+                CameraRegistrationPolicy.RANSAC_MAX_ITERATIONS,
+                ransacReprojectionErrorPx,
+                CameraRegistrationPolicy.RANSAC_CONFIDENCE,
                 inlierIndices,
-                Calib3d.SOLVEPNP_EPNP
+                Calib3d.SOLVEPNP_P3P
             )
             if (!solved || inlierIndices.empty()) {
                 return CameraRegistrationResult.rejected(
@@ -95,8 +103,12 @@ internal object IncrementalCameraRegistrar {
                 )
             }
 
-            val inlierIds = (0 until inlierIndices.rows()).mapNotNull { row ->
-                inlierIndices.get(row, 0)?.firstOrNull()?.toInt()
+            val rawInlierCount = inlierIndices.total().toInt()
+            val inlierIds = (0 until rawInlierCount).mapNotNull { index ->
+                val coordinate = OpenCvMaskLayout.coordinates(
+                    inlierIndices.rows(), inlierIndices.cols(), index, rawInlierCount
+                ) ?: return@mapNotNull null
+                inlierIndices.get(coordinate.first, coordinate.second)?.firstOrNull()?.toInt()
             }.filter { it in points3d.indices }.distinct()
 
             val inlierCount = inlierIds.size
@@ -116,23 +128,44 @@ internal object IncrementalCameraRegistrar {
             inlierObjectPoints.fromArray(*inlierObjectArray)
             inlierImagePoints.fromArray(*inlierImageArray)
 
-            // Refit on RANSAC inliers with iterative PnP. This is a local
-            // pose refinement step, not a substitute for bundle adjustment.
-            val refined = Calib3d.solvePnP(
-                inlierObjectPoints,
-                inlierImagePoints,
+            // Refine the RANSAC pose against its inliers with a robust pixel-space objective.
+            val refinement = CameraPoseRefiner.refine(
+                inlierObjectArray,
+                inlierImageArray,
                 cameraMatrix,
-                distortion,
                 rotationVector,
-                translationVector,
-                true,
-                Calib3d.SOLVEPNP_ITERATIVE
+                translationVector
             )
-            if (!refined) {
+            if (refinement == null ||
+                rotationVector.put(0, 0, *refinement.rotationVector) != 3 ||
+                translationVector.put(0, 0, *refinement.translation) != 3
+            ) {
                 return CameraRegistrationResult.rejected(
                     frameIndex,
                     correspondenceCount,
-                    "Pose refinement failed",
+                    "Robust pose refinement failed",
+                    inlierCount,
+                    inlierRatio
+                )
+            }
+
+            Calib3d.Rodrigues(rotationVector, rotationMatrix)
+            val rotation = DoubleArray(9)
+            val translation = DoubleArray(3)
+            rotationMatrix.get(0, 0, rotation)
+            translationVector.get(0, 0, translation)
+            val positiveDepthCount = inlierIds.count { index ->
+                val point = points3d[index]
+                val depth = rotation[6] * point.x + rotation[7] * point.y +
+                    rotation[8] * point.z + translation[2]
+                depth.isFinite() && depth > 1e-6
+            }
+            val cheiralityRatio = positiveDepthCount.toDouble() / inlierCount
+            if (positiveDepthCount < minimumCorrespondences || cheiralityRatio < minimumCheiralityRatio) {
+                return CameraRegistrationResult.rejected(
+                    frameIndex,
+                    correspondenceCount,
+                    "PnP inliers fail positive-depth validation",
                     inlierCount,
                     inlierRatio
                 )
@@ -200,12 +233,6 @@ internal object IncrementalCameraRegistrar {
                 )
             }
 
-            Calib3d.Rodrigues(rotationVector, rotationMatrix)
-            val rotation = DoubleArray(9)
-            val translation = DoubleArray(3)
-            rotationMatrix.get(0, 0, rotation)
-            translationVector.get(0, 0, translation)
-
             CameraRegistrationResult(
                 frameIndex = frameIndex,
                 accepted = true,
@@ -250,6 +277,17 @@ internal object IncrementalCameraRegistrar {
         }
         return occupied.count { it }
     }
+}
+
+internal object CameraRegistrationPolicy {
+    const val MINIMUM_CORRESPONDENCES = 30
+    const val MINIMUM_INLIER_RATIO = 0.25
+    const val RANSAC_REPROJECTION_ERROR_PX = 12.0f
+    const val RANSAC_MAX_ITERATIONS = 10000
+    const val RANSAC_CONFIDENCE = 0.99999
+    const val FINAL_REPROJECTION_ERROR_PX = 4.0f
+    const val MINIMUM_CHEIRALITY_RATIO = 0.90
+    const val MINIMUM_OCCUPIED_GRID_CELLS = 4
 }
 
 internal data class CameraRegistrationResult(

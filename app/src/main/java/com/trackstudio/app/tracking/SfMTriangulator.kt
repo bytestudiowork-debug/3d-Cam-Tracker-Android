@@ -1,29 +1,10 @@
 package com.trackstudio.app.tracking
 
-import org.opencv.calib3d.Calib3d
-import org.opencv.core.CvType
 import org.opencv.core.Mat
-import org.opencv.core.Point
 import org.opencv.core.Point3
-import org.opencv.core.Core
-import org.opencv.core.MatOfPoint2f
-import kotlin.math.acos
-import kotlin.math.cos
-import kotlin.math.max
-import kotlin.math.sin
 import kotlin.math.sqrt
 
-/**
- * Provisional sparse triangulation for the current pairwise-motion stage.
- *
- * Candidate views are selected by triangulation/parallax angle, not merely
- * camera-centre distance. Each candidate point is checked with multi-view
- * cheirality and robust reprojection filtering.
- *
- * IMPORTANT: the current pairwise recoverPose trajectory still has arbitrary
- * per-step translation scale. This class therefore produces diagnostic
- * landmarks only; it is not the final incremental-SfM reconstruction.
- */
+/** Sparse calibrated multi-view triangulation with bounded Android-side consensus. */
 internal object SfMTriangulator {
 
     fun triangulate(
@@ -31,13 +12,28 @@ internal object SfMTriangulator {
         poses: List<CameraPose>,
         cameraMatrix: Mat,
         maximumReprojectionErrorPx: Double = 4.0,
-        minimumParallaxDegrees: Double = 1.0,
+        minimumParallaxDegrees: Double = 1.5,
         minimumObservationInlierRatio: Double = 0.70,
         onProgress: (Int, Int) -> Unit = { _, _ -> }
     ): TriangulationResult {
         require(cameraMatrix.rows() == 3 && cameraMatrix.cols() == 3 && !cameraMatrix.empty()) {
             "Camera matrix must be a non-empty 3x3 matrix."
         }
+        require(maximumReprojectionErrorPx.isFinite() && maximumReprojectionErrorPx > 0.0)
+        require(minimumParallaxDegrees.isFinite() && minimumParallaxDegrees >= 1e-3)
+        require(minimumObservationInlierRatio.isFinite() && minimumObservationInlierRatio in 0.0..1.0)
+        val intrinsics = PinholeIntrinsics(
+            fx = cameraMatrix.get(0, 0)?.firstOrNull() ?: Double.NaN,
+            skew = cameraMatrix.get(0, 1)?.firstOrNull() ?: Double.NaN,
+            cx = cameraMatrix.get(0, 2)?.firstOrNull() ?: Double.NaN,
+            fy = cameraMatrix.get(1, 1)?.firstOrNull() ?: Double.NaN,
+            cy = cameraMatrix.get(1, 2)?.firstOrNull() ?: Double.NaN
+        )
+        require(intrinsics.fx.isFinite() && intrinsics.fx > 0.0 &&
+            intrinsics.fy.isFinite() && intrinsics.fy > 0.0 &&
+            intrinsics.skew.isFinite() && intrinsics.cx.isFinite() && intrinsics.cy.isFinite()
+        ) { "Camera intrinsics must be finite and have positive focal lengths." }
+
         val poseByFrame = poses.associateBy { it.frameIndex }
         val landmarks = mutableListOf<CameraLandmark>()
         var rejectedShort = 0
@@ -46,13 +42,14 @@ internal object SfMTriangulator {
         var rejectedReprojection = 0
 
         for ((trackIndex, track) in featureTracks.withIndex()) {
-            if (trackIndex % 16 == 0 || trackIndex == featureTracks.lastIndex) onProgress(trackIndex + 1, featureTracks.size)
+            if (trackIndex % 16 == 0 || trackIndex == featureTracks.lastIndex) {
+                onProgress(trackIndex + 1, featureTracks.size)
+            }
             if (track.observations.size < 2) {
                 rejectedShort++
                 continue
             }
-            // A held pose preserves frame-index alignment but is not a real
-            // geometric observation. Never use it to triangulate landmarks.
+            // Held and unregistered frames retain timeline alignment but are not geometric views.
             val validObservations = track.observations.mapNotNull { observation ->
                 poseByFrame[observation.frameIndex]
                     ?.takeIf {
@@ -66,115 +63,50 @@ internal object SfMTriangulator {
                 continue
             }
 
-            // Very long tracks are sampled evenly for pair selection to keep
-            // the per-track search bounded on long mobile clips.
-            val candidates = sampleObservations(validObservations, 32)
-            var selectedPair: Pair<
-                Pair<CameraFeatureObservation, CameraPose>,
-                Pair<CameraFeatureObservation, CameraPose>
-            >? = null
-            var bestParallax = -1.0
-
-            for (firstIndex in 0 until candidates.lastIndex) {
-                for (secondIndex in firstIndex + 1 until candidates.size) {
-                    val first = candidates[firstIndex]
-                    val second = candidates[secondIndex]
-                    if (cameraCenterDistanceSquared(first.second, second.second) < 1e-10) {
-                        continue
-                    }
-                    val parallax = viewingRayAngleDegrees(
-                        first.first, first.second, second.first, second.second, cameraMatrix
-                    )
-                    if (parallax > bestParallax) {
-                        bestParallax = parallax
-                        selectedPair = first to second
-                    }
-                }
-            }
-
-            val pair = selectedPair
-            if (pair == null || bestParallax < minimumParallaxDegrees ||
-                bestParallax >= 179.0
-            ) {
+            val robustEstimate = MultiViewTriangulationMath.estimate(
+                observations = validObservations.map { (observation, pose) ->
+                    TriangulationView(observation.x, observation.y, pose)
+                },
+                intrinsics = intrinsics,
+                minimumParallaxDegrees = minimumParallaxDegrees,
+                minimumInlierRatio = minimumObservationInlierRatio,
+                maximumReprojectionErrorPx = maximumReprojectionErrorPx
+            )
+            if (robustEstimate == null) {
                 rejectedGeometry++
                 continue
             }
 
-            val (firstObservation, firstPose) = pair.first
-            val (lastObservation, lastPose) = pair.second
-            val projection1 = projectionMatrix(cameraMatrix, firstPose)
-            val projection2 = projectionMatrix(cameraMatrix, lastPose)
-            val image1 = MatOfPoint2f(Point(firstObservation.x, firstObservation.y))
-            val image2 = MatOfPoint2f(Point(lastObservation.x, lastObservation.y))
-            val homogeneous = Mat()
-
-            try {
-                Calib3d.triangulatePoints(projection1, projection2, image1, image2, homogeneous)
-                if (homogeneous.rows() != 4 || homogeneous.cols() != 1) {
-                    rejectedGeometry++
-                    continue
-                }
-                val wData = homogeneous.get(3, 0)
-                if (wData == null || wData.isEmpty()) {
-                    rejectedGeometry++
-                    continue
-                }
-                val w = wData[0]
-                if (!w.isFinite() || kotlin.math.abs(w) < 1e-9) {
-                    rejectedGeometry++
-                    continue
-                }
-                val x = (homogeneous.get(0, 0)?.get(0) ?: Double.NaN) / w
-                val y = (homogeneous.get(1, 0)?.get(0) ?: Double.NaN) / w
-                val z = (homogeneous.get(2, 0)?.get(0) ?: Double.NaN) / w
-                if (!x.isFinite() || !y.isFinite() || !z.isFinite()) {
-                    rejectedGeometry++
-                    continue
-                }
-
-                val point = doubleArrayOf(x, y, z)
-                val reprojectionErrors = mutableListOf<Double>()
-                for ((observation, pose) in validObservations) {
-                    val cameraPoint = transform(pose, point)
-                    if (cameraPoint[2] <= 1e-6) continue
-                    val error = reprojectionError(cameraMatrix, cameraPoint, observation)
-                    if (error.isFinite()) reprojectionErrors += error
-                }
-
-                if (reprojectionErrors.size < 2) {
-                    rejectedGeometry++
-                    continue
-                }
-                val inlierErrors = reprojectionErrors.filter { it <= maximumReprojectionErrorPx }
-                val inlierRatio = inlierErrors.size.toDouble() / validObservations.size
-                if (inlierErrors.size < 2 || inlierRatio < minimumObservationInlierRatio) {
-                    rejectedReprojection++
-                    continue
-                }
-
-                // Median is robust to a small number of bad observations;
-                // mean inlier error remains useful as a familiar diagnostic.
-                val medianError = median(inlierErrors)
-                if (!medianError.isFinite() || medianError > maximumReprojectionErrorPx) {
-                    rejectedReprojection++
-                    continue
-                }
-                val meanInlierError = inlierErrors.average()
-
-                landmarks += CameraLandmark(
-                    trackId = track.id,
-                    position = Point3(x, y, z),
-                    observationCount = inlierErrors.size,
-                    meanReprojectionErrorPx = meanInlierError,
-                    triangulationAngleDegrees = bestParallax
-                )
-            } finally {
-                projection1.release()
-                projection2.release()
-                image1.release()
-                image2.release()
-                homogeneous.release()
+            val point = robustEstimate.pointWorld
+            val inlierErrors = mutableListOf<Double>()
+            val robustInlierIndices = robustEstimate.inlierIndices.toHashSet()
+            for ((index, pair) in validObservations.withIndex()) {
+                if (index !in robustInlierIndices) continue
+                val (observation, pose) = pair
+                val cameraPoint = transform(pose, point)
+                // Behind-camera views are not reprojection inliers and remain in the ratio denominator.
+                if (cameraPoint[2] <= 1e-6) continue
+                val error = reprojectionError(cameraPoint, observation, intrinsics)
+                if (error.isFinite() && error <= maximumReprojectionErrorPx) inlierErrors += error
             }
+            val inlierRatio = inlierErrors.size.toDouble() / validObservations.size
+            if (inlierErrors.size < 2 || inlierRatio < minimumObservationInlierRatio) {
+                rejectedReprojection++
+                continue
+            }
+
+            val meanInlierError = inlierErrors.average()
+            if (!meanInlierError.isFinite()) {
+                rejectedReprojection++
+                continue
+            }
+            landmarks += CameraLandmark(
+                trackId = track.id,
+                position = Point3(point[0], point[1], point[2]),
+                observationCount = inlierErrors.size,
+                meanReprojectionErrorPx = meanInlierError,
+                triangulationAngleDegrees = robustEstimate.triangulationAngleDegrees
+            )
         }
 
         return TriangulationResult(
@@ -194,102 +126,6 @@ internal object SfMTriangulator {
         )
     }
 
-    private fun sampleObservations(
-        observations: List<Pair<CameraFeatureObservation, CameraPose>>,
-        maximum: Int
-    ): List<Pair<CameraFeatureObservation, CameraPose>> {
-        if (observations.size <= maximum) return observations
-        return (0 until maximum).map { index ->
-            val sourceIndex = index * (observations.size - 1) / (maximum - 1)
-            observations[sourceIndex]
-        }
-    }
-
-    private fun median(values: List<Double>): Double {
-        val sorted = values.sorted()
-        val middle = sorted.size / 2
-        return if (sorted.size % 2 == 0) {
-            (sorted[middle - 1] + sorted[middle]) * 0.5
-        } else {
-            sorted[middle]
-        }
-    }
-
-    private fun viewingRayAngleDegrees(
-        firstObservation: CameraFeatureObservation,
-        firstPose: CameraPose,
-        secondObservation: CameraFeatureObservation,
-        secondPose: CameraPose,
-        cameraMatrix: Mat
-    ): Double {
-        val fx = cameraMatrix.get(0, 0)[0]
-        val skew = cameraMatrix.get(0, 1)[0]
-        val cx = cameraMatrix.get(0, 2)[0]
-        val fy = cameraMatrix.get(1, 1)[0]
-        val cy = cameraMatrix.get(1, 2)[0]
-        if (kotlin.math.abs(fx) < 1e-12 || kotlin.math.abs(fy) < 1e-12) return 0.0
-
-        fun worldRay(observation: CameraFeatureObservation, pose: CameraPose): DoubleArray {
-            val normalizedY = (observation.y - cy) / fy
-            val normalizedX = (observation.x - cx - skew * normalizedY) / fx
-            val length = sqrt(normalizedX * normalizedX + normalizedY * normalizedY + 1.0)
-            val cameraRay = doubleArrayOf(normalizedX / length, normalizedY / length, 1.0 / length)
-            val r = pose.rotation
-            // Direction in world coordinates is R^T times the camera ray.
-            val world = doubleArrayOf(
-                r[0] * cameraRay[0] + r[3] * cameraRay[1] + r[6] * cameraRay[2],
-                r[1] * cameraRay[0] + r[4] * cameraRay[1] + r[7] * cameraRay[2],
-                r[2] * cameraRay[0] + r[5] * cameraRay[1] + r[8] * cameraRay[2]
-            )
-            val norm = sqrt(world[0] * world[0] + world[1] * world[1] + world[2] * world[2])
-            return doubleArrayOf(world[0] / norm, world[1] / norm, world[2] / norm)
-        }
-
-        val a = worldRay(firstObservation, firstPose)
-        val b = worldRay(secondObservation, secondPose)
-        val dot = (a[0] * b[0] + a[1] * b[1] + a[2] * b[2]).coerceIn(-1.0, 1.0)
-        return Math.toDegrees(acos(dot))
-    }
-
-    private fun cameraCenterDistanceSquared(first: CameraPose, second: CameraPose): Double {
-        fun center(pose: CameraPose): DoubleArray {
-            val r = pose.rotation
-            val t = pose.translation
-            return doubleArrayOf(
-                -(r[0] * t[0] + r[3] * t[1] + r[6] * t[2]),
-                -(r[1] * t[0] + r[4] * t[1] + r[7] * t[2]),
-                -(r[2] * t[0] + r[5] * t[1] + r[8] * t[2])
-            )
-        }
-        val a = center(first)
-        val b = center(second)
-        val dx = a[0] - b[0]
-        val dy = a[1] - b[1]
-        val dz = a[2] - b[2]
-        return dx * dx + dy * dy + dz * dz
-    }
-
-    private fun projectionMatrix(cameraMatrix: Mat, pose: CameraPose): Mat {
-        val extrinsic = Mat(3, 4, CvType.CV_64F)
-        val values = DoubleArray(12)
-        for (row in 0..2) {
-            for (column in 0..2) {
-                values[row * 4 + column] = pose.rotation[row * 3 + column]
-            }
-            values[row * 4 + 3] = pose.translation[row]
-        }
-        extrinsic.put(0, 0, *values)
-        val projection = Mat()
-        val zero = Mat.zeros(3, 4, CvType.CV_64F)
-        try {
-            Core.gemm(cameraMatrix, extrinsic, 1.0, zero, 0.0, projection)
-        } finally {
-            zero.release()
-            extrinsic.release()
-        }
-        return projection
-    }
-
     private fun transform(pose: CameraPose, point: DoubleArray): DoubleArray {
         val r = pose.rotation
         val t = pose.translation
@@ -301,19 +137,13 @@ internal object SfMTriangulator {
     }
 
     private fun reprojectionError(
-        cameraMatrix: Mat,
         cameraPoint: DoubleArray,
-        observation: CameraFeatureObservation
+        observation: CameraFeatureObservation,
+        intrinsics: PinholeIntrinsics
     ): Double {
-        val fx = cameraMatrix.get(0, 0)[0]
-        val skew = cameraMatrix.get(0, 1)[0]
-        val cx = cameraMatrix.get(0, 2)[0]
-        val fy = cameraMatrix.get(1, 1)[0]
-        val cy = cameraMatrix.get(1, 2)[0]
-        val u = (fx * cameraPoint[0] + skew * cameraPoint[1]) / cameraPoint[2] + cx
-        val v = fy * cameraPoint[1] / cameraPoint[2] + cy
-        val dx = u - observation.x
-        val dy = v - observation.y
+        val predicted = CameraProjectionMath.project(cameraPoint, intrinsics)
+        val dx = predicted[0] - observation.x
+        val dy = predicted[1] - observation.y
         return sqrt(dx * dx + dy * dy)
     }
 }

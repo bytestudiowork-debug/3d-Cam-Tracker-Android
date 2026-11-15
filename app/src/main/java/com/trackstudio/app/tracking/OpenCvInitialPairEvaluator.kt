@@ -1,7 +1,6 @@
 package com.trackstudio.app.tracking
 
 import org.opencv.calib3d.Calib3d
-import org.opencv.core.Core
 import org.opencv.core.Mat
 import org.opencv.core.MatOfPoint2f
 import org.opencv.core.KeyPoint
@@ -35,7 +34,7 @@ internal object OpenCvInitialPairEvaluator {
         frameHeight: Int,
         policy: InitialPairPolicy = InitialPairPolicy(),
         maximumMatches: Int = 2500,
-        ransacThresholdPx: Double = 1.0
+        ransacThresholdPx: Double = 4.0
     ): InitialPairEvaluation {
         require(firstFrame >= 0 && secondFrame > firstFrame)
         require(frameWidth > 0 && frameHeight > 0)
@@ -62,6 +61,7 @@ internal object OpenCvInitialPairEvaluator {
         val points1 = MatOfPoint2f()
         val points2 = MatOfPoint2f()
         val essentialMask = Mat()
+        val fundamentalMask = Mat()
         val cheiralityMask = Mat()
         val homographyMask = Mat()
         val rotation = Mat()
@@ -78,7 +78,7 @@ internal object OpenCvInitialPairEvaluator {
                 Calib3d.RANSAC,
                 0.999,
                 ransacThresholdPx,
-                1500,
+                10000,
                 essentialMask
             )
             try {
@@ -88,18 +88,32 @@ internal object OpenCvInitialPairEvaluator {
                     return rejected(firstFrame, secondFrame, "Essential matrix estimation failed", matchCount)
                 }
 
-                val essentialInlierCount = Core.countNonZero(essentialMask)
+                val essentialInlierCount = countMaskInliers(essentialMask, matchCount)
                 if (essentialInlierCount < policy.minimumInliers) {
                     return rejected(firstFrame, secondFrame, "Too few essential-matrix inliers", matchCount)
                 }
 
+                val estimatedFundamental = Calib3d.findFundamentalMat(
+                    points1, points2, Calib3d.FM_RANSAC,
+                    ransacThresholdPx, 0.999, 10000, fundamentalMask
+                )
+                val fundamentalInlierCount = try {
+                    countMaskInliers(fundamentalMask, matchCount)
+                } finally {
+                    estimatedFundamental.release()
+                }
+                val essentialToFundamentalRatio = if (fundamentalInlierCount == 0) {
+                    Double.MAX_VALUE
+                } else {
+                    essentialInlierCount.toDouble() / fundamentalInlierCount
+                }
+
                 val estimatedHomography = Calib3d.findHomography(
-                    points1, points2, Calib3d.RANSAC, 3.0, homographyMask, 1000, 0.995
+                    points1, points2, Calib3d.RANSAC, 4.0, homographyMask, 10000, 0.999
                 )
                 estimatedHomography.release()
-                val homographyInliers = if (homographyMask.empty()) 0
-                    else Core.countNonZero(homographyMask)
-                val homographyRatio = homographyInliers.toDouble() / matchCount
+                val homographyInliers = countMaskInliers(homographyMask, matchCount)
+                val homographyRatio = homographyInliers.toDouble() / essentialInlierCount
 
                 var bestPoseInliers = 0
                 var bestPoseMask: Mat? = null
@@ -149,9 +163,11 @@ internal object OpenCvInitialPairEvaluator {
                     bestTranslation?.release()
                 }
 
-                val inlierIndices = (0 until cheiralityMask.rows()).mapNotNull { index ->
-                    val value = cheiralityMask.get(index, 0)?.firstOrNull()
-                    if (value != null && value != 0.0) index else null
+                val inlierIndices = (0 until matchCount).filter { index ->
+                    maskValue(cheiralityMask, index, matchCount)
+                }
+                if (inlierIndices.size != bestPoseInliers) {
+                    return rejected(firstFrame, secondFrame, "Invalid cheirality inlier mask", matchCount)
                 }
                 val inlierCount = inlierIndices.size
                 val coverage = occupiedGridCells(
@@ -172,13 +188,18 @@ internal object OpenCvInitialPairEvaluator {
 
                 val t = DoubleArray(3)
                 translation.get(0, 0, t)
-                val translationNorm = sqrt(t.sumOf { it * it }).coerceAtLeast(1e-12)
+                val translationNorm = sqrt(t.sumOf { it * it })
+                if (!translationNorm.isFinite() || translationNorm <= 1e-12 || t.any { !it.isFinite() }) {
+                    return rejected(firstFrame, secondFrame, "Invalid relative translation", matchCount)
+                }
                 val forwardMotionRatio = (kotlin.math.abs(t[2]) / translationNorm).coerceIn(0.0, 1.0)
 
                 val relativeRotation = DoubleArray(9)
-                val relativeTranslationDirection = DoubleArray(3)
                 rotation.get(0, 0, relativeRotation)
-                translation.get(0, 0, relativeTranslationDirection)
+                if (relativeRotation.any { !it.isFinite() }) {
+                    return rejected(firstFrame, secondFrame, "Invalid relative rotation", matchCount)
+                }
+                val relativeTranslationDirection = DoubleArray(3) { t[it] / translationNorm }
                 val candidate = InitialPairCandidate(
                     firstFrame = firstFrame,
                     secondFrame = secondFrame,
@@ -191,7 +212,9 @@ internal object OpenCvInitialPairEvaluator {
                     homographyInlierRatio = homographyRatio,
                     forwardMotionRatio = forwardMotionRatio,
                     relativeRotation = relativeRotation,
-                    relativeTranslationDirection = relativeTranslationDirection
+                    relativeTranslationDirection = relativeTranslationDirection,
+                    verifiedMatches = inlierIndices.map { matched[it] },
+                    essentialToFundamentalInlierRatio = essentialToFundamentalRatio
                 )
                 return InitialPairSelector.evaluate(candidate, policy)
             } finally {
@@ -201,6 +224,7 @@ internal object OpenCvInitialPairEvaluator {
             points1.release()
             points2.release()
             essentialMask.release()
+            fundamentalMask.release()
             cheiralityMask.release()
             homographyMask.release()
             rotation.release()
@@ -285,5 +309,19 @@ internal object OpenCvInitialPairEvaluator {
         if (sorted.isEmpty()) return 0.0
         val index = (fraction * (sorted.size - 1)).toInt().coerceIn(0, sorted.lastIndex)
         return sorted[index]
+    }
+
+    private fun countMaskInliers(mask: Mat, expectedSize: Int): Int {
+        if (mask.empty() || mask.channels() != 1 || mask.total().toInt() != expectedSize) return 0
+        return (0 until expectedSize).count { maskValue(mask, it, expectedSize) }
+    }
+
+    private fun maskValue(mask: Mat, index: Int, expectedSize: Int): Boolean {
+        if (mask.empty() || mask.channels() != 1) return false
+        val coordinate = OpenCvMaskLayout.coordinates(
+            mask.rows(), mask.cols(), index, expectedSize
+        ) ?: return false
+        return mask.get(coordinate.first, coordinate.second)
+            ?.firstOrNull()?.let { it != 0.0 } == true
     }
 }

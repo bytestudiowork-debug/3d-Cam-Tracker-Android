@@ -9,3 +9,4 @@
     void onIteration(int, int);
 }
 -keep class com.trackstudio.app.tracking.glomap.GlomapNativeSolver { *; }
+-keep class com.trackstudio.app.tracking.CameraPoseRefiner { *; }

@@ -70,22 +70,28 @@ internal object InitialPairSelector {
                 candidate.cheiralityRatio !in 0.0..1.0 ->
                 "Invalid cheirality metric"
             !candidate.homographyInlierRatio.isFinite() ||
-                candidate.homographyInlierRatio !in 0.0..1.0 ->
+                candidate.homographyInlierRatio < 0.0 ->
                 "Invalid homography metric"
+            !candidate.essentialToFundamentalInlierRatio.isFinite() ||
+                candidate.essentialToFundamentalInlierRatio < 0.0 ->
+                "Invalid calibrated-model agreement metric"
+            candidate.essentialToFundamentalInlierRatio <=
+                policy.minimumEssentialToFundamentalInlierRatio ->
+                "Essential geometry is inconsistent with the fundamental model"
             !candidate.forwardMotionRatio.isFinite() ||
                 candidate.forwardMotionRatio !in 0.0..1.0 ->
                 "Invalid forward-motion metric"
             !candidate.medianParallaxDegrees.isFinite() ||
-                candidate.medianParallaxDegrees < policy.minimumMedianParallaxDegrees ->
+                candidate.medianParallaxDegrees <= policy.minimumMedianParallaxDegrees ->
                 "Insufficient median triangulation parallax"
             !candidate.upperQuartileParallaxDegrees.isFinite() ||
                 candidate.upperQuartileParallaxDegrees < policy.minimumUpperQuartileParallaxDegrees ->
                 "Too few points have useful triangulation parallax"
             candidate.cheiralityRatio < policy.minimumCheiralityRatio ->
                 "Too few points satisfy positive-depth cheirality"
-            candidate.forwardMotionRatio > policy.maximumForwardMotionRatio ->
+            candidate.forwardMotionRatio >= policy.maximumForwardMotionRatio ->
                 "Pair is dominated by degenerate forward motion"
-            candidate.homographyInlierRatio >= policy.planarDominanceRatio &&
+            candidate.homographyInlierRatio > policy.planarDominanceRatio &&
                 candidate.upperQuartileParallaxDegrees < policy.planarParallaxEscapeDegrees ->
                 "Homography-dominated pair has insufficient non-planar parallax"
             else -> null
@@ -109,7 +115,7 @@ internal object InitialPairSelector {
         val parallaxScore = 0.65 * medianParallaxScore + 0.35 * upperParallaxScore
         val cheiralityScore = candidate.cheiralityRatio.coerceIn(0.0, 1.0)
         val homographyPenalty = if (
-            candidate.homographyInlierRatio >= policy.planarDominanceRatio
+            candidate.homographyInlierRatio > policy.planarDominanceRatio
         ) 0.65 else 1.0
 
         // Balanced scoring avoids selecting a pair on raw match count alone.
@@ -180,7 +186,11 @@ internal data class InitialPairCandidate(
     /** Relative rotation R_second_from_first recovered from this image pair, row-major. */
     val relativeRotation: DoubleArray? = null,
     /** Unit translation direction in the second camera coordinate system. */
-    val relativeTranslationDirection: DoubleArray? = null
+    val relativeTranslationDirection: DoubleArray? = null,
+    /** Verified keypoint index pairs from this exact geometry estimate. */
+    val verifiedMatches: List<Pair<Int, Int>> = emptyList(),
+    /** Essential support divided by fundamental support; values above one are valid. */
+    val essentialToFundamentalInlierRatio: Double = 1.0
 ) {
     val frameGap: Int
         get() = secondFrame - firstFrame
@@ -202,10 +212,41 @@ internal data class InitialPairPolicy(
     val targetUpperQuartileParallaxDegrees: Double = 16.0,
     val minimumCheiralityRatio: Double = 0.55,
     val maximumForwardMotionRatio: Double = 0.95,
-    val planarDominanceRatio: Double = 0.92,
+    val minimumEssentialToFundamentalInlierRatio: Double = 0.95,
+    /** Homography inlier support divided by essential-matrix inlier support. */
+    val planarDominanceRatio: Double = 0.8,
     val planarParallaxEscapeDegrees: Double = 5.0,
     val inlierCountSaturation: Int = 500
-)
+) {
+    init {
+        require(minimumFrameGap >= 1)
+        require(minimumInliers >= 5)
+        require(minimumInlierRatio in 0.0..1.0)
+        require(targetInlierRatio in minimumInlierRatio..1.0)
+        require(gridCellCount > 0)
+        require(minimumCoveredGridCells in 0..gridCellCount)
+        require(minimumMedianParallaxDegrees.isFinite() && minimumMedianParallaxDegrees >= 0.0)
+        require(minimumUpperQuartileParallaxDegrees.isFinite() && minimumUpperQuartileParallaxDegrees >= 0.0)
+        require(targetMedianParallaxDegrees.isFinite() && targetMedianParallaxDegrees > 0.0)
+        require(targetUpperQuartileParallaxDegrees.isFinite() && targetUpperQuartileParallaxDegrees > 0.0)
+        require(minimumCheiralityRatio in 0.0..1.0)
+        require(maximumForwardMotionRatio in 0.0..1.0)
+        require(minimumEssentialToFundamentalInlierRatio.isFinite() &&
+            minimumEssentialToFundamentalInlierRatio >= 0.0)
+        require(planarDominanceRatio.isFinite() && planarDominanceRatio >= 0.0)
+        require(planarParallaxEscapeDegrees.isFinite() && planarParallaxEscapeDegrees >= 0.0)
+        require(inlierCountSaturation > 0)
+    }
+
+    companion object {
+        /** Stricter thresholds for choosing a stable two-view reconstruction seed. */
+        fun initialization() = InitialPairPolicy(
+            minimumInliers = 100,
+            minimumMedianParallaxDegrees = 16.0,
+            targetMedianParallaxDegrees = 20.0
+        )
+    }
+}
 
 internal data class InitialPairEvaluation(
     val candidate: InitialPairCandidate,

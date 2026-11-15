@@ -83,9 +83,11 @@ class InitialPairSelectorTest {
             0.0, 1.0, 0.0
         )
         val direction = doubleArrayOf(1.0, 0.0, 0.0)
+        val matches = listOf(3 to 7, 8 to 11)
         val measured = candidate().copy(
             relativeRotation = rotation,
-            relativeTranslationDirection = direction
+            relativeTranslationDirection = direction,
+            verifiedMatches = matches
         )
 
         val result = InitialPairSelector.select(listOf(measured))
@@ -93,6 +95,64 @@ class InitialPairSelectorTest {
         assertNotNull(result.selected)
         assertTrue(result.selected!!.relativeRotation!!.contentEquals(rotation))
         assertTrue(result.selected!!.relativeTranslationDirection!!.contentEquals(direction))
+        assertEquals(matches, result.selected!!.verifiedMatches)
+    }
+
+    @Test
+    fun initializationPolicyUsesReferenceInlierCountAndMedianParallaxMinimums() {
+        val policy = InitialPairPolicy.initialization()
+        val tooFew = candidate(matched = 300, inliers = 99, medianParallax = 20.0, upperParallax = 22.0)
+        val tooLittleParallax = candidate(matched = 300, inliers = 100, medianParallax = 15.999, upperParallax = 20.0)
+        val exactAngleBoundary = candidate(matched = 300, inliers = 100, medianParallax = 16.0, upperParallax = 20.0)
+        val aboveAngleBoundary = candidate(matched = 300, inliers = 100, medianParallax = 16.001, upperParallax = 20.0)
+
+        assertFalse(InitialPairSelector.evaluate(tooFew, policy).accepted)
+        assertFalse(InitialPairSelector.evaluate(tooLittleParallax, policy).accepted)
+        assertFalse(InitialPairSelector.evaluate(exactAngleBoundary, policy).accepted)
+        assertTrue(InitialPairSelector.evaluate(aboveAngleBoundary, policy).accepted)
+    }
+
+    @Test
+    fun calibratedPairRequiresEssentialSupportStrictlyAboveNinetyFivePercentOfFundamentalSupport() {
+        val below = candidate().copy(essentialToFundamentalInlierRatio = 0.949)
+        val exactBoundary = candidate().copy(essentialToFundamentalInlierRatio = 0.95)
+        val above = candidate().copy(essentialToFundamentalInlierRatio = 0.951)
+
+        assertFalse(InitialPairSelector.evaluate(below).accepted)
+        assertFalse(InitialPairSelector.evaluate(exactBoundary).accepted)
+        assertTrue(InitialPairSelector.evaluate(above).accepted)
+    }
+
+    @Test
+    fun rejectsForwardMotionAtTheReferenceMaximumBoundary() {
+        val boundary = candidate(medianParallax = 20.0, upperParallax = 25.0)
+            .copy(forwardMotionRatio = 0.95)
+
+        val evaluation = InitialPairSelector.evaluate(boundary, InitialPairPolicy.initialization())
+
+        assertFalse(evaluation.accepted)
+        assertTrue(evaluation.reason.contains("forward motion"))
+    }
+
+    @Test
+    fun homographyDominanceIsMeasuredAgainstEssentialSupportAndMayExceedOne() {
+        val candidate = candidate(
+            medianParallax = 6.0,
+            upperParallax = 12.0,
+            homographyRatio = 1.2
+        )
+
+        val evaluation = InitialPairSelector.evaluate(candidate)
+        val exactDominanceBoundary = InitialPairSelector.evaluate(
+            candidate.copy(homographyInlierRatio = 0.8)
+        )
+        val nonDominantScore = InitialPairSelector.evaluate(
+            candidate.copy(homographyInlierRatio = 0.2)
+        ).score
+
+        assertTrue(evaluation.accepted)
+        assertEquals(nonDominantScore, exactDominanceBoundary.score, 1e-12)
+        assertTrue(evaluation.score < nonDominantScore)
     }
 
     @Test
@@ -114,7 +174,8 @@ class InitialPairSelectorTest {
         medianParallax: Double = 6.0,
         upperParallax: Double = 12.0,
         cheirality: Double = 0.8,
-        homographyRatio: Double = 0.55
+        homographyRatio: Double = 0.55,
+        essentialToFundamentalRatio: Double = 1.0
     ) = InitialPairCandidate(
         firstFrame = 0,
         secondFrame = secondFrame,
@@ -125,6 +186,7 @@ class InitialPairSelectorTest {
         upperQuartileParallaxDegrees = upperParallax,
         cheiralityRatio = cheirality,
         homographyInlierRatio = homographyRatio,
-        forwardMotionRatio = 0.35
+        forwardMotionRatio = 0.35,
+        essentialToFundamentalInlierRatio = essentialToFundamentalRatio
     )
 }

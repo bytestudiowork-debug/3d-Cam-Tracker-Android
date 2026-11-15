@@ -74,6 +74,10 @@ add_library(trackstudio_glomap SHARED glomap_positioner.cpp glomap_bundle_adjust
 target_link_libraries(trackstudio_glomap PRIVATE Ceres::ceres ${log-lib})
 target_compile_options(trackstudio_glomap PRIVATE -O3 -fno-fast-math)
 
+add_library(trackstudio_camera SHARED camera_pose_refiner.cpp)
+target_link_libraries(trackstudio_camera PRIVATE Ceres::ceres)
+target_compile_options(trackstudio_camera PRIVATE -O3 -fno-fast-math)
+
 add_library(trackstudio_native SHARED proxy_engine.cpp)
 target_include_directories(trackstudio_native PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
 

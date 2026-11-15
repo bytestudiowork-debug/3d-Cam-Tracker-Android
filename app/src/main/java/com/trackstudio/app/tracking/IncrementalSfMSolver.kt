@@ -173,7 +173,10 @@ internal class IncrementalSfMSolver(
                 )
             )
 
-            val selection = InitialPairSelector.select(evaluations.map { it.candidate })
+            val selection = InitialPairSelector.select(
+                evaluations.map { it.candidate },
+                policy = InitialPairPolicy.initialization()
+            )
             val selected = selection.selected
                 ?: throw IllegalStateException(
                     "No reliable 3D initialization pair: ${selection.reason}. Try footage with visible texture and sideways camera movement."
@@ -193,13 +196,29 @@ internal class IncrementalSfMSolver(
                     totalFrames = frameCount
                 )
             )
-            val geometry = estimatePairGeometry(
-                firstFrame, secondFrame, cameraMatrix, matcher
-            ) ?: throw IllegalStateException(
-                "The selected pair passed evaluation but could not be reconstructed."
+            val geometry = PairGeometry(
+                matches = selected.verifiedMatches,
+                rotation = selected.relativeRotation
+                    ?: throw IllegalStateException("The selected pair has no recovered rotation."),
+                translation = selected.relativeTranslationDirection
+                    ?: throw IllegalStateException("The selected pair has no recovered translation."),
+                inlierCount = selected.inlierCount
             )
-            if (geometry.inlierCount < 30) {
-                throw IllegalStateException("Initial pair has too few cheirality-verified points.")
+            val matchedFirstIndices = HashSet<Int>()
+            val matchedSecondIndices = HashSet<Int>()
+            val validCorrespondences = geometry.matches.all { (firstIndex, secondIndex) ->
+                firstIndex in firstFrame.keypoints.indices &&
+                    secondIndex in secondFrame.keypoints.indices &&
+                    matchedFirstIndices.add(firstIndex) && matchedSecondIndices.add(secondIndex)
+            }
+            val validRelativePose = geometry.rotation.size == 9 &&
+                geometry.rotation.all { it.isFinite() } &&
+                geometry.translation.size == 3 && geometry.translation.all { it.isFinite() } &&
+                geometry.translation.any { kotlin.math.abs(it) > 1e-12 }
+            if (geometry.matches.size != geometry.inlierCount || geometry.inlierCount < 100 ||
+                !validCorrespondences || !validRelativePose
+            ) {
+                throw IllegalStateException("Initial pair failed correspondence or relative-pose validation.")
             }
 
             val trackBuilder = FeatureTrackBuilder()
@@ -956,12 +975,17 @@ internal class IncrementalSfMSolver(
             fundamental = Calib3d.findFundamentalMat(
                 points1, points2, Calib3d.FM_RANSAC, 1.5, 0.995, fundamentalMask
             )
+            fun maskIsInlier(mask: Mat, index: Int): Boolean {
+                if (mask.empty() || mask.channels() != 1) return false
+                val coordinate = OpenCvMaskLayout.coordinates(
+                    mask.rows(), mask.cols(), index, matches.size
+                ) ?: return false
+                return mask.get(coordinate.first, coordinate.second)
+                    ?.firstOrNull()?.let { it != 0.0 } == true
+            }
             fun maskInlierCount(mask: Mat): Int {
-                if (mask.empty() || mask.total().toInt() != matches.size) return 0
                 return (0 until matches.size).count { index ->
-                    val row = if (mask.rows() == matches.size) index else 0
-                    val column = if (mask.rows() == matches.size) 0 else index
-                    mask.get(row, column)?.firstOrNull()?.let { it != 0.0 } == true
+                    maskIsInlier(mask, index)
                 }
             }
 
@@ -984,11 +1008,7 @@ internal class IncrementalSfMSolver(
             }
             if (max(fundamentalInliers, homographyInliers) < 8) return emptyList()
 
-            return matches.filterIndexed { index, _ ->
-                val row = if (selectedMask.rows() == matches.size) index else 0
-                val column = if (selectedMask.rows() == matches.size) 0 else index
-                selectedMask.get(row, column)?.firstOrNull()?.let { it != 0.0 } == true
-            }
+            return matches.filterIndexed { index, _ -> maskIsInlier(selectedMask, index) }
         } finally {
             points1.release()
             points2.release()
@@ -1070,7 +1090,12 @@ internal class IncrementalSfMSolver(
                     }
                     val chosenMask = bestMask ?: return null
                     val inlierPairs = matches.filterIndexed { index, _ ->
-                        chosenMask.get(index, 0)?.firstOrNull()?.let { it != 0.0 } == true
+                        if (chosenMask.empty() || chosenMask.channels() != 1) return@filterIndexed false
+                        val coordinate = OpenCvMaskLayout.coordinates(
+                            chosenMask.rows(), chosenMask.cols(), index, matches.size
+                        ) ?: return@filterIndexed false
+                        chosenMask.get(coordinate.first, coordinate.second)
+                            ?.firstOrNull()?.let { it != 0.0 } == true
                     }
                     if (inlierPairs.size < 8) return null
                     if (!includePose) {
