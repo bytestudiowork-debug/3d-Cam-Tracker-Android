@@ -1,6 +1,7 @@
 package com.trackstudio.app.tracking
 
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertTrue
 import org.junit.Test
 
 class GlobalTrackGraphBuilderTest {
@@ -59,6 +60,29 @@ class GlobalTrackGraphBuilderTest {
         assertEquals(listOf(100, 4, 3, 3, 3), tracks.map { it.observations.size })
         assertEquals(listOf(0, 1, 2, 3, 4), tracks.map { it.id })
         assertEquals(listOf(1300, 106, 113, 110, 2), tracks.map { it.observations.first().frameIndex })
+    }
+
+    @Test
+    fun excludesMovedFrameTwoNodeWhenItsCorrespondenceIsNotVerified() {
+        val builder = GlobalTrackGraphBuilder(minimumObservations = 3)
+        builder.addVerifiedMatches(0, 1, listOf(0 to 0, 1 to 1, 2 to 2))
+        // The third feature is displaced in frame 2 and is absent from this verified edge.
+        builder.addVerifiedMatches(1, 2, listOf(0 to 0, 1 to 1))
+
+        val tracks = builder.buildFromLocations(
+            featureLocationsByFrame = mapOf(
+                0 to listOf(observation(0, 10.0, 20.0), observation(0, 30.0, 20.0), observation(0, 50.0, 20.0)),
+                1 to listOf(observation(1, 11.0, 20.0), observation(1, 31.0, 20.0), observation(1, 51.0, 20.0)),
+                2 to listOf(observation(2, 12.0, 20.0), observation(2, 32.0, 20.0), observation(2, 57.0, 26.0))
+            ),
+            activeFrames = setOf(0, 1, 2)
+        )
+
+        assertEquals(2, tracks.size)
+        assertTrue(tracks.all { track -> track.observations.map { it.frameIndex } == listOf(0, 1, 2) })
+        assertTrue(tracks.none { track ->
+            track.observations.any { it.frameIndex == 2 && it.x == 57.0 && it.y == 26.0 }
+        })
     }
 
     private fun joinedRepeatedFrameGraph() = GlobalTrackGraphBuilder().apply {

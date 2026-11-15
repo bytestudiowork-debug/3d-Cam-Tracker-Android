@@ -3,6 +3,15 @@ plugins {
     id("org.jetbrains.kotlin.android")
 }
 
+val emulatorTestAbi = providers.gradleProperty("emulatorTestAbi").orNull == "true"
+val configuredAbiFilters = providers.gradleProperty("PROJECT_ABI_FILTERS")
+    .orNull
+    ?.split(',')
+    ?.map { it.trim() }
+    ?.filter { it.isNotEmpty() }
+    ?.takeIf { it.isNotEmpty() }
+    ?: listOf("arm64-v8a", "armeabi-v7a")
+
 android {
     namespace = "com.trackstudio.app"
     compileSdk = 34
@@ -18,8 +27,8 @@ android {
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
 
         ndk {
-            // Real device ABIs only - keeps the native build (and CI time) lean.
-            abiFilters += listOf("arm64-v8a", "armeabi-v7a")
+            // Normal builds target phones; instrumentation selects the emulator ABI only for its test invocation.
+            abiFilters += if (emulatorTestAbi) listOf("x86_64") else configuredAbiFilters
         }
 
         externalNativeBuild {
@@ -109,4 +118,6 @@ dependencies {
     debugImplementation("androidx.compose.ui:ui-test-manifest")
 
     testImplementation("junit:junit:4.13.2")
+    androidTestImplementation("androidx.test:runner:1.5.2")
+    androidTestImplementation("androidx.test.ext:junit:1.1.5")
 }
