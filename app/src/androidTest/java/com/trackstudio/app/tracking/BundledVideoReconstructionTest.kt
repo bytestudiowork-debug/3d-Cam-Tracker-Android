@@ -28,8 +28,7 @@ class BundledVideoReconstructionTest {
         assertTrue("OpenCV runtime is unavailable", OpenCvRuntime.ensureLoaded())
         assertTrue("Native feature library is unavailable", NativeSiftExtractor.isAvailable)
 
-        val context = InstrumentationRegistry.getInstrumentation().context
-        val sequence = decodeSampledFrames(context.cacheDir)
+        val sequence = decodeSampledFrames()
         val cameraMatrix = cameraMatrix(sequence.width, sequence.height)
         try {
             val result = runBlocking {
@@ -114,20 +113,17 @@ class BundledVideoReconstructionTest {
         }
     }
 
-    private fun decodeSampledFrames(cacheDir: File): DecodedSequence {
+    private fun decodeSampledFrames(): DecodedSequence {
         val context = InstrumentationRegistry.getInstrumentation().context
-        check(cacheDir.isDirectory || cacheDir.mkdirs()) {
-            "Could not create the video test cache directory"
-        }
-        val video = File.createTempFile("tracking-video-", ".mp4", cacheDir)
-        context.assets.open(VIDEO_ASSET).use { input ->
-            video.outputStream().use { output -> input.copyTo(output) }
-        }
-
+        val assetDescriptor = context.assets.openFd(VIDEO_ASSET)
         val retriever = MediaMetadataRetriever()
         val frames = mutableListOf<Mat>()
         try {
-            retriever.setDataSource(video.absolutePath)
+            retriever.setDataSource(
+                assetDescriptor.fileDescriptor,
+                assetDescriptor.startOffset,
+                assetDescriptor.length
+            )
             val durationMs = retriever.extractMetadata(MediaMetadataRetriever.METADATA_KEY_DURATION)
                 ?.toLongOrNull()
                 ?: throw AssertionError("Video duration metadata is missing")
@@ -180,7 +176,7 @@ class BundledVideoReconstructionTest {
             throw failure
         } finally {
             retriever.release()
-            video.delete()
+            assetDescriptor.close()
         }
     }
 
