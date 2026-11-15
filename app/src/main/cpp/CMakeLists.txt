@@ -78,17 +78,13 @@ add_library(trackstudio_native SHARED proxy_engine.cpp)
 target_include_directories(trackstudio_native PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
 
 target_link_libraries(trackstudio_native PRIVATE
-        Ceres::ceres
         ${log-lib}
         ${jnigraphics-lib}
 )
 
 target_compile_options(trackstudio_native PRIVATE
         -O3
-        -ffast-math
         -funroll-loops
-        -fno-exceptions
-        -fno-rtti
 )
 
 if(SUITESPARSE OR NOT EIGENSPARSE)
