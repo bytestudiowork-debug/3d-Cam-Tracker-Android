@@ -116,6 +116,45 @@ class GlobalRotationAveragerTest {
         }
     }
 
+    @Test fun gemanMcClureWeightsFollowTheConfiguredAngularScale() {
+        val sigma = Math.toRadians(5.0)
+        val squaredError = 0.04
+        val denominator = squaredError + sigma * sigma
+        val expected = sigma * sigma / (denominator * denominator)
+
+        assertEquals(expected, GlobalRotationAverager.gemanMcClureWeight(squaredError, sigma), 1e-15)
+        assertEquals(1.0 / (sigma * sigma), GlobalRotationAverager.gemanMcClureWeight(0.0, sigma), 1e-12)
+        assertTrue(GlobalRotationAverager.gemanMcClureWeight(1.0, sigma) < expected)
+    }
+
+    @Test fun averageUpdateUsesAllRegisteredFramesIncludingTheFixedGauge() {
+        val deltas = arrayOf(
+            doubleArrayOf(0.0, 0.0, 0.0),
+            doubleArrayOf(0.003, 0.0, 0.0),
+            doubleArrayOf(0.0, 0.006, 0.0),
+            doubleArrayOf(0.0, 0.0, 0.009)
+        )
+
+        assertEquals(0.0045, GlobalRotationAverager.averageUpdateMagnitude(deltas, 0), 1e-12)
+    }
+
+    @Test fun rootGaugeIsDeterministicAndNormalizesAllExpectedRotations() {
+        val truth = mapOf(
+            2 to rot(0.12, -0.08, 0.03),
+            5 to rot(-0.10, 0.25, 0.04),
+            7 to rot(0.16, 0.12, -0.06)
+        )
+        val edges = listOf(edge(7, 5, truth), edge(5, 2, truth), edge(7, 2, truth))
+        val solved = GlobalRotationAverager.solve(listOf(7, 5, 2), edges.reversed())!!
+        val rootTranspose = transpose(truth.getValue(2))
+
+        assertEquals(2, solved.rootFrame)
+        truth.forEach { (frame, rotation) ->
+            val normalized = multiply(rotation, rootTranspose)
+            assertTrue(relativeAngle(solved.rotationsByFrame.getValue(frame), normalized) < 1e-7)
+        }
+    }
+
     private fun edge(a:Int,b:Int,truth:Map<Int,DoubleArray>) =
         GlobalRotationAverager.Edge(a,b,multiply(truth.getValue(b),transpose(truth.getValue(a))),100)
 

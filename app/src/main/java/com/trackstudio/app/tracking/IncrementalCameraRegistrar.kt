@@ -1,12 +1,15 @@
 package com.trackstudio.app.tracking
 
 import org.opencv.calib3d.Calib3d
+import org.opencv.core.CvException
+import org.opencv.core.CvType
 import org.opencv.core.Mat
 import org.opencv.core.MatOfDouble
 import org.opencv.core.MatOfPoint2f
 import org.opencv.core.MatOfPoint3f
 import org.opencv.core.Point
 import org.opencv.core.Point3
+import kotlin.math.hypot
 import kotlin.math.sqrt
 
 /**
@@ -42,6 +45,18 @@ internal object IncrementalCameraRegistrar {
         require(minimumOccupiedGridCells in 0..16)
         require(ransacReprojectionErrorPx.isFinite() && ransacReprojectionErrorPx > 0f)
         require(minimumCheiralityRatio.isFinite() && minimumCheiralityRatio in 0.0..1.0)
+
+        val intrinsics = PinholeIntrinsics(
+            cameraMatrix.get(0, 0)?.firstOrNull() ?: Double.NaN,
+            cameraMatrix.get(1, 1)?.firstOrNull() ?: Double.NaN,
+            cameraMatrix.get(0, 1)?.firstOrNull() ?: Double.NaN,
+            cameraMatrix.get(0, 2)?.firstOrNull() ?: Double.NaN,
+            cameraMatrix.get(1, 2)?.firstOrNull() ?: Double.NaN
+        )
+        if (!intrinsics.fx.isFinite() || !intrinsics.fy.isFinite() ||
+            !intrinsics.skew.isFinite() || !intrinsics.cx.isFinite() ||
+            !intrinsics.cy.isFinite() || intrinsics.fx <= 0.0 || intrinsics.fy <= 0.0
+        ) return CameraRegistrationResult.rejected(frameIndex, 0, "Invalid camera intrinsics")
 
         val observationsByTrack = featureTracks.associate { track ->
             track.id to track.observations.firstOrNull { it.frameIndex == frameIndex }
@@ -104,15 +119,15 @@ internal object IncrementalCameraRegistrar {
             }
 
             val rawInlierCount = inlierIndices.total().toInt()
-            val inlierIds = (0 until rawInlierCount).mapNotNull { index ->
+            var inlierIds = (0 until rawInlierCount).mapNotNull { index ->
                 val coordinate = OpenCvMaskLayout.coordinates(
                     inlierIndices.rows(), inlierIndices.cols(), index, rawInlierCount
                 ) ?: return@mapNotNull null
                 inlierIndices.get(coordinate.first, coordinate.second)?.firstOrNull()?.toInt()
             }.filter { it in points3d.indices }.distinct()
 
-            val inlierCount = inlierIds.size
-            val inlierRatio = inlierCount.toDouble() / correspondenceCount
+            var inlierCount = inlierIds.size
+            var inlierRatio = inlierCount.toDouble() / correspondenceCount
             if (inlierCount < minimumCorrespondences || inlierRatio < minimumInlierRatio) {
                 return CameraRegistrationResult.rejected(
                     frameIndex,
@@ -123,15 +138,13 @@ internal object IncrementalCameraRegistrar {
                 )
             }
 
-            val inlierObjectArray = inlierIds.map { points3d[it] }.toTypedArray()
-            val inlierImageArray = inlierIds.map { points2d[it] }.toTypedArray()
-            inlierObjectPoints.fromArray(*inlierObjectArray)
-            inlierImagePoints.fromArray(*inlierImageArray)
+            val initialObjectArray = inlierIds.map { points3d[it] }.toTypedArray()
+            val initialImageArray = inlierIds.map { points2d[it] }.toTypedArray()
 
-            // Refine the RANSAC pose against its inliers with a robust pixel-space objective.
+            // Refine the RANSAC pose against its initial consensus.
             val refinement = CameraPoseRefiner.refine(
-                inlierObjectArray,
-                inlierImageArray,
+                initialObjectArray,
+                initialImageArray,
                 cameraMatrix,
                 rotationVector,
                 translationVector
@@ -148,6 +161,46 @@ internal object IncrementalCameraRegistrar {
                     inlierRatio
                 )
             }
+
+            val initialPose = poseModel(refinement.rotationVector, refinement.translation)
+                ?: return CameraRegistrationResult.rejected(
+                    frameIndex, correspondenceCount, "Invalid refined PnP pose", inlierCount, inlierRatio
+                )
+            val polished = LocalConsensusOptimizer.refine(
+                initialModel = initialPose,
+                observationCount = correspondenceCount,
+                initialInliers = inlierIds,
+                minimumInliers = minimumCorrespondences,
+                threshold = ransacReprojectionErrorPx.toDouble(),
+                maximumRefitRounds = CameraRegistrationPolicy.LOCAL_OPTIMIZATION_ROUNDS,
+                fitCandidates = { currentPose, consensusIndices ->
+                    fitPoseModel(
+                        currentPose, consensusIndices, points3d, points2d, cameraMatrix
+                    )?.let(::listOf).orEmpty()
+                },
+                residual = { pose, index ->
+                    reprojectionError(pose, points3d[index], points2d[index], intrinsics)
+                }
+            )
+            val finalPose = if (polished != null && polished.inlierIndices.size >= inlierCount) {
+                inlierIds = polished.inlierIndices
+                inlierCount = inlierIds.size
+                inlierRatio = inlierCount.toDouble() / correspondenceCount
+                polished.model
+            } else {
+                initialPose
+            }
+            if (rotationVector.put(0, 0, *finalPose.rotationVector) != 3 ||
+                translationVector.put(0, 0, *finalPose.translation) != 3
+            ) {
+                return CameraRegistrationResult.rejected(
+                    frameIndex, correspondenceCount, "Invalid locally refined pose", inlierCount, inlierRatio
+                )
+            }
+            val inlierObjectArray = inlierIds.map { points3d[it] }.toTypedArray()
+            val inlierImageArray = inlierIds.map { points2d[it] }.toTypedArray()
+            inlierObjectPoints.fromArray(*inlierObjectArray)
+            inlierImagePoints.fromArray(*inlierImageArray)
 
             Calib3d.Rodrigues(rotationVector, rotationMatrix)
             val rotation = DoubleArray(9)
@@ -264,6 +317,101 @@ internal object IncrementalCameraRegistrar {
         }
     }
 
+    private data class PoseModel(
+        val rotationVector: DoubleArray,
+        val translation: DoubleArray,
+        val rotationMatrix: DoubleArray
+    )
+
+    private fun poseModel(rotationVector: DoubleArray, translation: DoubleArray): PoseModel? {
+        if (rotationVector.size != 3 || translation.size != 3 ||
+            rotationVector.any { !it.isFinite() } || translation.any { !it.isFinite() }
+        ) return null
+        val vector = Mat(3, 1, CvType.CV_64F)
+        val matrix = Mat()
+        return try {
+            if (vector.put(0, 0, *rotationVector) != 3) return null
+            Calib3d.Rodrigues(vector, matrix)
+            val rotation = DoubleArray(9)
+            if (matrix.get(0, 0, rotation) != rotation.size || rotation.any { !it.isFinite() }) {
+                return null
+            }
+            PoseModel(rotationVector.copyOf(), translation.copyOf(), rotation)
+        } catch (_: CvException) {
+            null
+        } finally {
+            vector.release()
+            matrix.release()
+        }
+    }
+
+    private fun fitPoseModel(
+        current: PoseModel,
+        indices: List<Int>,
+        points3d: List<Point3>,
+        points2d: List<Point>,
+        cameraMatrix: Mat
+    ): PoseModel? {
+        if (indices.size < 4) return null
+        val objectArray = indices.map(points3d::get).toTypedArray()
+        val imageArray = indices.map(points2d::get).toTypedArray()
+        val objectSubset = MatOfPoint3f()
+        val imageSubset = MatOfPoint2f()
+        val distortion = MatOfDouble()
+        val rotationVector = Mat(3, 1, CvType.CV_64F)
+        val translationVector = Mat(3, 1, CvType.CV_64F)
+        return try {
+            objectSubset.fromArray(*objectArray)
+            imageSubset.fromArray(*imageArray)
+            if (rotationVector.put(0, 0, *current.rotationVector) != 3 ||
+                translationVector.put(0, 0, *current.translation) != 3
+            ) return null
+            val solved = Calib3d.solvePnP(
+                objectSubset,
+                imageSubset,
+                cameraMatrix,
+                distortion,
+                rotationVector,
+                translationVector,
+                true,
+                Calib3d.SOLVEPNP_ITERATIVE
+            )
+            if (!solved) return null
+            val refinement = CameraPoseRefiner.refine(
+                objectArray, imageArray, cameraMatrix, rotationVector, translationVector
+            ) ?: return null
+            poseModel(refinement.rotationVector, refinement.translation)
+        } catch (_: CvException) {
+            null
+        } finally {
+            objectSubset.release()
+            imageSubset.release()
+            distortion.release()
+            rotationVector.release()
+            translationVector.release()
+        }
+    }
+
+    private fun reprojectionError(
+        pose: PoseModel,
+        point: Point3,
+        observation: Point,
+        intrinsics: PinholeIntrinsics
+    ): Double {
+        val r = pose.rotationMatrix
+        val t = pose.translation
+        val cameraPoint = doubleArrayOf(
+            r[0] * point.x + r[1] * point.y + r[2] * point.z + t[0],
+            r[3] * point.x + r[4] * point.y + r[5] * point.z + t[1],
+            r[6] * point.x + r[7] * point.y + r[8] * point.z + t[2]
+        )
+        if (cameraPoint.any { !it.isFinite() } || cameraPoint[2] <= 1e-8) {
+            return Double.POSITIVE_INFINITY
+        }
+        val projected = CameraProjectionMath.project(cameraPoint, intrinsics)
+        return hypot(projected[0] - observation.x, projected[1] - observation.y)
+    }
+
     private fun occupiedGridCells(
         points: Array<Point>,
         width: Int,
@@ -285,6 +433,7 @@ internal object CameraRegistrationPolicy {
     const val RANSAC_REPROJECTION_ERROR_PX = 12.0f
     const val RANSAC_MAX_ITERATIONS = 10000
     const val RANSAC_CONFIDENCE = 0.99999
+    const val LOCAL_OPTIMIZATION_ROUNDS = 2
     const val FINAL_REPROJECTION_ERROR_PX = 4.0f
     const val MINIMUM_CHEIRALITY_RATIO = 0.90
     const val MINIMUM_OCCUPIED_GRID_CELLS = 4

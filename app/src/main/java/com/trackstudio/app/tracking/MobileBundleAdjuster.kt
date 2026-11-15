@@ -16,9 +16,9 @@ import kotlin.math.sqrt
  * not a full sparse joint Schur-complement optimizer.
  */
 internal object MobileBundleAdjuster {
-    private const val HUBER_DELTA_PX = 3.0
-    private const val MAX_OBSERVATION_ERROR_PX = 30.0
-    private const val MAX_ITERATIONS = 5
+    internal const val HUBER_DELTA_PX = 1.0
+    internal const val MAX_OBSERVATION_ERROR_PX = 30.0
+    internal const val MAX_ITERATIONS = 5
 
     fun optimizeLandmarks(
         featureTracks: List<CameraFeatureTrack>,
@@ -81,11 +81,7 @@ internal object MobileBundleAdjuster {
                     val residualY = observation.y - projected[1]
                     val error = hypot(residualX, residualY)
                     if (!error.isFinite() || error > MAX_OBSERVATION_ERROR_PX) continue
-                    val weight = if (error <= HUBER_DELTA_PX || error < 1e-9) {
-                        1.0
-                    } else {
-                        HUBER_DELTA_PX / error
-                    }
+                    val weight = huberPixelWeight(error)
 
                     val jCamera = CameraProjectionMath.jacobian(camera, intrinsics)
                     val jWorld = Array(2) { DoubleArray(3) }
@@ -142,6 +138,24 @@ internal object MobileBundleAdjuster {
         }
     }
 
+    internal fun huberPixelWeight(errorPx: Double): Double {
+        if (!errorPx.isFinite() || errorPx < 0.0) return Double.NaN
+        return if (errorPx <= HUBER_DELTA_PX || errorPx < 1e-9) {
+            1.0
+        } else {
+            HUBER_DELTA_PX / errorPx
+        }
+    }
+
+    internal fun huberPixelCost(errorPx: Double): Double {
+        if (!errorPx.isFinite() || errorPx < 0.0) return Double.POSITIVE_INFINITY
+        return if (errorPx <= HUBER_DELTA_PX) {
+            0.5 * errorPx * errorPx
+        } else {
+            HUBER_DELTA_PX * (errorPx - 0.5 * HUBER_DELTA_PX)
+        }
+    }
+
     private fun robustCost(
         point: DoubleArray,
         observations: List<Pair<CameraFeatureObservation, CameraPose>>,
@@ -155,11 +169,7 @@ internal object MobileBundleAdjuster {
             val projected = CameraProjectionMath.project(camera, intrinsics)
             val error = hypot(projected[0] - observation.x, projected[1] - observation.y)
             if (!error.isFinite() || error > MAX_OBSERVATION_ERROR_PX) continue
-            cost += if (error <= HUBER_DELTA_PX) {
-                0.5 * error * error
-            } else {
-                HUBER_DELTA_PX * (error - 0.5 * HUBER_DELTA_PX)
-            }
+            cost += huberPixelCost(error)
             count++
         }
         return if (count >= 2) cost / count else Double.POSITIVE_INFINITY

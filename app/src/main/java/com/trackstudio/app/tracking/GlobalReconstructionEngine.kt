@@ -573,6 +573,7 @@ class GlobalReconstructionEngine(
         val bestMask = Mat()
         val bestRotation = Mat()
         val bestTranslation = Mat()
+        val bestEssential = Mat()
         return try {
             points1.fromList(matched.map { first.keypoints[it.first].pt })
             points2.fromList(matched.map { second.keypoints[it.second].pt })
@@ -601,12 +602,49 @@ class GlobalReconstructionEngine(
                             mask.copyTo(bestMask)
                             rotation.copyTo(bestRotation)
                             translation.copyTo(bestTranslation)
+                            candidate.copyTo(bestEssential)
                         }
                     } finally {
                         candidate.release()
                         mask.release()
                         rotation.release()
                         translation.release()
+                    }
+                }
+                if (bestInliers > 0 && !bestEssential.empty()) {
+                    val initialEssential = DoubleArray(9)
+                    if (bestEssential.get(0, 0, initialEssential) == initialEssential.size) {
+                        val polished = OpenCvTwoViewLocalOptimizer.refine(
+                            matched.map { first.keypoints[it.first].pt }.toTypedArray(),
+                            matched.map { second.keypoints[it.second].pt }.toTypedArray(),
+                            cameraMatrix,
+                            initialEssential,
+                            OpenCvTwoViewLocalOptimizer.inliersFromMask(bestMask, matched.size),
+                            1.0,
+                            0.999,
+                            900
+                        )
+                        if (polished != null && polished.inlierIndices.size >= bestInliers) {
+                            val polishedMask = OpenCvTwoViewLocalOptimizer.maskFromIndices(
+                                polished.inlierIndices, matched.size
+                            )
+                            val polishedRotation = Mat(3, 3, CvType.CV_64F)
+                            val polishedTranslation = Mat(3, 1, CvType.CV_64F)
+                            try {
+                                if (polishedRotation.put(0, 0, *polished.rotation) == polished.rotation.size &&
+                                    polishedTranslation.put(0, 0, *polished.translation) == polished.translation.size
+                                ) {
+                                    polishedMask.copyTo(bestMask)
+                                    polishedRotation.copyTo(bestRotation)
+                                    polishedTranslation.copyTo(bestTranslation)
+                                    bestInliers = polished.inlierIndices.size
+                                }
+                            } finally {
+                                polishedMask.release()
+                                polishedRotation.release()
+                                polishedTranslation.release()
+                            }
+                        }
                     }
                 }
                 if (bestInliers < 30 || bestRotation.empty() || bestTranslation.empty()) return null
@@ -622,7 +660,9 @@ class GlobalReconstructionEngine(
                     val accepted = bestMask.get(index, 0)?.firstOrNull() ?: 0.0
                     if (accepted != 0.0) matched[index] else null
                 }
-                if (inlierMatches.size < 30 || inlierMatches.size.toDouble() / matched.size < 0.20) return null
+                if (inlierMatches.size != bestInliers || inlierMatches.size < 30 ||
+                    inlierMatches.size.toDouble() / matched.size < 0.20
+                ) return null
                 VerifiedPair(
                     firstIndex, secondIndex, rotationValues,
                     translationValues, inlierMatches, matched.size
@@ -637,6 +677,7 @@ class GlobalReconstructionEngine(
             bestMask.release()
             bestRotation.release()
             bestTranslation.release()
+            bestEssential.release()
         }
     }
 

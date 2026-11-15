@@ -83,22 +83,20 @@ internal object GlobalRotationAverager {
                     val sigma = Math.toRadians(sigmaDegrees)
                     val weights = DoubleArray(edgesToUse.size) { e ->
                         val squared = norm3(residuals[e]).let { it * it }
-                        sigma * sigma / ((squared + sigma * sigma) * (squared + sigma * sigma))
+                        gemanMcClureWeight(squared, sigma)
                     }
                     solveTangentUpdates(activeFrames.size, activeIndex, edgesToUse, residuals, weights)
                 } ?: return false
                 currentStepNorm = sqrt(deltas.sumOf { dot(it, it) })
-                var averageStep = 0.0
                 for (i in activeFrames.indices) {
                     if (activeFrames[i] == root) continue
                     val d = deltas[i]
                     rotations[activeFrames[i]] = projectToRotation(multiply(
                         rotations.getValue(activeFrames[i]), expRotation(doubleArrayOf(-d[0], -d[1], -d[2]))
                     ))
-                    averageStep += norm3(d)
                 }
                 iterations++
-                averageStep /= (activeFrames.size - 1).coerceAtLeast(1)
+                val averageStep = averageUpdateMagnitude(deltas, activeIndex.getValue(root))
                 residuals = computeResiduals(activeFrames, activeIndex, edgesToUse, rotations)
                 // Stop on the default L1 and IRLS step threshold (0.001), or
                 // on the additional L1 step-norm stagnation check (EPS=1e-12).
@@ -127,6 +125,24 @@ internal object GlobalRotationAverager {
             rootFrame = root,
             iterations = iterations
         )
+    }
+
+    internal fun gemanMcClureWeight(squaredError: Double, sigmaRadians: Double): Double {
+        if (!squaredError.isFinite() || squaredError < 0.0 ||
+            !sigmaRadians.isFinite() || sigmaRadians <= 0.0
+        ) return Double.NaN
+        val sigmaSquared = sigmaRadians * sigmaRadians
+        val denominator = squaredError + sigmaSquared
+        return sigmaSquared / (denominator * denominator)
+    }
+
+    internal fun averageUpdateMagnitude(deltas: Array<DoubleArray>, fixedIndex: Int): Double {
+        if (deltas.isEmpty() || fixedIndex !in deltas.indices ||
+            deltas.any { it.size != 3 || it.any { value -> !value.isFinite() } }
+        ) return Double.NaN
+        return deltas.indices.asSequence()
+            .filter { it != fixedIndex }
+            .sumOf { norm3(deltas[it]) } / deltas.size
     }
 
     /**

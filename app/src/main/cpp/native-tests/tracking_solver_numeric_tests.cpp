@@ -1,6 +1,8 @@
 #include "camera_pose_refiner_core.h"
 #include "global_bundle_adjuster_core.h"
+#include "optimization_robust_policy.h"
 
+#include <ceres/loss_function.h>
 #include <ceres/rotation.h>
 
 #include <algorithm>
@@ -118,6 +120,17 @@ void TestPoseRefinement() {
             "pose refinement rotation did not recover the synthetic truth");
     Require(std::sqrt(translation_error_squared) < 0.025,
             "pose refinement translation did not recover the synthetic truth");
+}
+
+void TestGlobalHuberLossPolicy() {
+    static_assert(tracking::kGlobalBundleHuberDeltaPx == 1.0);
+    const ceres::HuberLoss loss(tracking::kGlobalBundleHuberDeltaPx);
+    double rho[3] = {};
+    loss.Evaluate(4.0, rho);
+    Require(std::abs(rho[0] - 3.0) < 1e-12 &&
+                    std::abs(rho[1] - 0.5) < 1e-12 &&
+                    std::abs(rho[2] + 0.0625) < 1e-12,
+            "global BA Huber objective changed from its one-pixel scale");
 }
 
 void TestBundleAdjustmentJointRecoveryOutliersAndGauge() {
@@ -430,6 +443,7 @@ void TestMalformedRotationIsRejected() {
 
 int main() {
     try {
+        TestGlobalHuberLossPolicy();
         TestPoseRefinement();
         TestBundleAdjustmentJointRecoveryOutliersAndGauge();
         TestObservablePrincipalPointRefinement();

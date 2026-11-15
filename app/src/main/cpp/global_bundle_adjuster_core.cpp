@@ -1,4 +1,5 @@
 #include "global_bundle_adjuster_core.h"
+#include "optimization_robust_policy.h"
 
 #include <ceres/ceres.h>
 #include <ceres/manifold.h>
@@ -251,7 +252,7 @@ bool RunGlobalBundleAdjustment(const std::vector<double>& initial_camera_centers
         auto* cost = new ceres::AutoDiffCostFunction<ReprojectionResidual, 2, 3, 3, 3, 2, 2>(
                 new ReprojectionResidual(image_points[i * 2],
                                          image_points[i * 2 + 1], intrinsics[1]));
-        problem.AddResidualBlock(cost, new ceres::HuberLoss(1.0),
+        problem.AddResidualBlock(cost, new ceres::HuberLoss(kGlobalBundleHuberDeltaPx),
                                  angle_axis, center, point, focal_lengths.data(),
                                  principal_point.data());
         if (problem.HasParameterBlock(point)) ordering->AddElementToGroup(point, 0);

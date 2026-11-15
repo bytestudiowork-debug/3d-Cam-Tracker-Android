@@ -5,6 +5,7 @@ import kotlinx.coroutines.currentCoroutineContext
 import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.withContext
 import org.opencv.calib3d.Calib3d
+import org.opencv.core.CvType
 import org.opencv.core.Mat
 import org.opencv.core.MatOfPoint2f
 import org.opencv.core.KeyPoint
@@ -1054,8 +1055,10 @@ internal class IncrementalSfMSolver(
         val rotation = Mat()
         val translation = Mat()
         try {
-            points1.fromArray(*matches.map { firstKeypoints[it.first].pt }.toTypedArray())
-            points2.fromArray(*matches.map { secondKeypoints[it.second].pt }.toTypedArray())
+            val matchedPoints1 = matches.map { firstKeypoints[it.first].pt }.toTypedArray()
+            val matchedPoints2 = matches.map { secondKeypoints[it.second].pt }.toTypedArray()
+            points1.fromArray(*matchedPoints1)
+            points2.fromArray(*matchedPoints2)
             val essential = Calib3d.findEssentialMat(
                 points1, points2, cameraMatrix, Calib3d.RANSAC,
                 0.999, 1.25, 1200, mask
@@ -1069,6 +1072,7 @@ internal class IncrementalSfMSolver(
                 var bestMask: Mat? = null
                 var bestR: Mat? = null
                 var bestT: Mat? = null
+                var bestEssential: Mat? = null
                 try {
                     for (index in 0 until essential.rows() / 3) {
                         val candidate = essential.rowRange(index * 3, index * 3 + 3).clone()
@@ -1087,6 +1091,8 @@ internal class IncrementalSfMSolver(
                                 bestMask = candidateMask.clone()
                                 bestR = r.clone()
                                 bestT = t.clone()
+                                bestEssential?.release()
+                                bestEssential = candidate.clone()
                             }
                         } finally {
                             candidate.release()
@@ -1095,6 +1101,54 @@ internal class IncrementalSfMSolver(
                             t.release()
                         }
                     }
+
+                    val selectedEssential = bestEssential
+                    if (selectedEssential != null) {
+                        val initialEssential = DoubleArray(9)
+                        if (selectedEssential.get(0, 0, initialEssential) == initialEssential.size) {
+                            val polished = OpenCvTwoViewLocalOptimizer.refine(
+                                matchedPoints1,
+                                matchedPoints2,
+                                cameraMatrix,
+                                initialEssential,
+                                bestMask?.let {
+                                    OpenCvTwoViewLocalOptimizer.inliersFromMask(it, matches.size)
+                                }.orEmpty(),
+                                1.25,
+                                0.999,
+                                1200
+                            )
+                            if (polished != null && polished.inlierIndices.size >= bestCount) {
+                                val polishedMask = OpenCvTwoViewLocalOptimizer.maskFromIndices(
+                                    polished.inlierIndices, matches.size
+                                )
+                                val polishedRotation = Mat(3, 3, CvType.CV_64F)
+                                val polishedTranslation = Mat(3, 1, CvType.CV_64F)
+                                var retained = false
+                                try {
+                                    if (polishedRotation.put(0, 0, *polished.rotation) == polished.rotation.size &&
+                                        polishedTranslation.put(0, 0, *polished.translation) == polished.translation.size
+                                    ) {
+                                        bestMask?.release()
+                                        bestR?.release()
+                                        bestT?.release()
+                                        bestMask = polishedMask
+                                        bestR = polishedRotation
+                                        bestT = polishedTranslation
+                                        bestCount = polished.inlierIndices.size
+                                        retained = true
+                                    }
+                                } finally {
+                                    if (!retained) {
+                                        polishedMask.release()
+                                        polishedRotation.release()
+                                        polishedTranslation.release()
+                                    }
+                                }
+                            }
+                        }
+                    }
+
                     val chosenMask = bestMask ?: return null
                     val inlierPairs = matches.filterIndexed { index, _ ->
                         if (chosenMask.empty() || chosenMask.channels() != 1) return@filterIndexed false
@@ -1104,7 +1158,7 @@ internal class IncrementalSfMSolver(
                         chosenMask.get(coordinate.first, coordinate.second)
                             ?.firstOrNull()?.let { it != 0.0 } == true
                     }
-                    if (inlierPairs.size < 8) return null
+                    if (inlierPairs.size != bestCount || inlierPairs.size < 8) return null
                     if (!includePose) {
                         return PairGeometry(inlierPairs, identity3(), doubleArrayOf(0.0, 0.0, 0.0), bestCount)
                     }
@@ -1119,6 +1173,7 @@ internal class IncrementalSfMSolver(
                     bestMask?.release()
                     bestR?.release()
                     bestT?.release()
+                    bestEssential?.release()
                 }
             } finally {
                 essential.release()

@@ -4,6 +4,7 @@ import org.opencv.calib3d.Calib3d
 import org.opencv.core.Mat
 import org.opencv.core.MatOfPoint2f
 import org.opencv.core.KeyPoint
+import org.opencv.core.CvType
 import kotlin.math.acos
 import kotlin.math.sqrt
 
@@ -92,6 +93,7 @@ internal object OpenCvInitialPairEvaluator {
                 if (essentialInlierCount < policy.minimumInliers) {
                     return rejected(firstFrame, secondFrame, "Too few essential-matrix inliers", matchCount)
                 }
+                var selectedEssentialSupport = essentialInlierCount
 
                 val estimatedFundamental = Calib3d.findFundamentalMat(
                     points1, points2, Calib3d.FM_RANSAC,
@@ -119,6 +121,7 @@ internal object OpenCvInitialPairEvaluator {
                 var bestPoseMask: Mat? = null
                 var bestRotation: Mat? = null
                 var bestTranslation: Mat? = null
+                var bestEssential: Mat? = null
                 try {
                     for (candidateIndex in 0 until essentialEstimate.rows() / 3) {
                         val candidate = essentialEstimate
@@ -140,12 +143,62 @@ internal object OpenCvInitialPairEvaluator {
                                 bestPoseMask = mask.clone()
                                 bestRotation = candidateRotation.clone()
                                 bestTranslation = candidateTranslation.clone()
+                                bestEssential?.release()
+                                bestEssential = candidate.clone()
                             }
                         } finally {
                             candidate.release()
                             mask.release()
                             candidateRotation.release()
                             candidateTranslation.release()
+                        }
+                    }
+
+                    val selectedEssential = bestEssential
+                    if (selectedEssential != null) {
+                        val initialEssential = DoubleArray(9)
+                        if (selectedEssential.get(0, 0, initialEssential) == initialEssential.size) {
+                            val polished = OpenCvTwoViewLocalOptimizer.refine(
+                                matchedFirst.toTypedArray(),
+                                matchedSecond.toTypedArray(),
+                                cameraMatrix,
+                                initialEssential,
+                                bestPoseMask?.let {
+                                    OpenCvTwoViewLocalOptimizer.inliersFromMask(it, matchCount)
+                                }.orEmpty(),
+                                ransacThresholdPx,
+                                0.999,
+                                10000
+                            )
+                            if (polished != null && polished.inlierIndices.size >= bestPoseInliers) {
+                                val polishedMask = OpenCvTwoViewLocalOptimizer.maskFromIndices(
+                                    polished.inlierIndices, matchCount
+                                )
+                                val polishedRotation = Mat(3, 3, CvType.CV_64F)
+                                val polishedTranslation = Mat(3, 1, CvType.CV_64F)
+                                var retained = false
+                                try {
+                                    if (polishedRotation.put(0, 0, *polished.rotation) == polished.rotation.size &&
+                                        polishedTranslation.put(0, 0, *polished.translation) == polished.translation.size
+                                    ) {
+                                        bestPoseMask?.release()
+                                        bestRotation?.release()
+                                        bestTranslation?.release()
+                                        bestPoseMask = polishedMask
+                                        bestRotation = polishedRotation
+                                        bestTranslation = polishedTranslation
+                                        bestPoseInliers = polished.inlierIndices.size
+                                        selectedEssentialSupport = polished.epipolarInlierCount
+                                        retained = true
+                                    }
+                                } finally {
+                                    if (!retained) {
+                                        polishedMask.release()
+                                        polishedRotation.release()
+                                        polishedTranslation.release()
+                                    }
+                                }
+                            }
                         }
                     }
 
@@ -161,6 +214,7 @@ internal object OpenCvInitialPairEvaluator {
                     bestPoseMask?.release()
                     bestRotation?.release()
                     bestTranslation?.release()
+                    bestEssential?.release()
                 }
 
                 val inlierIndices = (0 until matchCount).filter { index ->
@@ -208,7 +262,7 @@ internal object OpenCvInitialPairEvaluator {
                     coveredGridCells = coverage,
                     medianParallaxDegrees = medianParallax,
                     upperQuartileParallaxDegrees = upperQuartileParallax,
-                    cheiralityRatio = inlierCount.toDouble() / essentialInlierCount.coerceAtLeast(1),
+                    cheiralityRatio = inlierCount.toDouble() / selectedEssentialSupport.coerceAtLeast(1),
                     homographyInlierRatio = homographyRatio,
                     forwardMotionRatio = forwardMotionRatio,
                     relativeRotation = relativeRotation,
