@@ -14,6 +14,11 @@ enum class ReconstructionMode(val label: String) {
     GLOBAL("Global")
 }
 
+enum class CameraObservationCoordinateModel {
+    PINHOLE_PIXELS_ASSUMED,
+    CALIBRATED_PINHOLE_PIXELS
+}
+
 interface ReconstructionEngine {
     suspend fun solve(
         frameCount: Int,

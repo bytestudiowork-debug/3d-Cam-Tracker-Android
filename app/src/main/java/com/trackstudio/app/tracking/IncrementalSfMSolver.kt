@@ -75,6 +75,7 @@ internal class IncrementalSfMSolver(
         val cache = linkedMapOf<Int, CachedFrame>()
         val featureExtractor = AndroidSiftFeatureExtractor(maxFeatures.coerceIn(400, 5000))
         val matcher = SiftDescriptorMatcher(ratioThreshold)
+        var referenceFrameSize: Pair<Int, Int>? = null
 
         try {
             // Bounded first pass: retain descriptors only for frames participating
@@ -85,6 +86,12 @@ internal class IncrementalSfMSolver(
                 val source = frameProvider(index)
                     ?: throw IllegalStateException("Unable to decode frame ${index + 1}.")
                 try {
+                    val frameSize = source.cols() to source.rows()
+                    val expectedSize = referenceFrameSize
+                    require(expectedSize == null || frameSize == expectedSize) {
+                        "All decoded frames in a reconstruction must use the same image dimensions."
+                    }
+                    if (expectedSize == null) referenceFrameSize = frameSize
                     if (index in candidateFrames) {
                         val gray = toGray(source)
                         val keypoints = org.opencv.core.MatOfKeyPoint()

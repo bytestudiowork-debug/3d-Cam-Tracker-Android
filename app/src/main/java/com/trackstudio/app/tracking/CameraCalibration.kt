@@ -16,6 +16,8 @@ class CameraCalibration(
     distortionCoefficients: List<Double> = emptyList()
 ) {
     val distortionCoefficients: List<Double> = distortionCoefficients.toList()
+    val hasDistortion: Boolean
+        get() = distortionCoefficients.any { it != 0.0 }
 
     init {
         require(imageWidth > 0 && imageHeight > 0)
@@ -30,6 +32,9 @@ class CameraCalibration(
         0.0, fy, cy,
         0.0, 0.0, 1.0
     )
+
+    fun projectRawPixel(cameraPoint: DoubleArray): DoubleArray =
+        CameraDistortionModel.projectRawPixel(cameraPoint, this)
 }
 
 suspend fun ReconstructionEngine.solve(
@@ -46,7 +51,7 @@ suspend fun ReconstructionEngine.solve(
     try {
         cameraMatrix.create(3, 3, CvType.CV_64F)
         cameraMatrix.put(0, 0, *calibration.cameraMatrixValues())
-        if (calibration.distortionCoefficients.isNotEmpty()) {
+        if (calibration.hasDistortion) {
             distortion.fromArray(*calibration.distortionCoefficients.toDoubleArray())
         }
 
@@ -64,7 +69,7 @@ suspend fun ReconstructionEngine.solve(
                             "${calibration.imageWidth}x${calibration.imageHeight}."
                     )
                 }
-                if (distortion.empty()) {
+                if (!calibration.hasDistortion) {
                     source
                 } else {
                     val corrected = Mat()
@@ -81,7 +86,10 @@ suspend fun ReconstructionEngine.solve(
             }
         }
 
-        return solve(frameCount, cameraMatrix, calibratedFrameProvider, onProgress)
+        return solve(frameCount, cameraMatrix, calibratedFrameProvider, onProgress).copy(
+            inputCameraCalibration = calibration,
+            observationCoordinateModel = CameraObservationCoordinateModel.CALIBRATED_PINHOLE_PIXELS
+        )
     } finally {
         distortion.release()
         cameraMatrix.release()

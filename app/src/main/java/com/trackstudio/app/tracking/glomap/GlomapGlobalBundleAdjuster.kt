@@ -6,8 +6,10 @@ import org.opencv.core.Mat
 
 /**
  * Joint reprojection bundle adjustment for the independent global pipeline.
- * Rotations, centers, points, and shared focal lengths are jointly optimized;
- * the reference pose and baseline norm fix the gauges, and skew/principal point stay fixed.
+ * Rotations, centers, points, and shared focal lengths are jointly optimized.
+ * Principal point is released only with broad image coverage, parallax, and
+ * multi-axis camera rotation;
+ * skew remains fixed, and the reference pose/baseline norm fix the gauges.
  */
 internal class GlomapGlobalBundleAdjuster {
     data class Result(
@@ -18,7 +20,8 @@ internal class GlomapGlobalBundleAdjuster {
         val initialCost: Double,
         val finalCost: Double,
         val positiveDepthRatio: Double,
-        val iterations: Int
+        val iterations: Int,
+        val principalPointRefinementEnabled: Boolean
     )
 
     fun solve(
@@ -27,6 +30,8 @@ internal class GlomapGlobalBundleAdjuster {
         pointsByTrackId: Map<Int, DoubleArray>,
         tracks: List<CameraFeatureTrack>,
         cameraMatrix: Mat,
+        imageWidth: Int = 0,
+        imageHeight: Int = 0,
         maxIterations: Int = 60,
         numThreads: Int = Runtime.getRuntime().availableProcessors().coerceIn(1, 4),
         onIteration: (Int, Int) -> Unit = { _, _ -> }
@@ -86,10 +91,21 @@ internal class GlomapGlobalBundleAdjuster {
             cameraMatrix.get(1, 2)?.firstOrNull() ?: Double.NaN
         )
         if (intrinsics.any { !it.isFinite() } || intrinsics[0] <= 0.0 || intrinsics[3] <= 0.0) return null
+        val refinePrincipalPoint = PrincipalPointRefinementPolicy.isObservable(
+            PrincipalPointRefinementPolicy.assess(
+                tracks = tracks,
+                frameCentersById = frameCentersById,
+                rotationsByFrame = rotationsByFrame,
+                pointsByTrackId = pointsByTrackId,
+                imageWidth = imageWidth,
+                imageHeight = imageHeight
+            )
+        )
 
         val packed = nativeSolve(
             centers, rotations, points, frameIndices, trackIndices,
-            imagePoints, intrinsics, maxIterations, numThreads,
+            imagePoints, intrinsics, refinePrincipalPoint, imageWidth, imageHeight,
+            maxIterations, numThreads,
             GlomapSolverProgressListener(onIteration)
         ) ?: return null
         val expected = 10L + centers.size + rotations.size + points.size
@@ -119,11 +135,16 @@ internal class GlomapGlobalBundleAdjuster {
             offset += 3
         }
         val solvedIntrinsicValues = packed.copyOfRange(offset, offset + 5)
+        val principalPointWithinBounds = !refinePrincipalPoint || (
+            kotlin.math.abs(solvedIntrinsicValues[2] - intrinsics[2]) <= 0.05 * imageWidth + 1e-8 &&
+                kotlin.math.abs(solvedIntrinsicValues[4] - intrinsics[4]) <= 0.05 * imageHeight + 1e-8
+            )
         if (solvedIntrinsicValues.any { !it.isFinite() } ||
             solvedIntrinsicValues[0] <= 0.0 || solvedIntrinsicValues[3] <= 0.0 ||
             solvedIntrinsicValues[1] != intrinsics[1] ||
-            solvedIntrinsicValues[2] != intrinsics[2] ||
-            solvedIntrinsicValues[4] != intrinsics[4]
+            (!refinePrincipalPoint && solvedIntrinsicValues[2] != intrinsics[2]) ||
+            (!refinePrincipalPoint && solvedIntrinsicValues[4] != intrinsics[4]) ||
+            !principalPointWithinBounds
         ) return null
         if (solvedCenters.values.any { it.any { value -> !value.isFinite() } } ||
             solvedPoints.values.any { it.any { value -> !value.isFinite() } }
@@ -143,7 +164,8 @@ internal class GlomapGlobalBundleAdjuster {
             initialCost = packed[1],
             finalCost = packed[2],
             positiveDepthRatio = packed[4],
-            iterations = packed[3].toInt()
+            iterations = packed[3].toInt(),
+            principalPointRefinementEnabled = refinePrincipalPoint
         )
     }
 
@@ -155,6 +177,9 @@ internal class GlomapGlobalBundleAdjuster {
         trackIndices: IntArray,
         imagePoints: DoubleArray,
         intrinsics: DoubleArray,
+        refinePrincipalPoint: Boolean,
+        imageWidth: Int,
+        imageHeight: Int,
         maxIterations: Int,
         numThreads: Int,
         progressListener: GlomapSolverProgressListener

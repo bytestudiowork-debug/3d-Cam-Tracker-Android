@@ -238,6 +238,10 @@ void TestBundleAdjustmentJointRecoveryOutliersAndGauge() {
     Require(std::abs(result.intrinsics[0] - truth_intrinsics[0]) < 8.0 &&
                     std::abs(result.intrinsics[3] - truth_intrinsics[3]) < 8.0,
             "joint bundle adjustment focal lengths did not recover synthetic truth");
+    Require(result.intrinsics[1] == initial_intrinsics[1] &&
+                    result.intrinsics[2] == initial_intrinsics[2] &&
+                    result.intrinsics[4] == initial_intrinsics[4],
+            "focal-only bundle adjustment changed fixed skew or principal point");
 
     std::vector<double> outlier_image_points = image_points;
     const size_t outlier_observation = 3;
@@ -298,6 +302,102 @@ void TestBundleAdjustmentJointRecoveryOutliersAndGauge() {
             "robust outlier solve produced an unbounded focal length");
 }
 
+void TestObservablePrincipalPointRefinement() {
+    const std::vector<double> truth_intrinsics = {710.0, 2.5, 640.0, 705.0, 360.0};
+    const std::vector<double> initial_intrinsics = {710.0, 2.5, 620.0, 705.0, 375.0};
+    constexpr int frame_count = 8;
+    constexpr int track_count = 160;
+
+    std::vector<double> truth_centers;
+    std::vector<double> truth_rotations;
+    std::vector<double> initial_rotations;
+    for (int frame = 0; frame < frame_count; ++frame) {
+        const double phase = 2.0 * 3.14159265358979323846 * frame / frame_count;
+        truth_centers.insert(truth_centers.end(), {
+                1.8 * (1.0 - std::cos(phase)),
+                1.1 * std::sin(phase),
+                0.3 * std::sin(2.0 * phase)});
+        const double angle_axis[3] = {
+                0.12 * std::sin(phase),
+                0.17 * std::sin(2.0 * phase),
+                -0.10 * std::sin(phase)};
+        const auto truth_rotation = RotationFromVector(angle_axis);
+        truth_rotations.insert(truth_rotations.end(), truth_rotation.begin(), truth_rotation.end());
+        const auto initial_rotation = frame == 0
+                ? truth_rotation
+                : RotationFromVector(angle_axis[0] + 0.003,
+                                     angle_axis[1] - 0.002,
+                                     angle_axis[2] + 0.002);
+        initial_rotations.insert(initial_rotations.end(),
+                                 initial_rotation.begin(), initial_rotation.end());
+    }
+
+    std::vector<double> truth_points;
+    for (int track = 0; track < track_count; ++track) {
+        const int column = track % 16;
+        const int row = track / 16;
+        truth_points.insert(truth_points.end(), {
+                (column - 7.5) * 0.45,
+                (row - 4.5) * 0.55,
+                5.5 + 0.2 * (track % 17)});
+    }
+
+    std::vector<int> frame_indices;
+    std::vector<int> track_indices;
+    std::vector<double> image_points;
+    for (int track = 0; track < track_count; ++track) {
+        for (int frame = 0; frame < frame_count; ++frame) {
+            double image[2];
+            Project(truth_centers.data() + frame * 3,
+                    truth_rotations.data() + frame * 9,
+                    truth_points.data() + track * 3,
+                    truth_intrinsics.data(), image);
+            image[0] += 0.04 * std::sin(0.17 * track + 0.31 * frame);
+            image[1] += 0.04 * std::cos(0.13 * track - 0.27 * frame);
+            if (track % 37 == 0 && frame == 3) {
+                image[0] += 45.0;
+                image[1] -= 32.0;
+            }
+            frame_indices.push_back(frame);
+            track_indices.push_back(track);
+            image_points.insert(image_points.end(), image, image + 2);
+        }
+    }
+
+    std::vector<double> initial_centers = truth_centers;
+    std::vector<double> initial_points = truth_points;
+    for (int frame = 1; frame < frame_count; ++frame) {
+        initial_centers[frame * 3] += 0.025 * std::sin(frame);
+        initial_centers[frame * 3 + 1] -= 0.02 * std::cos(0.7 * frame);
+        initial_centers[frame * 3 + 2] += 0.015 * std::sin(0.4 * frame);
+    }
+    for (int track = 0; track < track_count; ++track) {
+        initial_points[track * 3] += 0.012 * std::sin(0.3 * track);
+        initial_points[track * 3 + 1] += 0.01 * std::cos(0.2 * track);
+        initial_points[track * 3 + 2] += 0.02 * std::sin(0.11 * track);
+    }
+
+    tracking::GlobalBundleAdjustmentResult result;
+    Require(tracking::RunGlobalBundleAdjustment(
+                    initial_centers, initial_rotations, initial_points, frame_indices,
+                    track_indices, image_points, initial_intrinsics, 60, 1,
+                    &result, {}, true, 1280, 720),
+            "observable principal-point refinement did not produce a usable result");
+    Require(result.final_cost < result.initial_cost * 0.1 &&
+                    result.positive_depth_ratio > 0.99,
+            "principal-point refinement did not reduce robust cost with positive depth");
+    Require(std::abs(result.intrinsics[2] - truth_intrinsics[2]) < 2.0 &&
+                    std::abs(result.intrinsics[4] - truth_intrinsics[4]) < 2.0,
+            "principal point did not recover in the broad-coverage, multi-view scene; cx=" +
+                    std::to_string(result.intrinsics[2]) + "; cy=" +
+                    std::to_string(result.intrinsics[4]));
+    Require(result.intrinsics[1] == initial_intrinsics[1],
+            "principal-point refinement changed the fixed skew parameter");
+    Require(Distance3(result.camera_centers.data(), initial_centers.data()) < 1e-12 &&
+                    RotationError(result.rotations.data(), initial_rotations.data()) < 1e-10,
+            "principal-point refinement moved the fixed reference pose");
+}
+
 void TestBundleAdjustmentRejectsDisconnectedGraph() {
     const std::vector<double> centers = {
             0, 0, 0, 1, 0, 0,
@@ -332,6 +432,7 @@ int main() {
     try {
         TestPoseRefinement();
         TestBundleAdjustmentJointRecoveryOutliersAndGauge();
+        TestObservablePrincipalPointRefinement();
         TestBundleAdjustmentRejectsDisconnectedGraph();
         TestMalformedRotationIsRejected();
         std::cout << "Native numerical regression tests passed.\n";

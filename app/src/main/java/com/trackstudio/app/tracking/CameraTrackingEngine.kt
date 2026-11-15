@@ -121,5 +121,20 @@ data class CameraTrackingResult(
     val globalBundleAdjustmentIterations: Int = 0,
     val globalBundleAdjustmentStatus: String = "Not run",
     val globalBundleAdjustmentPositiveDepthRatio: Double = Double.NaN,
+    val globalBundleAdjustmentPrincipalPointRefinementEnabled: Boolean = false,
+    val inputCameraCalibration: CameraCalibration? = null,
+    val observationCoordinateModel: CameraObservationCoordinateModel =
+        CameraObservationCoordinateModel.PINHOLE_PIXELS_ASSUMED,
     val refinedCameraIntrinsics: CameraIntrinsics? = null
-)
+) {
+    val effectiveCameraIntrinsics: CameraIntrinsics?
+        get() = refinedCameraIntrinsics ?: inputCameraCalibration?.let { calibration ->
+            CameraIntrinsics(
+                fx = calibration.fx,
+                skew = calibration.skew,
+                cx = calibration.cx,
+                fy = calibration.fy,
+                cy = calibration.cy
+            )
+        }
+}

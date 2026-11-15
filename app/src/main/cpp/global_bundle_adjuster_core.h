@@ -28,6 +28,9 @@ bool RunGlobalBundleAdjustment(const std::vector<double>& initial_camera_centers
                                int max_iterations,
                                int num_threads,
                                GlobalBundleAdjustmentResult* result,
-                               const std::function<bool(int, int)>& progress_callback = {});
+                               const std::function<bool(int, int)>& progress_callback = {},
+                               bool refine_principal_point = false,
+                               int image_width = 0,
+                               int image_height = 0);
 
 }  // namespace tracking

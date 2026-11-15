@@ -36,8 +36,8 @@ import kotlinx.coroutines.sync.withLock
  *
  * The final sparse points are retriangulated and robustly refined with the
  * mobile landmark block optimizer. Joint bundle adjustment refines poses and
- * focal lengths; skew and principal point remain supplied, while metric scale
- * remains a reconstruction gauge.
+ * focal lengths, and releases principal point only with broad coverage,
+ * translation parallax, and multi-axis rotation; skew and metric scale remain fixed.
  */
 class GlobalReconstructionEngine(
     private val maxFeatures: Int = 1400,
@@ -142,6 +142,11 @@ class GlobalReconstructionEngine(
                         totalFrames = frameCount
                     )
                 )
+            }
+
+            val frameSizes = frames.filterNotNull().map { it.width to it.height }.distinct()
+            require(frameSizes.size == 1 && frameSizes.single().first > 0 && frameSizes.single().second > 0) {
+                "All frames in a reconstruction must use the same nonzero image dimensions."
             }
 
             // Long clips need both a connected temporal backbone and wider
@@ -351,6 +356,8 @@ class GlobalReconstructionEngine(
                     pointsByTrackId = positionResult.pointsByTrackId,
                     tracks = tracks,
                     cameraMatrix = cameraMatrix,
+                    imageWidth = frameSizes.single().first,
+                    imageHeight = frameSizes.single().second,
                     maxIterations = 45,
                     numThreads = if (activeFrames.size >= 300) 2 else Runtime.getRuntime().availableProcessors().coerceIn(1, 4),
                     onIteration = { iteration, total -> publishProgress("Global bundle adjustment " + iteration + "/" + total, 0.88f + 0.05f * iteration.toFloat() / total.coerceAtLeast(1)) }
@@ -514,6 +521,8 @@ class GlobalReconstructionEngine(
                 globalBundleAdjustmentStatus = bundleStatus,
                 globalBundleAdjustmentPositiveDepthRatio =
                     bundleResult?.positiveDepthRatio ?: Double.NaN,
+                globalBundleAdjustmentPrincipalPointRefinementEnabled =
+                    bundleResult?.principalPointRefinementEnabled ?: false,
                 refinedCameraIntrinsics = refinedIntrinsics
             )
         } finally {

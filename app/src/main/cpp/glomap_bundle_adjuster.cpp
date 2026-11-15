@@ -31,6 +31,9 @@ Java_com_trackstudio_app_tracking_glomap_GlomapGlobalBundleAdjuster_nativeSolve(
         jintArray track_indices_array,
         jdoubleArray image_points_array,
         jdoubleArray intrinsics_array,
+        jboolean refine_principal_point,
+        jint image_width,
+        jint image_height,
         jint max_iterations,
         jint num_threads,
         jobject progress_listener) {
@@ -54,6 +57,8 @@ Java_com_trackstudio_app_tracking_glomap_GlomapGlobalBundleAdjuster_nativeSolve(
             env->GetArrayLength(track_indices_array) != observation_count ||
             env->GetArrayLength(image_points_array) != observation_count * 2 ||
             env->GetArrayLength(intrinsics_array) != 5 ||
+            (refine_principal_point != JNI_FALSE &&
+             (image_width <= 0 || image_height <= 0)) ||
             max_iterations <= 0 || num_threads <= 0) {
             return EmptyResult(env);
         }
@@ -89,7 +94,9 @@ Java_com_trackstudio_app_tracking_glomap_GlomapGlobalBundleAdjuster_nativeSolve(
         if (!tracking::RunGlobalBundleAdjustment(
                     centers, rotations, points, frame_indices, track_indices,
                     image_points, intrinsics, max_iterations, num_threads,
-                    &solution, notify_progress)) {
+                    &solution, notify_progress,
+                    refine_principal_point != JNI_FALSE,
+                    image_width, image_height)) {
             if (env->ExceptionCheck()) return nullptr;
             return EmptyResult(env);
         }

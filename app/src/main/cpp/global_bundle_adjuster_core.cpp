@@ -18,18 +18,17 @@ namespace {
 struct ReprojectionResidual {
     ReprojectionResidual(double observed_x,
                          double observed_y,
-                         const double* intrinsics)
+                         double skew)
             : observed_x(observed_x),
               observed_y(observed_y),
-              skew(intrinsics[1]),
-              cx(intrinsics[2]),
-              cy(intrinsics[4]) {}
+              skew(skew) {}
 
     template <typename T>
     bool operator()(const T* angle_axis,
                     const T* camera_center,
                     const T* point,
                     const T* focal_lengths,
+                    const T* principal_point,
                     T* residuals) const {
         const T delta[3] = {
                 point[0] - camera_center[0],
@@ -42,17 +41,36 @@ struct ReprojectionResidual {
                 : T(1e-8);
         residuals[0] = focal_lengths[0] * camera_point[0] / safe_z +
                        T(skew) * camera_point[1] / safe_z +
-                       T(cx - observed_x);
+                       principal_point[0] - T(observed_x);
         residuals[1] = focal_lengths[1] * camera_point[1] / safe_z +
-                       T(cy - observed_y);
+                       principal_point[1] - T(observed_y);
         return true;
     }
 
     double observed_x;
     double observed_y;
     double skew;
-    double cx;
-    double cy;
+};
+
+struct PrincipalPointPrior {
+    PrincipalPointPrior(double initial_x,
+                        double initial_y,
+                        double sigma_x,
+                        double sigma_y)
+            : initial_x(initial_x), initial_y(initial_y),
+              sigma_x(sigma_x), sigma_y(sigma_y) {}
+
+    template <typename T>
+    bool operator()(const T* principal_point, T* residuals) const {
+        residuals[0] = (principal_point[0] - T(initial_x)) / T(sigma_x);
+        residuals[1] = (principal_point[1] - T(initial_y)) / T(sigma_y);
+        return true;
+    }
+
+    double initial_x;
+    double initial_y;
+    double sigma_x;
+    double sigma_y;
 };
 
 bool AllFinite(const std::vector<double>& values) {
@@ -144,7 +162,10 @@ bool RunGlobalBundleAdjustment(const std::vector<double>& initial_camera_centers
                                int max_iterations,
                                int num_threads,
                                GlobalBundleAdjustmentResult* result,
-                               const std::function<bool(int, int)>& progress_callback) {
+                               const std::function<bool(int, int)>& progress_callback,
+                               bool refine_principal_point,
+                               int image_width,
+                               int image_height) {
     if (result == nullptr || initial_camera_centers.empty() ||
         initial_camera_centers.size() % 3 != 0 || initial_points.empty() ||
         initial_points.size() % 3 != 0 || frame_indices.size() < 2 ||
@@ -156,7 +177,9 @@ bool RunGlobalBundleAdjustment(const std::vector<double>& initial_camera_centers
         !AllFinite(initial_camera_centers) || !AllFinite(rotations) ||
         !AllFinite(initial_points) || !AllFinite(image_points) ||
         !AllFinite(intrinsics) || intrinsics[0] < 1e-3 || intrinsics[3] < 1e-3 ||
-        intrinsics[0] > 1e8 || intrinsics[3] > 1e8) {
+        intrinsics[0] > 1e8 || intrinsics[3] > 1e8 ||
+        image_width < 0 || image_height < 0 ||
+        (refine_principal_point && (image_width <= 0 || image_height <= 0))) {
         return false;
     }
 
@@ -215,6 +238,7 @@ bool RunGlobalBundleAdjustment(const std::vector<double>& initial_camera_centers
                 angle_axes.data() + frame * 3);
     }
     std::vector<double> focal_lengths = {intrinsics[0], intrinsics[3]};
+    std::vector<double> principal_point = {intrinsics[2], intrinsics[4]};
 
     ceres::Problem problem;
     auto ordering = std::make_shared<ceres::ParameterBlockOrdering>();
@@ -224,16 +248,18 @@ bool RunGlobalBundleAdjustment(const std::vector<double>& initial_camera_centers
         double* angle_axis = angle_axes.data() + frame * 3;
         double* center = centers.data() + frame * 3;
         double* point = points.data() + track * 3;
-        auto* cost = new ceres::AutoDiffCostFunction<ReprojectionResidual, 2, 3, 3, 3, 2>(
+        auto* cost = new ceres::AutoDiffCostFunction<ReprojectionResidual, 2, 3, 3, 3, 2, 2>(
                 new ReprojectionResidual(image_points[i * 2],
-                                         image_points[i * 2 + 1], intrinsics.data()));
+                                         image_points[i * 2 + 1], intrinsics[1]));
         problem.AddResidualBlock(cost, new ceres::HuberLoss(1.0),
-                                 angle_axis, center, point, focal_lengths.data());
+                                 angle_axis, center, point, focal_lengths.data(),
+                                 principal_point.data());
         if (problem.HasParameterBlock(point)) ordering->AddElementToGroup(point, 0);
         if (problem.HasParameterBlock(angle_axis)) ordering->AddElementToGroup(angle_axis, 1);
         if (problem.HasParameterBlock(center)) ordering->AddElementToGroup(center, 1);
     }
     ordering->AddElementToGroup(focal_lengths.data(), 1);
+    ordering->AddElementToGroup(principal_point.data(), 1);
 
     problem.SetParameterBlockConstant(angle_axes.data());
     problem.SetParameterBlockConstant(centers.data());
@@ -244,6 +270,27 @@ bool RunGlobalBundleAdjustment(const std::vector<double>& initial_camera_centers
                                        std::max(1e-3, initial_focal * 0.25));
         problem.SetParameterUpperBound(focal_lengths.data(), focal,
                                        initial_focal * 4.0);
+    }
+    if (refine_principal_point) {
+        const double bound_x = 0.05 * static_cast<double>(image_width);
+        const double bound_y = 0.05 * static_cast<double>(image_height);
+        const double sigma_x = 0.02 * static_cast<double>(image_width);
+        const double sigma_y = 0.02 * static_cast<double>(image_height);
+        problem.SetParameterLowerBound(principal_point.data(), 0,
+                                       intrinsics[2] - bound_x);
+        problem.SetParameterUpperBound(principal_point.data(), 0,
+                                       intrinsics[2] + bound_x);
+        problem.SetParameterLowerBound(principal_point.data(), 1,
+                                       intrinsics[4] - bound_y);
+        problem.SetParameterUpperBound(principal_point.data(), 1,
+                                       intrinsics[4] + bound_y);
+        problem.AddResidualBlock(
+                new ceres::AutoDiffCostFunction<PrincipalPointPrior, 2, 2>(
+                        new PrincipalPointPrior(intrinsics[2], intrinsics[4],
+                                                sigma_x, sigma_y)),
+                nullptr, principal_point.data());
+    } else {
+        problem.SetParameterBlockConstant(principal_point.data());
     }
 
     ceres::Solver::Options options;
@@ -270,7 +317,7 @@ bool RunGlobalBundleAdjustment(const std::vector<double>& initial_camera_centers
         !std::isfinite(summary.final_cost) ||
         summary.final_cost > summary.initial_cost + allowed_cost_increase ||
         !AllFinite(centers) || !AllFinite(points) || !AllFinite(angle_axes) ||
-        !AllFinite(focal_lengths)) {
+        !AllFinite(focal_lengths) || !AllFinite(principal_point)) {
         return false;
     }
 
@@ -316,8 +363,8 @@ bool RunGlobalBundleAdjustment(const std::vector<double>& initial_camera_centers
     result->camera_centers = std::move(centers);
     result->rotations = std::move(solved_rotations);
     result->points = std::move(points);
-    result->intrinsics = {focal_lengths[0], intrinsics[1], intrinsics[2],
-                          focal_lengths[1], intrinsics[4]};
+    result->intrinsics = {focal_lengths[0], intrinsics[1], principal_point[0],
+                          focal_lengths[1], principal_point[1]};
     result->initial_cost = summary.initial_cost;
     result->final_cost = summary.final_cost;
     result->positive_depth_ratio = positive_depth_ratio;

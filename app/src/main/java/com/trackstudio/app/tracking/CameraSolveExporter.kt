@@ -48,8 +48,18 @@ internal object CameraSolveExporter {
         line("    \"globalBundleAdjustmentIterations\": ${result.globalBundleAdjustmentIterations},")
         line("    \"globalBundleAdjustmentStatus\": ${jsonString(result.globalBundleAdjustmentStatus)},")
         line("    \"globalBundleAdjustmentPositiveDepthRatio\": ${jsonNumber(result.globalBundleAdjustmentPositiveDepthRatio)},")
+        line("    \"globalBundleAdjustmentPrincipalPointRefinementEnabled\": ${result.globalBundleAdjustmentPrincipalPointRefinementEnabled},")
         line("    \"initialPairFrames\": ${result.initialPairFrames?.let { "[${it.first}, ${it.second}]" } ?: "null"}")
         line("  },")
+        line("  \"observationCoordinateModel\": ${jsonString(result.observationCoordinateModel.name)},")
+        val sourceCalibrationJson = result.inputCameraCalibration?.let { calibration ->
+            "{\"imageWidth\": ${calibration.imageWidth}, \"imageHeight\": ${calibration.imageHeight}, " +
+                "\"fx\": ${jsonNumber(calibration.fx)}, \"skew\": ${jsonNumber(calibration.skew)}, " +
+                "\"cx\": ${jsonNumber(calibration.cx)}, \"fy\": ${jsonNumber(calibration.fy)}, " +
+                "\"cy\": ${jsonNumber(calibration.cy)}, \"distortionCoefficients\": " +
+                jsonArray(calibration.distortionCoefficients.toDoubleArray()) + "}"
+        } ?: "null"
+        line("  \"inputCameraCalibration\": $sourceCalibrationJson,")
         val intrinsics = result.refinedCameraIntrinsics
         val intrinsicsJson = intrinsics?.let {
             "{\"fx\": ${jsonNumber(it.fx)}, \"skew\": ${jsonNumber(it.skew)}, " +
@@ -57,6 +67,12 @@ internal object CameraSolveExporter {
                 "\"cy\": ${jsonNumber(it.cy)}}"
         } ?: "null"
         line("  \"refinedCameraIntrinsics\": $intrinsicsJson,")
+        val effectiveIntrinsicsJson = result.effectiveCameraIntrinsics?.let {
+            "{\"fx\": ${jsonNumber(it.fx)}, \"skew\": ${jsonNumber(it.skew)}, " +
+                "\"cx\": ${jsonNumber(it.cx)}, \"fy\": ${jsonNumber(it.fy)}, " +
+                "\"cy\": ${jsonNumber(it.cy)}}"
+        } ?: "null"
+        line("  \"effectiveCameraIntrinsics\": $effectiveIntrinsicsJson,")
         line("  \"cameraPoses\": [")
         poses.forEachIndexed { index, pose ->
             val center = CameraPoseGeometry.cameraCenterWorld(pose)
