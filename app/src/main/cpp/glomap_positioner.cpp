@@ -2,6 +2,7 @@
 #include <android/log.h>
 #include <ceres/ceres.h>
 #include "glomap_progress_callback.h"
+#include "positioning_direction_residual.h"
 
 #include <algorithm>
 #include <cmath>
@@ -13,26 +14,6 @@
 #include <vector>
 
 namespace {
-
-struct BataPointCameraResidual {
-    BataPointCameraResidual(const double* observation) {
-        for (int i = 0; i < 3; ++i) direction[i] = observation[i];
-    }
-
-    template <typename T>
-    bool operator()(const T* camera_center,
-                    const T* point,
-                    const T* scale,
-                    T* residuals) const {
-        for (int i = 0; i < 3; ++i) {
-            residuals[i] = T(direction[i]) -
-                    scale[0] * (point[i] - camera_center[i]);
-        }
-        return true;
-    }
-
-    double direction[3];
-};
 
 bool AllFinite(const std::vector<double>& values) {
     return std::all_of(values.begin(), values.end(),
@@ -119,9 +100,8 @@ Java_com_trackstudio_app_tracking_glomap_GlomapNativeSolver_nativeSolve(
 
     ceres::Problem problem;
     for (int i = 0; i < constraint_count; ++i) {
-        auto* cost = new ceres::AutoDiffCostFunction<
-                BataPointCameraResidual, 3, 3, 3, 1>(
-                new BataPointCameraResidual(&directions[i * 3]));
+        ceres::CostFunction* cost =
+                tracking::PairwiseDirectionResidual::Create(&directions[i * 3]);
         ceres::LossFunction* loss = new ceres::ScaledLoss(
                 new ceres::HuberLoss(0.1), loss_scales[i],
                 ceres::TAKE_OWNERSHIP);

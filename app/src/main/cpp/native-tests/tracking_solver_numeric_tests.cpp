@@ -1,6 +1,7 @@
 #include "camera_pose_refiner_core.h"
 #include "global_bundle_adjuster_core.h"
 #include "optimization_robust_policy.h"
+#include "positioning_direction_residual.h"
 
 #include <ceres/loss_function.h>
 #include <ceres/rotation.h>
@@ -8,6 +9,7 @@
 #include <algorithm>
 #include <cmath>
 #include <iostream>
+#include <memory>
 #include <stdexcept>
 #include <string>
 #include <vector>
@@ -131,6 +133,45 @@ void TestGlobalHuberLossPolicy() {
                     std::abs(rho[1] - 0.5) < 1e-12 &&
                     std::abs(rho[2] + 0.0625) < 1e-12,
             "global BA Huber objective changed from its one-pixel scale");
+}
+
+void TestPairwiseDirectionResidualReferenceValues() {
+    const double translation_observation[3] = {0.25, -0.5, 1.0};
+    double position1[3] = {1.0, 2.0, 3.0};
+    double position2[3] = {2.0, 0.0, 5.0};
+    double scale[1] = {0.5};
+    const double* parameters[3] = {position1, position2, scale};
+    double residuals[3] = {};
+    double position1_jacobian[9] = {};
+    double position2_jacobian[9] = {};
+    double scale_jacobian[3] = {};
+    double* jacobians[3] = {
+            position1_jacobian, position2_jacobian, scale_jacobian};
+    std::unique_ptr<ceres::CostFunction> cost(
+            tracking::PairwiseDirectionResidual::Create(translation_observation));
+
+    Require(cost->Evaluate(parameters, residuals, jacobians),
+            "direction residual AutoDiff evaluation failed");
+    const double expected_residuals[3] = {-0.25, 0.5, 0.0};
+    const double expected_position1_jacobian[9] = {
+            0.5, 0.0, 0.0, 0.0, 0.5, 0.0, 0.0, 0.0, 0.5};
+    const double expected_position2_jacobian[9] = {
+            -0.5, 0.0, 0.0, 0.0, -0.5, 0.0, 0.0, 0.0, -0.5};
+    const double expected_scale_jacobian[3] = {-1.0, 2.0, -2.0};
+    for (int i = 0; i < 3; ++i) {
+        Require(std::abs(residuals[i] - expected_residuals[i]) < 1e-12,
+                "direction residual differs from its fixed reference output");
+        Require(std::abs(scale_jacobian[i] - expected_scale_jacobian[i]) < 1e-12,
+                "direction residual scale Jacobian differs from its reference");
+    }
+    for (int i = 0; i < 9; ++i) {
+        Require(std::abs(position1_jacobian[i] -
+                         expected_position1_jacobian[i]) < 1e-12,
+                "direction residual first-position Jacobian differs from its reference");
+        Require(std::abs(position2_jacobian[i] -
+                         expected_position2_jacobian[i]) < 1e-12,
+                "direction residual second-position Jacobian differs from its reference");
+    }
 }
 
 void TestBundleAdjustmentJointRecoveryOutliersAndGauge() {
@@ -443,6 +484,7 @@ void TestMalformedRotationIsRejected() {
 
 int main() {
     try {
+        TestPairwiseDirectionResidualReferenceValues();
         TestGlobalHuberLossPolicy();
         TestPoseRefinement();
         TestBundleAdjustmentJointRecoveryOutliersAndGauge();
