@@ -47,6 +47,7 @@ internal object CameraSolveExporter {
         line("    \"globalBundleAdjustmentFinalCost\": ${jsonNumber(result.globalBundleAdjustmentFinalCost)},")
         line("    \"globalBundleAdjustmentIterations\": ${result.globalBundleAdjustmentIterations},")
         line("    \"globalBundleAdjustmentStatus\": ${jsonString(result.globalBundleAdjustmentStatus)},")
+        line("    \"globalBundleAdjustmentPositiveDepthRatio\": ${jsonNumber(result.globalBundleAdjustmentPositiveDepthRatio)},")
         line("    \"initialPairFrames\": ${result.initialPairFrames?.let { "[${it.first}, ${it.second}]" } ?: "null"}")
         line("  },")
         line("  \"cameraPoses\": [")

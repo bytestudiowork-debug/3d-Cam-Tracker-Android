@@ -7,6 +7,8 @@
 #include <cmath>
 #include <exception>
 #include <cstdint>
+#include <initializer_list>
+#include <limits>
 #include <memory>
 #include <vector>
 
@@ -66,7 +68,7 @@ Java_com_trackstudio_app_tracking_glomap_GlomapNativeSolver_nativeSolve(
 
     if (frame_value_count == 0 || frame_value_count % 3 != 0 ||
         point_value_count == 0 || point_value_count % 3 != 0 ||
-        constraint_count == 0 ||
+        constraint_count == 0 || constraint_count > std::numeric_limits<jsize>::max() / 3 ||
         env->GetArrayLength(track_indices_array) != constraint_count ||
         env->GetArrayLength(directions_array) != constraint_count * 3 ||
         env->GetArrayLength(initial_scales_array) != constraint_count ||
@@ -100,8 +102,8 @@ Java_com_trackstudio_app_tracking_glomap_GlomapNativeSolver_nativeSolve(
     env->GetDoubleArrayRegion(loss_scales_array, 0, constraint_count,
                               loss_scales.data());
 
-    if (env->ExceptionCheck() || !AllFinite(frame_centers) ||
-        !AllFinite(points) || !AllFinite(directions) ||
+    if (env->ExceptionCheck()) return nullptr;
+    if (!AllFinite(frame_centers) || !AllFinite(points) || !AllFinite(directions) ||
         !AllFinite(scales) || !AllFinite(loss_scales)) {
         return env->NewDoubleArray(0);
     }
@@ -157,12 +159,13 @@ Java_com_trackstudio_app_tracking_glomap_GlomapNativeSolver_nativeSolve(
     // Keep the upstream objective, robust losses, gauge constraints and
     // parameter ordering unchanged.
     options.max_num_iterations = std::min(max_iterations, 100);
-    options.num_threads = num_threads;
+    options.num_threads = std::min(num_threads, 4);
     options.function_tolerance = 1e-5;
     options.minimizer_progress_to_stdout = false;
     options.linear_solver_ordering = ordering;
 
     trackstudio::JniProgressCallback progress_callback(env, progress_listener, std::min(max_iterations, 100));
+    if (env->ExceptionCheck()) return nullptr;
     if (progress_callback.valid()) options.callbacks.push_back(&progress_callback);
     ceres::Solver::Summary summary;
     ceres::Solve(options, &problem, &summary);
@@ -176,8 +179,15 @@ Java_com_trackstudio_app_tracking_glomap_GlomapNativeSolver_nativeSolve(
         return env->NewDoubleArray(0);
     }
 
+    const size_t maximum_output =
+            static_cast<size_t>(std::numeric_limits<jsize>::max());
+    size_t output_size = 4;
+    for (size_t size : {frame_centers.size(), points.size(), scales.size()}) {
+        if (size > maximum_output - output_size) return env->NewDoubleArray(0);
+        output_size += size;
+    }
     std::vector<double> output;
-    output.reserve(4 + frame_centers.size() + points.size() + scales.size());
+    output.reserve(output_size);
     output.push_back(1.0);
     output.push_back(summary.initial_cost);
     output.push_back(summary.final_cost);

@@ -37,6 +37,7 @@ class CameraSolveExporterTest {
             globalBundleAdjustmentFinalCost = 0.8,
             globalBundleAdjustmentIterations = 5,
             globalBundleAdjustmentStatus = "Applied",
+            globalBundleAdjustmentPositiveDepthRatio = 0.97,
             viewGraphEdgeCount = 4,
             viewGraphAcceptedEdgeCount = 3,
             globalRotationIterations = 8
@@ -53,6 +54,7 @@ class CameraSolveExporterTest {
         assertTrue(json.contains("\"globalBundleAdjustmentApplied\": true"))
         assertTrue(json.contains("\"globalPositioningInitialCost\": 15.0"))
         assertTrue(json.contains("\"globalBundleAdjustmentInitialCost\": 2.5"))
+        assertTrue(json.contains("\"globalBundleAdjustmentPositiveDepthRatio\": 0.97"))
         assertTrue(json.contains("\"status\": \"Global reconstruction registered\""))
         assertFalse(json.contains("NaN"))
         assertFalse(json.contains("Infinity"))
@@ -77,6 +79,7 @@ class CameraSolveExporterTest {
         assertTrue(json.contains("\"globalPositioningFinalCost\": null"))
         assertTrue(json.contains("\"globalBundleAdjustmentInitialCost\": null"))
         assertTrue(json.contains("\"globalBundleAdjustmentFinalCost\": null"))
+        assertTrue(json.contains("\"globalBundleAdjustmentPositiveDepthRatio\": null"))
     }
 
     @Test

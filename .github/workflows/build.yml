@@ -72,6 +72,17 @@ jobs:
       - name: Show Gradle version
         run: ./gradlew --version
 
+      - name: Install host Ceres for native numeric tests
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libceres-dev
+
+      - name: Run native solver numeric tests
+        run: |
+          cmake -S app/src/main/cpp/native-tests -B build/native-tests -DCMAKE_BUILD_TYPE=Release
+          cmake --build build/native-tests --parallel 2
+          ctest --test-dir build/native-tests --output-on-failure
+
       - name: Run tracking engine unit tests
         run: ./gradlew testReleaseUnitTest --stacktrace --no-daemon
 

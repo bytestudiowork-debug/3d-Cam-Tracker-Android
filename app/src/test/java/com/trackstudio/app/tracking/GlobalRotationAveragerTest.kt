@@ -40,6 +40,60 @@ class GlobalRotationAveragerTest {
         assertNull(GlobalRotationAverager.solve(listOf(0, 1), listOf(invalid)))
     }
 
+    @Test fun nearHalfTurnResidualIsNotCollapsedToZero() {
+        val halfTurn = rot(PI, 0.0, 0.0)
+        val identity = rot(0.0, 0.0, 0.0)
+        val edges = listOf(
+            GlobalRotationAverager.Edge(0, 1, halfTurn, 100),
+            GlobalRotationAverager.Edge(1, 2, identity, 100),
+            GlobalRotationAverager.Edge(0, 2, identity, 1)
+        )
+
+        val solved = GlobalRotationAverager.solve(
+            frameIndices = listOf(0, 1, 2),
+            edges = edges,
+            rotationOutlierDegrees = 5.0
+        )!!
+
+        assertTrue(solved.rejectedEdges.any { it.firstFrame == 0 && it.secondFrame == 2 })
+        assertTrue(relativeAngle(solved.rotationsByFrame.getValue(1), halfTurn) < 1e-6)
+        assertTrue(relativeAngle(solved.rotationsByFrame.getValue(2), halfTurn) < 1e-6)
+    }
+
+    @Test fun reversingEdgeDirectionAndPermutingInputDoesNotChangeSolution() {
+        val truth = mapOf(
+            0 to rot(0.0, 0.0, 0.0),
+            1 to rot(0.15, -0.2, 0.1),
+            2 to rot(-0.1, 0.35, 0.05),
+            3 to rot(0.25, 0.1, -0.2)
+        )
+        val edges = listOf(
+            edge(0, 1, truth), edge(1, 2, truth), edge(2, 3, truth),
+            edge(0, 2, truth), edge(1, 3, truth), edge(0, 3, truth)
+        )
+        val reversed = edges.reversed().map {
+            GlobalRotationAverager.Edge(
+                it.secondFrame, it.firstFrame, transpose(it.relativeRotation), it.inlierCount
+            )
+        }
+
+        val first = GlobalRotationAverager.solve(truth.keys.toList(), edges)!!
+        val second = GlobalRotationAverager.solve(truth.keys.toList(), reversed)!!
+        truth.keys.forEach { frame ->
+            assertTrue(
+                "frame=$frame",
+                relativeAngle(first.rotationsByFrame.getValue(frame), second.rotationsByFrame.getValue(frame)) < 1e-8
+            )
+        }
+        assertEquals(first.acceptedEdges.size, second.acceptedEdges.size)
+    }
+
+    @Test fun rejectsInvalidRobustSolverParameters() {
+        val edges = listOf(edge(0, 1, mapOf(0 to rot(0.0, 0.0, 0.0), 1 to rot(0.0, 0.1, 0.0))))
+        assertNull(GlobalRotationAverager.solve(listOf(0, 1), edges, sigmaDegrees = 0.0))
+        assertNull(GlobalRotationAverager.solve(listOf(0, 1), edges, rotationOutlierDegrees = 181.0))
+    }
+
     @Test fun solvesLargerSparseViewGraphWithPreconditionedLinearSolver() {
         val frameIds = (0 until 40).toList()
         val expected = frameIds.associateWith { frame ->

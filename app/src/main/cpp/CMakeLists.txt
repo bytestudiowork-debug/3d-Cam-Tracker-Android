@@ -70,11 +70,16 @@ endif()
 find_library(log-lib log)
 find_library(jnigraphics-lib jnigraphics)
 
-add_library(trackstudio_glomap SHARED glomap_positioner.cpp glomap_bundle_adjuster.cpp)
+add_library(trackstudio_glomap SHARED
+        glomap_positioner.cpp
+        glomap_bundle_adjuster.cpp
+        global_bundle_adjuster_core.cpp)
 target_link_libraries(trackstudio_glomap PRIVATE Ceres::ceres ${log-lib})
 target_compile_options(trackstudio_glomap PRIVATE -O3 -fno-fast-math)
 
-add_library(trackstudio_camera SHARED camera_pose_refiner.cpp)
+add_library(trackstudio_camera SHARED
+        camera_pose_refiner.cpp
+        camera_pose_refiner_core.cpp)
 target_link_libraries(trackstudio_camera PRIVATE Ceres::ceres)
 target_compile_options(trackstudio_camera PRIVATE -O3 -fno-fast-math)
 

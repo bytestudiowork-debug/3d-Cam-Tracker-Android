@@ -14,6 +14,7 @@ internal class GlomapGlobalBundleAdjuster {
         val pointsByTrackId: Map<Int, DoubleArray>,
         val initialCost: Double,
         val finalCost: Double,
+        val positiveDepthRatio: Double,
         val iterations: Int
     )
 
@@ -39,7 +40,7 @@ internal class GlomapGlobalBundleAdjuster {
         val activeFrameSet = frameIds.toSet()
         val trackIds = tracks.asSequence()
             .filter { pointsByTrackId.containsKey(it.id) }
-            .filter { track -> track.observations.count { it.frameIndex in activeFrameSet } >= 2 }
+            .filter { track -> track.observations.count { it.frameIndex in activeFrameSet } >= 3 }
             .map { it.id }
             .distinct()
             .sorted()
@@ -60,13 +61,13 @@ internal class GlomapGlobalBundleAdjuster {
         if (observations.size < 60) return null
 
         val centers = frameIds.flatMap { id ->
-            frameCentersById.getValue(id).also { requireVector3(it) }.toList()
+            frameCentersById.getValue(id).also { if (!isVector3(it)) return null }.toList()
         }.toDoubleArray()
         val rotations = frameIds.flatMap { id ->
-            rotationsByFrame.getValue(id).also { requireRotation(it) }.toList()
+            rotationsByFrame.getValue(id).also { if (!isRotationMatrix(it)) return null }.toList()
         }.toDoubleArray()
         val points = trackIds.flatMap { id ->
-            pointsByTrackId.getValue(id).also { requireVector3(it) }.toList()
+            pointsByTrackId.getValue(id).also { if (!isVector3(it)) return null }.toList()
         }.toDoubleArray()
         val frameIndices = IntArray(observations.size) { observations[it].first }
         val trackIndices = IntArray(observations.size) { observations[it].second.first }
@@ -75,11 +76,11 @@ internal class GlomapGlobalBundleAdjuster {
             if (index % 2 == 0) observation.x else observation.y
         }
         val intrinsics = doubleArrayOf(
-            cameraMatrix.get(0, 0)[0],
-            cameraMatrix.get(0, 1)[0],
-            cameraMatrix.get(0, 2)[0],
-            cameraMatrix.get(1, 1)[0],
-            cameraMatrix.get(1, 2)[0]
+            cameraMatrix.get(0, 0)?.firstOrNull() ?: Double.NaN,
+            cameraMatrix.get(0, 1)?.firstOrNull() ?: Double.NaN,
+            cameraMatrix.get(0, 2)?.firstOrNull() ?: Double.NaN,
+            cameraMatrix.get(1, 1)?.firstOrNull() ?: Double.NaN,
+            cameraMatrix.get(1, 2)?.firstOrNull() ?: Double.NaN
         )
         if (intrinsics.any { !it.isFinite() } || intrinsics[0] <= 0.0 || intrinsics[3] <= 0.0) return null
 
@@ -87,13 +88,14 @@ internal class GlomapGlobalBundleAdjuster {
             centers, rotations, points, frameIndices, trackIndices,
             imagePoints, intrinsics, maxIterations, numThreads,
             GlomapSolverProgressListener(onIteration)
-        )
-        val expected = 4 + centers.size + points.size
+        ) ?: return null
+        val expected = 5 + centers.size + points.size
         if (packed.size != expected || packed[0] != 1.0 ||
-            !packed[1].isFinite() || !packed[2].isFinite()
+            !packed[1].isFinite() || !packed[2].isFinite() ||
+            !packed[4].isFinite() || packed[4] < 0.9 || packed[4] > 1.0
         ) return null
 
-        var offset = 4
+        var offset = 5
         val solvedCenters = LinkedHashMap<Int, DoubleArray>(frameIds.size)
         for (id in frameIds) {
             solvedCenters[id] = packed.copyOfRange(offset, offset + 3)
@@ -113,6 +115,7 @@ internal class GlomapGlobalBundleAdjuster {
             pointsByTrackId = solvedPoints,
             initialCost = packed[1],
             finalCost = packed[2],
+            positiveDepthRatio = packed[4],
             iterations = packed[3].toInt()
         )
     }
@@ -128,14 +131,24 @@ internal class GlomapGlobalBundleAdjuster {
         maxIterations: Int,
         numThreads: Int,
         progressListener: GlomapSolverProgressListener
-    ): DoubleArray
+    ): DoubleArray?
 
-    private fun requireVector3(value: DoubleArray) {
-        require(value.size == 3 && value.all { it.isFinite() })
+    private fun isVector3(value: DoubleArray): Boolean {
+        return value.size == 3 && value.all { it.isFinite() }
     }
 
-    private fun requireRotation(value: DoubleArray) {
-        require(value.size == 9 && value.all { it.isFinite() })
+    private fun isRotationMatrix(value: DoubleArray): Boolean {
+        if (value.size != 9 || value.any { !it.isFinite() }) return false
+        for (row in 0..2) for (column in 0..2) {
+            var product = 0.0
+            for (k in 0..2) product += value[row * 3 + k] * value[column * 3 + k]
+            if (kotlin.math.abs(product - if (row == column) 1.0 else 0.0) > 1e-3) return false
+        }
+        val determinant =
+            value[0] * (value[4] * value[8] - value[5] * value[7]) -
+            value[1] * (value[3] * value[8] - value[5] * value[6]) +
+            value[2] * (value[3] * value[7] - value[4] * value[6])
+        return determinant.isFinite() && kotlin.math.abs(determinant - 1.0) <= 1e-3
     }
 
     companion object {

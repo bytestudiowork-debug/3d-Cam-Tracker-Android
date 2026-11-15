@@ -500,7 +500,9 @@ class GlobalReconstructionEngine(
                 globalBundleAdjustmentInitialCost = bundleCandidate?.initialCost ?: Double.NaN,
                 globalBundleAdjustmentFinalCost = bundleCandidate?.finalCost ?: Double.NaN,
                 globalBundleAdjustmentIterations = bundleCandidate?.iterations ?: 0,
-                globalBundleAdjustmentStatus = bundleStatus
+                globalBundleAdjustmentStatus = bundleStatus,
+                globalBundleAdjustmentPositiveDepthRatio =
+                    bundleCandidate?.positiveDepthRatio ?: Double.NaN
             )
         } finally {
             frames.filterNotNull().forEach { it.descriptors.release() }

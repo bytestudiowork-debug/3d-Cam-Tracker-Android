@@ -8,7 +8,7 @@ import org.opencv.core.Point3
 internal object CameraPoseRefiner {
     internal const val MAX_ITERATIONS = 100
     internal const val HUBER_SCALE_PX = 1.0
-    internal const val GRADIENT_TOLERANCE = 1.0
+    internal const val GRADIENT_TOLERANCE = 1e-10
 
     internal data class Result(
         val rotationVector: DoubleArray,
@@ -60,7 +60,7 @@ internal object CameraPoseRefiner {
             HUBER_SCALE_PX,
             MAX_ITERATIONS,
             GRADIENT_TOLERANCE
-        )
+        ) ?: return null
         if (packed.size != 10 || packed[0] != 1.0 ||
             packed.drop(1).any { !it.isFinite() } ||
             packed[2] > packed[1] + 1e-9 * maxOf(1.0, packed[1])
@@ -83,7 +83,7 @@ internal object CameraPoseRefiner {
         huberScalePx: Double,
         maxIterations: Int,
         gradientTolerance: Double
-    ): DoubleArray
+    ): DoubleArray?
 
     init {
         System.loadLibrary("trackstudio_camera")

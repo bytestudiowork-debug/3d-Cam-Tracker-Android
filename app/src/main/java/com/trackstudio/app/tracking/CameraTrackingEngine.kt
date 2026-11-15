@@ -105,5 +105,6 @@ data class CameraTrackingResult(
     val globalBundleAdjustmentInitialCost: Double = Double.NaN,
     val globalBundleAdjustmentFinalCost: Double = Double.NaN,
     val globalBundleAdjustmentIterations: Int = 0,
-    val globalBundleAdjustmentStatus: String = "Not run"
+    val globalBundleAdjustmentStatus: String = "Not run",
+    val globalBundleAdjustmentPositiveDepthRatio: Double = Double.NaN
 )

@@ -94,7 +94,7 @@ internal class GlomapNativeSolver {
             initialFrames, initialPoints, frameIndices, trackIndices,
             directions, scales, lossScales, maxIterations, numThreads,
             GlomapSolverProgressListener(onIteration)
-        )
+        ) ?: return null
         val expectedSize = 4 + initialFrames.size + initialPoints.size + scales.size
         if (packed.size != expectedSize || packed[0] != 1.0 ||
             !packed[1].isFinite() || !packed[2].isFinite()
@@ -135,7 +135,7 @@ internal class GlomapNativeSolver {
         maxIterations: Int,
         numThreads: Int,
         progressListener: GlomapSolverProgressListener
-    ): DoubleArray
+    ): DoubleArray?
 
     private fun requireVector3(value: DoubleArray, label: String) {
         require(value.size == 3 && value.all { it.isFinite() }) {

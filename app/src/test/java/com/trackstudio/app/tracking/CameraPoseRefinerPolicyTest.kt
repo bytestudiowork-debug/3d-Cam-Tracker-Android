@@ -8,6 +8,6 @@ class CameraPoseRefinerPolicyTest {
     fun robustPoseRefinementUsesPinnedHuberAndIterationSettings() {
         assertEquals(100, CameraPoseRefiner.MAX_ITERATIONS)
         assertEquals(1.0, CameraPoseRefiner.HUBER_SCALE_PX, 0.0)
-        assertEquals(1.0, CameraPoseRefiner.GRADIENT_TOLERANCE, 0.0)
+        assertEquals(1e-10, CameraPoseRefiner.GRADIENT_TOLERANCE, 0.0)
     }
 }

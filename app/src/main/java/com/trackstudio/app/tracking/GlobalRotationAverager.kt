@@ -37,14 +37,21 @@ internal object GlobalRotationAverager {
         sigmaDegrees: Double = 5.0,
         rotationOutlierDegrees: Double = 10.0
     ): Result? {
+        if (l1Iterations < 0 || irlsIterations < 0 ||
+            !sigmaDegrees.isFinite() || sigmaDegrees <= 0.0 ||
+            !rotationOutlierDegrees.isFinite() || rotationOutlierDegrees < 0.0 ||
+            rotationOutlierDegrees > 180.0
+        ) return null
         val frames = frameIndices.distinct().sorted()
         if (frames.size < 2) return null
         val index = frames.withIndex().associate { it.value to it.index }
-        val validEdges = edges.filter {
+        val validEdges = edges.asSequence().filter {
             it.firstFrame in index && it.secondFrame in index &&
                 it.firstFrame != it.secondFrame && it.inlierCount > 0 &&
                 isRotationMatrix(it.relativeRotation)
-        }
+        }.map { it.copy(relativeRotation = projectToRotation(it.relativeRotation)) }
+            .sortedWith(::compareEdges)
+            .toList()
         if (validEdges.isEmpty()) return null
 
         // Follow the GLOMAP controller order: largest connected component
@@ -74,7 +81,7 @@ internal object GlobalRotationAverager {
                     solveL1Admm(activeFrames.size, activeIndex, edgesToUse, residuals, admmInnerIterations)
                         .also { admmInnerIterations = min(admmInnerIterations * 2, 100) }
                 } else {
-                    val sigma = Math.toRadians(sigmaDegrees.coerceAtLeast(0.1))
+                    val sigma = Math.toRadians(sigmaDegrees)
                     val weights = DoubleArray(edgesToUse.size) { e ->
                         val squared = norm3(residuals[e]).let { it * it }
                         sigma * sigma / ((squared + sigma * sigma) * (squared + sigma * sigma))
@@ -86,9 +93,9 @@ internal object GlobalRotationAverager {
                 for (i in activeFrames.indices) {
                     if (activeFrames[i] == root) continue
                     val d = deltas[i]
-                    rotations[activeFrames[i]] = multiply(
+                    rotations[activeFrames[i]] = projectToRotation(multiply(
                         rotations.getValue(activeFrames[i]), expRotation(doubleArrayOf(-d[0], -d[1], -d[2]))
-                    )
+                    ))
                     averageStep += norm3(d)
                 }
                 iterations++
@@ -162,7 +169,9 @@ internal object GlobalRotationAverager {
                 component.add(node)
                 for (next in adjacency[node].orEmpty()) if (unseen.remove(next)) queue.add(next)
             }
-            if (component.size > best.size) best = component
+            if (component.size > best.size ||
+                (component.size == best.size && component.minOrNull()!! < best.minOrNull()!!)
+            ) best = component
         }
         return best
     }
@@ -180,7 +189,8 @@ internal object GlobalRotationAverager {
             var from = -1
             for (node in visited) for (edge in adjacency[node].orEmpty()) {
                 val other = if (edge.firstFrame == node) edge.secondFrame else edge.firstFrame
-                if (other !in visited && (best == null || edge.inlierCount > best!!.inlierCount)) {
+                if (other !in visited && (best == null || edge.inlierCount > best!!.inlierCount ||
+                        (edge.inlierCount == best!!.inlierCount && compareEdges(edge, best!!) < 0))) {
                     best = edge
                     from = node
                 }
@@ -366,7 +376,7 @@ internal object GlobalRotationAverager {
             val product = multiplyVector(direction)
             val denominator = dot(direction, product)
             if (!denominator.isFinite() || denominator <= 1e-30) {
-                return if (dot(residual, residual) < 1e-12) x else null
+                return if (dot(residual, residual) <= target) x else null
             }
 
             val alpha = residualDotPreconditioned / denominator
@@ -393,7 +403,8 @@ internal object GlobalRotationAverager {
             }
             residualDotPreconditioned = nextResidualDotPreconditioned
         }
-        return if (dot(residual, residual).isFinite()) x else null
+        val finalResidualSquared = dot(residual, residual)
+        return if (finalResidualSquared.isFinite() && finalResidualSquared <= target) x else null
     }
 
     private fun identity() = doubleArrayOf(1.0,0.0,0.0, 0.0,1.0,0.0, 0.0,0.0,1.0)
@@ -415,10 +426,94 @@ internal object GlobalRotationAverager {
         )
     }
     private fun logRotation(r: DoubleArray): DoubleArray {
-        val cosTheta = ((r[0]+r[4]+r[8]-1.0)*0.5).coerceIn(-1.0,1.0)
-        val theta = acos(cosTheta)
-        val factor = if (theta < 1e-8) 0.5 else theta/(2.0*sin(theta).let { if (abs(it)<1e-10) 1e-10 else it })
-        return doubleArrayOf((r[7]-r[5])*factor,(r[2]-r[6])*factor,(r[3]-r[1])*factor)
+        val q = rotationToQuaternion(r)
+        val firstNonzeroVectorComponent = (1..3).firstOrNull { abs(q[it]) > 1e-15 }
+        val sign = when {
+            q[0] < -1e-15 -> -1.0
+            abs(q[0]) <= 1e-15 && firstNonzeroVectorComponent != null &&
+                q[firstNonzeroVectorComponent] < 0.0 -> -1.0
+            else -> 1.0
+        }
+        val w = abs(q[0]).coerceIn(0.0, 1.0)
+        val vectorNorm = sqrt(q[1] * q[1] + q[2] * q[2] + q[3] * q[3])
+        if (vectorNorm < 1e-12) {
+            return doubleArrayOf(2.0 * sign * q[1], 2.0 * sign * q[2], 2.0 * sign * q[3])
+        }
+        val angle = 2.0 * atan2(vectorNorm, w)
+        val factor = sign * angle / vectorNorm
+        return doubleArrayOf(q[1] * factor, q[2] * factor, q[3] * factor)
+    }
+
+    private fun rotationToQuaternion(r: DoubleArray): DoubleArray {
+        val trace = r[0] + r[4] + r[8]
+        val q = DoubleArray(4)
+        when {
+            trace > 0.0 -> {
+                val s = 2.0 * sqrt(max(0.0, trace + 1.0))
+                if (s < 1e-15) return doubleArrayOf(1.0, 0.0, 0.0, 0.0)
+                q[0] = 0.25 * s
+                q[1] = (r[7] - r[5]) / s
+                q[2] = (r[2] - r[6]) / s
+                q[3] = (r[3] - r[1]) / s
+            }
+            r[0] >= r[4] && r[0] >= r[8] -> {
+                val s = 2.0 * sqrt(max(0.0, 1.0 + r[0] - r[4] - r[8]))
+                if (s < 1e-15) return doubleArrayOf(1.0, 0.0, 0.0, 0.0)
+                q[0] = (r[7] - r[5]) / s
+                q[1] = 0.25 * s
+                q[2] = (r[1] + r[3]) / s
+                q[3] = (r[2] + r[6]) / s
+            }
+            r[4] >= r[8] -> {
+                val s = 2.0 * sqrt(max(0.0, 1.0 + r[4] - r[0] - r[8]))
+                if (s < 1e-15) return doubleArrayOf(1.0, 0.0, 0.0, 0.0)
+                q[0] = (r[2] - r[6]) / s
+                q[1] = (r[1] + r[3]) / s
+                q[2] = 0.25 * s
+                q[3] = (r[5] + r[7]) / s
+            }
+            else -> {
+                val s = 2.0 * sqrt(max(0.0, 1.0 + r[8] - r[0] - r[4]))
+                if (s < 1e-15) return doubleArrayOf(1.0, 0.0, 0.0, 0.0)
+                q[0] = (r[3] - r[1]) / s
+                q[1] = (r[2] + r[6]) / s
+                q[2] = (r[5] + r[7]) / s
+                q[3] = 0.25 * s
+            }
+        }
+        val norm = sqrt(q.sumOf { it * it })
+        if (!norm.isFinite() || norm < 1e-15) return doubleArrayOf(1.0, 0.0, 0.0, 0.0)
+        for (i in q.indices) q[i] /= norm
+        return q
+    }
+
+    private fun quaternionToRotation(q: DoubleArray): DoubleArray {
+        val w = q[0]; val x = q[1]; val y = q[2]; val z = q[3]
+        return doubleArrayOf(
+            1.0 - 2.0 * (y * y + z * z), 2.0 * (x * y - z * w), 2.0 * (x * z + y * w),
+            2.0 * (x * y + z * w), 1.0 - 2.0 * (x * x + z * z), 2.0 * (y * z - x * w),
+            2.0 * (x * z - y * w), 2.0 * (y * z + x * w), 1.0 - 2.0 * (x * x + y * y)
+        )
+    }
+
+    private fun projectToRotation(r: DoubleArray): DoubleArray = quaternionToRotation(rotationToQuaternion(r))
+
+    private fun compareEdges(a: Edge, b: Edge): Int {
+        val inlierOrder = b.inlierCount.compareTo(a.inlierCount)
+        if (inlierOrder != 0) return inlierOrder
+        val aLow = min(a.firstFrame, a.secondFrame)
+        val bLow = min(b.firstFrame, b.secondFrame)
+        val lowOrder = aLow.compareTo(bLow)
+        if (lowOrder != 0) return lowOrder
+        val highOrder = max(a.firstFrame, a.secondFrame).compareTo(max(b.firstFrame, b.secondFrame))
+        if (highOrder != 0) return highOrder
+        val ar = if (a.firstFrame <= a.secondFrame) a.relativeRotation else transpose(a.relativeRotation)
+        val br = if (b.firstFrame <= b.secondFrame) b.relativeRotation else transpose(b.relativeRotation)
+        for (i in 0 until 9) {
+            val order = ar[i].compareTo(br[i])
+            if (order != 0) return order
+        }
+        return 0
     }
     private fun scale(a: DoubleArray, s: Double) = DoubleArray(3) { a[it]*s }
     private fun norm3(a: DoubleArray) = sqrt(a[0]*a[0]+a[1]*a[1]+a[2]*a[2])

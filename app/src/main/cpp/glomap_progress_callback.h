@@ -14,15 +14,19 @@ public:
     }
     bool valid() const { return method_ != nullptr; }
     bool aborted() const { return aborted_; }
-    ceres::CallbackReturnType operator()(const ceres::IterationSummary& summary) override {
-        if (valid()) {
-            env_->CallVoidMethod(listener_, method_, static_cast<jint>(summary.iteration + 1), total_iterations_);
-            if (env_->ExceptionCheck()) {
-                aborted_ = true;
-                return ceres::SOLVER_ABORT;
-            }
+    bool Notify(jint iteration, jint total_iterations) {
+        if (!valid()) return true;
+        env_->CallVoidMethod(listener_, method_, iteration, total_iterations);
+        if (env_->ExceptionCheck()) {
+            aborted_ = true;
+            return false;
         }
-        return ceres::SOLVER_CONTINUE;
+        return true;
+    }
+    ceres::CallbackReturnType operator()(const ceres::IterationSummary& summary) override {
+        return Notify(static_cast<jint>(summary.iteration + 1), total_iterations_)
+                       ? ceres::SOLVER_CONTINUE
+                       : ceres::SOLVER_ABORT;
     }
 private:
     JNIEnv* env_;
