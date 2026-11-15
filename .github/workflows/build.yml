@@ -104,7 +104,11 @@ jobs:
           profile: pixel_2
           emulator-options: -no-window -gpu swiftshader_indirect -no-snapshot -noaudio -no-boot-anim -camera-back none
           disable-animations: true
-          script: ./gradlew -PemulatorTestAbi=true connectedDebugAndroidTest --stacktrace --no-daemon
+          script: |
+            set -euo pipefail
+            adb logcat -c
+            ./gradlew -PemulatorTestAbi=true connectedDebugAndroidTest --stacktrace --no-daemon
+            adb logcat -d -s VideoReconstruction:I
 
       - name: Build release APK
         run: ./gradlew assembleRelease --stacktrace --no-daemon
