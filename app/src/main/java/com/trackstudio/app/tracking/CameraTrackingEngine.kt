@@ -13,7 +13,7 @@ import org.opencv.core.Mat
  */
 class CameraTrackingEngine(
     private val maxFeatures: Int = 1800,
-    private val ratioThreshold: Float = 0.78f
+    private val ratioThreshold: Float = 0.8f
 ) : ReconstructionEngine {
     init {
         require(maxFeatures in 400..5000)

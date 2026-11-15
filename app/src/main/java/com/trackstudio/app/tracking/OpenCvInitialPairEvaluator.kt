@@ -3,10 +3,8 @@ package com.trackstudio.app.tracking
 import org.opencv.calib3d.Calib3d
 import org.opencv.core.Core
 import org.opencv.core.Mat
-import org.opencv.core.MatOfDMatch
 import org.opencv.core.MatOfPoint2f
 import org.opencv.core.KeyPoint
-import org.opencv.features2d.BFMatcher
 import kotlin.math.acos
 import kotlin.math.sqrt
 
@@ -32,10 +30,10 @@ internal object OpenCvInitialPairEvaluator {
         secondKeypoints: Array<KeyPoint>,
         secondDescriptors: Mat,
         cameraMatrix: Mat,
+        matcher: SiftDescriptorMatcher,
         frameWidth: Int,
         frameHeight: Int,
         policy: InitialPairPolicy = InitialPairPolicy(),
-        ratioThreshold: Float = 0.78f,
         maximumMatches: Int = 2500,
         ransacThresholdPx: Double = 1.0
     ): InitialPairEvaluation {
@@ -49,33 +47,12 @@ internal object OpenCvInitialPairEvaluator {
             return rejected(firstFrame, secondFrame, "Missing descriptors or keypoints")
         }
 
-        val matcher = BFMatcher.create(Core.NORM_HAMMING, false)
-        val knn = mutableListOf<MatOfDMatch>()
-        val uniqueTrainIndices = HashSet<Int>()
-        val matchedFirst = mutableListOf<org.opencv.core.Point>()
-        val matchedSecond = mutableListOf<org.opencv.core.Point>()
-
-        try {
-            matcher.knnMatch(firstDescriptors, secondDescriptors, knn, 2)
-            for (row in knn) {
-                val pair = row.toArray()
-                if (pair.size < 2) continue
-                val best = pair[0]
-                val second = pair[1]
-                if (best.distance >= ratioThreshold * second.distance) continue
-                if (best.queryIdx !in firstKeypoints.indices ||
-                    best.trainIdx !in secondKeypoints.indices ||
-                    !uniqueTrainIndices.add(best.trainIdx)
-                ) continue
-
-                matchedFirst += firstKeypoints[best.queryIdx].pt
-                matchedSecond += secondKeypoints[best.trainIdx].pt
-                if (matchedFirst.size >= maximumMatches.coerceAtLeast(1)) break
-            }
-        } finally {
-            knn.forEach { it.release() }
-            matcher.clear()
+        val matched = matcher.match(firstDescriptors, secondDescriptors, maximumMatches.coerceAtLeast(1))
+            .filter { (query, train) ->
+                query in firstKeypoints.indices && train in secondKeypoints.indices
         }
+        val matchedFirst = matched.map { firstKeypoints[it.first].pt }
+        val matchedSecond = matched.map { secondKeypoints[it.second].pt }
 
         val matchCount = matchedFirst.size
         if (matchCount < policy.minimumInliers) {

@@ -5,14 +5,10 @@ import kotlinx.coroutines.currentCoroutineContext
 import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.withContext
 import org.opencv.calib3d.Calib3d
-import org.opencv.core.Core
 import org.opencv.core.Mat
-import org.opencv.core.MatOfDMatch
 import org.opencv.core.MatOfPoint2f
 import org.opencv.core.KeyPoint
 import org.opencv.core.Point
-import org.opencv.features2d.BFMatcher
-import org.opencv.features2d.ORB
 import org.opencv.imgproc.Imgproc
 import org.opencv.core.Point3
 import com.trackstudio.app.tracking.glomap.GlomapGlobalPositioningProblemBuilder
@@ -32,7 +28,7 @@ import kotlin.math.max
  */
 internal class IncrementalSfMSolver(
     private val maxFeatures: Int = 1800,
-    private val ratioThreshold: Float = 0.78f
+    private val ratioThreshold: Float = 0.8f
 ) {
     private data class CachedFrame(
         val keypoints: Array<KeyPoint>,
@@ -77,8 +73,8 @@ internal class IncrementalSfMSolver(
             }
         }
         val cache = linkedMapOf<Int, CachedFrame>()
-        val orb = ORB.create(maxFeatures.coerceIn(400, 5000))
-        val matcher = BFMatcher.create(Core.NORM_HAMMING, false)
+        val featureExtractor = AndroidSiftFeatureExtractor(maxFeatures.coerceIn(400, 5000))
+        val matcher = SiftDescriptorMatcher(ratioThreshold)
 
         try {
             // Bounded first pass: retain descriptors only for frames participating
@@ -96,7 +92,7 @@ internal class IncrementalSfMSolver(
                         try {
                             val detectionMask = Mat()
                             try {
-                                orb.detectAndCompute(gray, detectionMask, keypoints, descriptors)
+                                featureExtractor.detectAndCompute(gray, detectionMask, keypoints, descriptors)
                             } finally {
                                 detectionMask.release()
                             }
@@ -142,6 +138,7 @@ internal class IncrementalSfMSolver(
                         secondKeypoints = second.keypoints,
                         secondDescriptors = second.descriptors,
                         cameraMatrix = cameraMatrix,
+                        matcher = matcher,
                         frameWidth = minOf(first.width, second.width),
                         frameHeight = minOf(first.height, second.height)
                     )
@@ -278,7 +275,7 @@ internal class IncrementalSfMSolver(
                     try {
                         val detectionMask = Mat()
                         try {
-                            orb.detectAndCompute(gray, detectionMask, keypointsMat, descriptors)
+                            featureExtractor.detectAndCompute(gray, detectionMask, keypointsMat, descriptors)
                         } finally {
                             detectionMask.release()
                         }
@@ -457,7 +454,7 @@ internal class IncrementalSfMSolver(
                     try {
                         val detectionMask = Mat()
                         try {
-                            orb.detectAndCompute(gray, detectionMask, keypointsMat, descriptors)
+                            featureExtractor.detectAndCompute(gray, detectionMask, keypointsMat, descriptors)
                         } finally {
                             detectionMask.release()
                         }
@@ -898,7 +895,7 @@ internal class IncrementalSfMSolver(
         } finally {
             cache.values.forEach { it.descriptors.release() }
             matcher.clear()
-            orb.clear()
+            featureExtractor.clear()
         }
     }
 
@@ -906,7 +903,7 @@ internal class IncrementalSfMSolver(
         first: CachedFrame,
         second: CachedFrame,
         cameraMatrix: Mat,
-        matcher: BFMatcher
+        matcher: SiftDescriptorMatcher
     ): PairGeometry? {
         val raw = ratioMatches(
             first.descriptors, second.descriptors,
@@ -922,7 +919,7 @@ internal class IncrementalSfMSolver(
         secondDescriptors: Mat,
         secondKeypoints: Array<KeyPoint>,
         cameraMatrix: Mat,
-        matcher: BFMatcher
+        matcher: SiftDescriptorMatcher
     ): List<Pair<Int, Int>> {
         val raw = ratioMatches(
             firstDescriptors, secondDescriptors, firstKeypoints, secondKeypoints, matcher
@@ -1007,31 +1004,14 @@ internal class IncrementalSfMSolver(
         secondDescriptors: Mat,
         firstKeypoints: Array<KeyPoint>,
         secondKeypoints: Array<KeyPoint>,
-        matcher: BFMatcher
+        matcher: SiftDescriptorMatcher
     ): List<Pair<Int, Int>> {
         if (firstDescriptors.empty() || secondDescriptors.empty() ||
             firstDescriptors.rows() == 0 || secondDescriptors.rows() == 0
         ) return emptyList()
-        val rows = mutableListOf<MatOfDMatch>()
-        val result = mutableListOf<Pair<Int, Int>>()
-        val usedTrain = HashSet<Int>()
-        try {
-            matcher.knnMatch(firstDescriptors, secondDescriptors, rows, 2)
-            for (row in rows) {
-                val pair = row.toArray()
-                if (pair.size < 2) continue
-                val best = pair[0]
-                if (best.distance >= ratioThreshold * pair[1].distance) continue
-                if (best.queryIdx !in firstKeypoints.indices ||
-                    best.trainIdx !in secondKeypoints.indices ||
-                    !usedTrain.add(best.trainIdx)
-                ) continue
-                result += best.queryIdx to best.trainIdx
-            }
-        } finally {
-            rows.forEach { it.release() }
+        return matcher.match(firstDescriptors, secondDescriptors).filter { (query, train) ->
+            query in firstKeypoints.indices && train in secondKeypoints.indices
         }
-        return result
     }
 
     private fun verifyGeometry(

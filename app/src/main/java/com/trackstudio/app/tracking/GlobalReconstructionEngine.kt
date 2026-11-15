@@ -13,15 +13,11 @@ import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.withContext
 import org.opencv.calib3d.Calib3d
-import org.opencv.core.Core
 import org.opencv.core.Mat
 import org.opencv.core.Point3
-import org.opencv.core.MatOfDMatch
 import org.opencv.core.MatOfPoint2f
 import org.opencv.core.KeyPoint
 import org.opencv.core.Point
-import org.opencv.features2d.BFMatcher
-import org.opencv.features2d.ORB
 import org.opencv.imgproc.Imgproc
 import kotlin.math.sqrt
 import java.util.concurrent.atomic.AtomicInteger
@@ -43,7 +39,7 @@ import kotlinx.coroutines.sync.withLock
  */
 class GlobalReconstructionEngine(
     private val maxFeatures: Int = 1400,
-    private val ratioThreshold: Float = 0.78f,
+    private val ratioThreshold: Float = 0.8f,
     private val maximumPairCount: Int = 420
 ) : ReconstructionEngine {
     init {
@@ -88,7 +84,7 @@ class GlobalReconstructionEngine(
             frameCount >= 250 -> if (heapMb <= 256L) 950 else 1200
             else -> maxFeatures.coerceIn(500, 4000)
         }
-        val orb = ORB.create(featureBudget)
+        val featureExtractor = AndroidSiftFeatureExtractor(featureBudget)
         val frames = arrayOfNulls<FrameFeatures>(frameCount)
         var decodedFrames = 0
         val solveContext = currentCoroutineContext()
@@ -115,7 +111,7 @@ class GlobalReconstructionEngine(
                     try {
                         val mask = Mat()
                         try {
-                            orb.detectAndCompute(gray, mask, keypoints, descriptors)
+                            featureExtractor.detectAndCompute(gray, mask, keypoints, descriptors)
                         } finally {
                             mask.release()
                         }
@@ -156,7 +152,7 @@ class GlobalReconstructionEngine(
             val verifiedPairs = coroutineScope {
                 chunks.map { chunk ->
                     async(Dispatchers.Default) {
-                        val workerMatcher = BFMatcher.create(Core.NORM_HAMMING, false)
+                        val workerMatcher = SiftDescriptorMatcher(ratioThreshold)
                         try {
                             chunk.mapNotNull { pair ->
                                 currentCoroutineContext().ensureActive()
@@ -237,7 +233,6 @@ class GlobalReconstructionEngine(
                 trackBuilder.addVerifiedMatches(pair.first, pair.second, pair.inlierMatches)
             }
             val tracks = trackBuilder.build(frames, rotations.keys)
-                .filter { it.observations.size >= GlomapGlobalPositioningProblemBuilder.DEFAULT_MINIMUM_TRACK_VIEWS }
             if (tracks.size < 20) {
                 throw IllegalStateException("Global reconstruction found only ${tracks.size} multi-view tracks; at least 20 are needed for a stable solve.")
             }
@@ -509,7 +504,7 @@ class GlobalReconstructionEngine(
             )
         } finally {
             frames.filterNotNull().forEach { it.descriptors.release() }
-            orb.clear()
+            featureExtractor.clear()
         }
     }
 
@@ -536,32 +531,16 @@ class GlobalReconstructionEngine(
         first: FrameFeatures,
         second: FrameFeatures,
         cameraMatrix: Mat,
-        matcher: BFMatcher
+        matcher: SiftDescriptorMatcher
     ): VerifiedPair? {
         if (first.descriptors.empty() || second.descriptors.empty() ||
             first.keypoints.isEmpty() || second.keypoints.isEmpty()
         ) return null
 
-        val knn = mutableListOf<MatOfDMatch>()
-        val matched = mutableListOf<Pair<Int, Int>>()
-        val usedTrain = HashSet<Int>()
-        try {
-            matcher.knnMatch(first.descriptors, second.descriptors, knn, 2)
-            for (row in knn) {
-                val candidates = row.toArray()
-                if (candidates.size < 2) continue
-                val best = candidates[0]
-                val next = candidates[1]
-                if (best.distance >= ratioThreshold * next.distance) continue
-                if (best.queryIdx !in first.keypoints.indices ||
-                    best.trainIdx !in second.keypoints.indices ||
-                    !usedTrain.add(best.trainIdx)
-                ) continue
-                matched += best.queryIdx to best.trainIdx
+        val matched = matcher.match(first.descriptors, second.descriptors)
+            .filter { (query, train) ->
+                query in first.keypoints.indices && train in second.keypoints.indices
             }
-        } finally {
-            knn.forEach { it.release() }
-        }
         if (matched.size < 30) return null
 
         val points1 = MatOfPoint2f()
@@ -676,25 +655,41 @@ class GlobalReconstructionEngine(
 
 /**
  * Multi-view track graph. Each node is a detected feature in one frame.
- * A union is rejected if it would put two different features from the same
- * frame into one track, which prevents inconsistent loop-closure edges from
- * silently corrupting a landmark's observation list.
+ * Verified edges are joined first; same-frame consistency is evaluated on the
+ * completed component before a landmark track is returned.
  */
-private class GlobalTrackGraphBuilder {
-    private val parent = HashMap<Long, Long>()
-    private val rank = HashMap<Long, Int>()
-    private val frameSets = HashMap<Long, MutableSet<Int>>()
+internal class GlobalTrackGraphBuilder(
+    private val minimumObservations: Int = 3,
+    private val maximumObservations: Int = 100,
+    private val inconsistencyThresholdPx: Double = 10.0
+) {
+    init {
+        require(minimumObservations >= 2)
+        require(maximumObservations >= minimumObservations)
+        require(inconsistencyThresholdPx.isFinite() && inconsistencyThresholdPx >= 0.0)
+    }
+
+    private val nodeIndexByKey = HashMap<Long, Int>()
+    private var parent = IntArray(1024)
+    private var rank = ByteArray(1024)
+    private var minimumNodeByRoot = LongArray(1024)
+    private var nodeCount = 0
+
+    private data class TrackCandidate(
+        val stableId: Long,
+        val observations: List<CameraFeatureObservation>
+    )
 
     fun addVerifiedMatches(
         firstFrame: Int,
         secondFrame: Int,
         matches: List<Pair<Int, Int>>
     ) {
+        require(firstFrame >= 0 && secondFrame >= 0)
         for ((firstFeature, secondFeature) in matches) {
+            require(firstFeature >= 0 && secondFeature >= 0)
             val a = node(firstFrame, firstFeature)
             val b = node(secondFrame, secondFeature)
-            ensure(a, firstFrame)
-            ensure(b, secondFrame)
             union(a, b)
         }
     }
@@ -702,56 +697,127 @@ private class GlobalTrackGraphBuilder {
     fun build(
         frames: Array<GlobalReconstructionEngine.FrameFeatures?>,
         activeFrames: Set<Int>
+    ): List<CameraFeatureTrack> = build(activeFrames) { frame, feature ->
+        val keypoint = frames.getOrNull(frame)?.keypoints?.getOrNull(feature)
+        if (keypoint == null) null
+        else CameraFeatureObservation(frame, keypoint.pt.x, keypoint.pt.y)
+    }
+
+    fun buildFromLocations(
+        featureLocationsByFrame: Map<Int, List<CameraFeatureObservation>>,
+        activeFrames: Set<Int>
+    ): List<CameraFeatureTrack> = build(activeFrames) { frame, feature ->
+        featureLocationsByFrame[frame]?.getOrNull(feature)
+    }
+
+    private fun build(
+        activeFrames: Set<Int>,
+        observationForNode: (Int, Int) -> CameraFeatureObservation?
     ): List<CameraFeatureTrack> {
-        val observations = HashMap<Long, MutableMap<Int, CameraFeatureObservation>>()
-        for (node in parent.keys) {
-            val root = find(node)
+        val observations = HashMap<Long, MutableList<CameraFeatureObservation>>()
+        for ((node, nodeIndex) in nodeIndexByKey) {
+            val root = find(nodeIndex)
             val frame = (node ushr 32).toInt()
             if (frame !in activeFrames) continue
             val featureIndex = node.toInt()
-            val keypoint = frames[frame]?.keypoints?.getOrNull(featureIndex) ?: continue
-            observations.getOrPut(root) { linkedMapOf() }[frame] =
-                CameraFeatureObservation(frame, keypoint.pt.x, keypoint.pt.y)
+            val observation = observationForNode(frame, featureIndex) ?: continue
+            observations.getOrPut(root) { ArrayList() }.add(
+                if (observation.frameIndex == frame) observation
+                else observation.copy(frameIndex = frame)
+            )
         }
-        return observations.values.mapNotNull { entries ->
-            if (entries.size < 2) null
-            else CameraFeatureTrack(-1, entries.values.sortedBy { it.frameIndex })
-        }.mapIndexed { index, track -> track.copy(id = index) }
+
+        val candidates = observations.mapNotNull { (root, values) ->
+            if (values.size !in minimumObservations..maximumObservations ||
+                values.any { !it.x.isFinite() || !it.y.isFinite() }
+            ) return@mapNotNull null
+
+            val ordered = values.sortedWith(
+                compareBy<CameraFeatureObservation>({ it.frameIndex }, { it.x }, { it.y })
+            )
+            var distinctFrames = 0
+            var previousFrame = Int.MIN_VALUE
+            for (observation in ordered) {
+                if (observation.frameIndex != previousFrame) {
+                    distinctFrames++
+                    previousFrame = observation.frameIndex
+                }
+            }
+            if (distinctFrames < minimumObservations || !isConsistentWithinFrames(ordered)) {
+                return@mapNotNull null
+            }
+            TrackCandidate(minimumNodeByRoot[root], ordered)
+        }.sortedWith(
+            compareByDescending<TrackCandidate> { it.observations.size }
+                .thenByDescending { it.stableId }
+        )
+
+        return candidates.mapIndexed { index, candidate ->
+            CameraFeatureTrack(index, candidate.observations)
+        }
+    }
+
+    private fun isConsistentWithinFrames(observations: List<CameraFeatureObservation>): Boolean {
+        val thresholdSquared = inconsistencyThresholdPx * inconsistencyThresholdPx
+        var groupStart = 0
+        while (groupStart < observations.size) {
+            val frameIndex = observations[groupStart].frameIndex
+            var groupEnd = groupStart + 1
+            while (groupEnd < observations.size && observations[groupEnd].frameIndex == frameIndex) {
+                groupEnd++
+            }
+            for (firstIndex in groupStart until groupEnd) {
+                for (secondIndex in firstIndex + 1 until groupEnd) {
+                    val dx = observations[firstIndex].x - observations[secondIndex].x
+                    val dy = observations[firstIndex].y - observations[secondIndex].y
+                    if (dx * dx + dy * dy > thresholdSquared) return false
+                }
+            }
+            groupStart = groupEnd
+        }
+        return true
     }
 
     private fun node(frame: Int, feature: Int): Long =
         (frame.toLong() shl 32) or (feature.toLong() and 0xffffffffL)
 
-    private fun ensure(value: Long, frame: Int) {
-        if (parent.containsKey(value)) return
-        parent[value] = value
-        rank[value] = 0
-        frameSets[value] = mutableSetOf(frame)
+    private fun ensure(value: Long): Int {
+        nodeIndexByKey[value]?.let { return it }
+        if (nodeCount == parent.size) {
+            check(parent.size <= Int.MAX_VALUE / 2) { "Feature graph contains too many nodes." }
+            val newCapacity = parent.size * 2
+            parent = parent.copyOf(newCapacity)
+            rank = rank.copyOf(newCapacity)
+            minimumNodeByRoot = minimumNodeByRoot.copyOf(newCapacity)
+        }
+        val index = nodeCount++
+        parent[index] = index
+        rank[index] = 0
+        minimumNodeByRoot[index] = value
+        nodeIndexByKey[value] = index
+        return index
     }
 
-    private fun find(value: Long): Long {
-        val p = parent[value] ?: return value
-        if (p == value) return value
-        val root = find(p)
-        parent[value] = root
-        return root
+    private fun find(value: Int): Int {
+        var current = value
+        while (parent[current] != current) {
+            parent[current] = parent[parent[current]]
+            current = parent[current]
+        }
+        return current
     }
 
     private fun union(first: Long, second: Long) {
-        var a = find(first)
-        var b = find(second)
+        var a = find(ensure(first))
+        var b = find(ensure(second))
         if (a == b) return
-        val framesA = frameSets[a] ?: mutableSetOf()
-        val framesB = frameSets[b] ?: mutableSetOf()
-        if (framesA.any { it in framesB }) return
-        if ((rank[a] ?: 0) < (rank[b] ?: 0)) {
+        if (rank[a] < rank[b]) {
             val swap = a
             a = b
             b = swap
         }
         parent[b] = a
-        framesA.addAll(framesB)
-        frameSets.remove(b)
-        if (rank[a] == rank[b]) rank[a] = (rank[a] ?: 0) + 1
+        minimumNodeByRoot[a] = minOf(minimumNodeByRoot[a], minimumNodeByRoot[b])
+        if (rank[a] == rank[b]) rank[a] = (rank[a] + 1).toByte()
     }
 }

@@ -5,7 +5,7 @@ import org.opencv.core.Mat
 class CameraReconstructionOptions(
     val customMaxFeatures: Int = 1800,
     val globalMaxFeatures: Int = 1400,
-    val ratioThreshold: Float = 0.78f,
+    val ratioThreshold: Float = 0.8f,
     val maximumPairCount: Int = 420
 ) {
     init {
