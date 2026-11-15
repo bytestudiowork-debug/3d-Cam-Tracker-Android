@@ -116,6 +116,9 @@ class BundledVideoReconstructionTest {
 
     private fun decodeSampledFrames(cacheDir: File): DecodedSequence {
         val context = InstrumentationRegistry.getInstrumentation().context
+        check(cacheDir.isDirectory || cacheDir.mkdirs()) {
+            "Could not create the video test cache directory"
+        }
         val video = File.createTempFile("tracking-video-", ".mp4", cacheDir)
         context.assets.open(VIDEO_ASSET).use { input ->
             video.outputStream().use { output -> input.copyTo(output) }
