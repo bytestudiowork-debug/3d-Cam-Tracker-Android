@@ -513,27 +513,19 @@ class GlobalReconstructionEngine(
         }
     }
 
-    private fun buildPairSchedule(frameCount: Int, maximumPairs: Int): List<Pair<Int, Int>> {
+    internal fun buildPairSchedule(frameCount: Int, maximumPairs: Int): List<Pair<Int, Int>> {
+        if (frameCount < 2) return emptyList()
         val pairs = linkedSetOf<Pair<Int, Int>>()
-        // Preserve a connected temporal backbone first; without this, a hard
-        // pair cap could leave the tail of a long clip outside the view graph.
         for (first in 0 until frameCount - 1) pairs += first to first + 1
-        // Keep the adjacent-frame graph connected, but sample wider baselines.
         val pairBudget = maxOf(frameCount - 1, minOf(maximumPairs, frameCount * 2))
-        // Add progressively wider baselines across the whole sequence before
-        // spending the remaining budget on long-range loop-closure candidates.
-        for (offset in listOf(2, 4, 8)) {
-            for (first in 0 until frameCount - offset step offset) {
+        var offset = 1
+        repeat(10) {
+            if (offset >= frameCount) return pairs.toList()
+            for (first in 0 until frameCount - offset) {
                 pairs += first to first + offset
                 if (pairs.size >= pairBudget) return pairs.toList()
             }
-        }
-        val anchorStride = (frameCount / 8).coerceAtLeast(1)
-        for (first in 0 until frameCount step anchorStride) {
-            for (second in listOf(frameCount - 1, frameCount / 2)) {
-                if (second - first > 1) pairs += first to second
-                if (pairs.size >= pairBudget) return pairs.toList()
-            }
+            offset *= 2
         }
         return pairs.toList()
     }

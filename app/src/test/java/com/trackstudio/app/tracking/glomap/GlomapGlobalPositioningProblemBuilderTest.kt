@@ -71,6 +71,39 @@ class GlomapGlobalPositioningProblemBuilderTest {
         assertEquals(1.0, problem.constraints.first().initialScale, 0.0)
     }
 
+    @Test
+    fun transformsRotatedCameraDirectionIntoWorldFrame() {
+        val rotatedObservation = GlomapGlobalPositioningProblemBuilder.CameraObservation(
+            frameIndex = 0,
+            rotation = doubleArrayOf(
+                0.0, -1.0, 0.0,
+                1.0, 0.0, 0.0,
+                0.0, 0.0, 1.0
+            ),
+            cameraCenter = doubleArrayOf(0.0, 0.0, 0.0),
+            undistortedFeatureDirection = doubleArrayOf(0.0, 2.0, 0.0),
+            isCalibrated = true
+        )
+        val problem = GlomapGlobalPositioningProblemBuilder.build(
+            listOf(
+                GlomapGlobalPositioningProblemBuilder.Track(
+                    trackId = 4,
+                    observations = listOf(
+                        rotatedObservation,
+                        observation(1),
+                        observation(2)
+                    )
+                )
+            )
+        )
+
+        assertArrayEquals(
+            doubleArrayOf(2.0, 0.0, 0.0),
+            problem.constraints.first().translationObservation,
+            1e-12
+        )
+    }
+
     private fun observation(
         frame: Int,
         calibrated: Boolean = true,
