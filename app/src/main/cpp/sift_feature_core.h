@@ -4,7 +4,7 @@
 #include <cstdint>
 #include <vector>
 
-struct VlSiftFilt;
+#include "sift_core/sift.h"
 
 namespace tracking {
 
