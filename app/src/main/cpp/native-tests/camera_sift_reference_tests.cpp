@@ -24,6 +24,8 @@ constexpr int kWidth = 256;
 constexpr int kHeight = 256;
 constexpr int kMaximumFeatures = 400;
 constexpr int kDescriptorLength = 128;
+constexpr std::size_t kExpectedFeatureCount = 275;
+constexpr std::uint64_t kExpectedFeatureHash = 0x709ccd0d8eeda160ULL;
 constexpr double kPeakThreshold = 0.02 / 3.0;
 constexpr double kEdgeThreshold = 10.0;
 constexpr int kBinPermutation[8] = {0, 7, 6, 5, 4, 3, 2, 1};
@@ -231,7 +233,15 @@ int main(int argc, char** argv) {
         }
     }
 
-    const std::uint64_t hash = golden_hash(actual);
+    const std::uint64_t hash = golden_hash(expected);
+    if (!check(expected.size() == kExpectedFeatureCount,
+               "the pinned reference feature count changed") ||
+        !check(hash == kExpectedFeatureHash,
+               "the pinned reference descriptor/keypoint golden changed") ||
+        !check(golden_hash(actual) == kExpectedFeatureHash,
+               "the production adapter differs from the pinned golden")) {
+        return 1;
+    }
     if (argc == 2 && std::string(argv[1]) == "--dump") {
         std::cout << "FEATURE_GOLDEN count=" << actual.size()
                   << " hash=0x" << std::hex << hash << std::dec << '\n';

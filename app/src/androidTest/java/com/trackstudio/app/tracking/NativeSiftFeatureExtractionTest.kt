@@ -49,8 +49,8 @@ class NativeSiftFeatureExtractionTest {
             assertEquals(firstPoints.size, secondPoints.size)
             assertEquals(firstBytes.toList(), secondBytes.toList())
             firstPoints.indices.forEach { index ->
-                assertEquals(firstPoints[index].pt.x, secondPoints[index].pt.x, 0f)
-                assertEquals(firstPoints[index].pt.y, secondPoints[index].pt.y, 0f)
+                assertEquals(firstPoints[index].pt.x, secondPoints[index].pt.x, 0.0)
+                assertEquals(firstPoints[index].pt.y, secondPoints[index].pt.y, 0.0)
                 assertEquals(firstPoints[index].size, secondPoints[index].size, 0f)
                 assertEquals(firstPoints[index].angle, secondPoints[index].angle, 0f)
             }
