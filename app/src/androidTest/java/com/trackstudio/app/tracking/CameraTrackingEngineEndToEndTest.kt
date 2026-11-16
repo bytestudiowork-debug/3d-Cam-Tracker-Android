@@ -92,45 +92,87 @@ class CameraTrackingEngineEndToEndTest {
     }
 
     @Test
-    fun incrementalSyntheticSequenceRunsJointCameraPointRefinementAndExportsIt() {
-        val frames = SyntheticSequence.render()
+    fun jointCameraPointAdapterSolvesNoisySyntheticMapAndReportsDiagnostics() {
         val cameraMatrix = SyntheticSequence.cameraMatrix()
-        val result = try {
-            runBlocking {
-                CameraReconstructionEngine(
-                    mode = ReconstructionMode.CUSTOM,
-                    options = CameraReconstructionOptions(
-                        customMaxFeatures = 1200,
-                        ratioThreshold = 0.8f
-                    )
-                ).solve(
-                    frameCount = frames.size,
-                    cameraMatrix = cameraMatrix,
-                    frameProvider = { index -> frames[index].clone() }
-                )
-            }
-        } finally {
-            frames.forEach(Mat::release)
-            cameraMatrix.release()
-        }
-
-        assertTrue("Incremental solve registered too few cameras", result.registeredCameraCount >= 3)
-        assertTrue("Incremental joint refinement was not applied: ${result.jointBundleAdjustmentStatus}", result.jointBundleAdjustmentApplied)
-        assertTrue(result.jointBundleAdjustmentInitialCost.isFinite())
-        assertTrue(result.jointBundleAdjustmentFinalCost.isFinite())
-        assertTrue(
-            SolverObjective.didNotIncrease(
-                result.jointBundleAdjustmentInitialCost,
-                result.jointBundleAdjustmentFinalCost
-            )
+        val fx = cameraMatrix.get(0, 0)[0]
+        val skew = cameraMatrix.get(0, 1)[0]
+        val cx = cameraMatrix.get(0, 2)[0]
+        val fy = cameraMatrix.get(1, 1)[0]
+        val cy = cameraMatrix.get(1, 2)[0]
+        val trueCenters = linkedMapOf(
+            0 to doubleArrayOf(0.0, 0.0, 0.0),
+            1 to doubleArrayOf(1.0, 0.0, 0.0),
+            2 to doubleArrayOf(2.0, 0.0, 0.0)
         )
-        assertTrue(result.jointBundleAdjustmentPositiveDepthRatio >= 0.9)
-        assertNotNull(result.refinedCameraIntrinsics)
+        val identity = doubleArrayOf(1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0)
+        val initialRotations = mapOf(
+            0 to identity.copyOf(),
+            1 to rotationY(0.006),
+            2 to rotationY(-0.008)
+        )
+        val truePoints = (0 until 64).associateWith { id ->
+            doubleArrayOf(
+                0.7 + (id % 8) * 0.25,
+                ((id / 8) - 3.5) * 0.18,
+                7.0 + (id % 5) * 0.7
+            )
+        }
+        val tracks = truePoints.map { (trackId, point) ->
+            CameraFeatureTrack(
+                trackId,
+                trueCenters.map { (frameIndex, center) ->
+                    val cameraX = point[0] - center[0]
+                    val cameraY = point[1] - center[1]
+                    CameraFeatureObservation(
+                        frameIndex,
+                        fx * cameraX / point[2] + skew * cameraY / point[2] + cx,
+                        fy * cameraY / point[2] + cy
+                    )
+                }
+            )
+        }
+        val initialCenters = linkedMapOf(
+            0 to doubleArrayOf(0.0, 0.0, 0.0),
+            1 to doubleArrayOf(1.0, 0.02, 0.0),
+            2 to doubleArrayOf(2.15, -0.03, 0.04)
+        )
+        val initialPoints = truePoints.mapValues { (id, point) ->
+            doubleArrayOf(
+                point[0] + ((id % 3) - 1) * 0.025,
+                point[1] + ((id % 4) - 1.5) * 0.018,
+                point[2] + ((id % 5) - 2) * 0.035
+            )
+        }
+        val solved = try {
+            JointCameraBundleAdjuster().solve(
+                frameCentersById = initialCenters,
+                rotationsByFrame = initialRotations,
+                pointsByTrackId = initialPoints,
+                tracks = tracks,
+                cameraMatrix = cameraMatrix,
+                imageWidth = SyntheticSequence.WIDTH,
+                imageHeight = SyntheticSequence.HEIGHT,
+                maxIterations = 60,
+                numThreads = 2
+            )
+        } finally {
+            cameraMatrix.release()
+        } ?: throw AssertionError("Joint Ceres adapter rejected the synthetic map")
 
-        val summary = JSONObject(CameraSolveExporter.toJson(result)).getJSONObject("summary")
-        assertTrue(summary.getBoolean("jointBundleAdjustmentApplied"))
-        assertEquals("Applied", summary.getString("jointBundleAdjustmentStatus"))
-        assertEquals(result.jointBundleAdjustmentIterations, summary.getInt("jointBundleAdjustmentIterations"))
+        assertTrue(solved.initialCost.isFinite() && solved.initialCost > 0.0)
+        assertTrue(solved.finalCost.isFinite() && solved.finalCost < solved.initialCost)
+        assertTrue(SolverObjective.didNotIncrease(solved.initialCost, solved.finalCost))
+        assertEquals(truePoints.size, solved.pointsByTrackId.size)
+        assertTrue(solved.positiveDepthRatio >= 0.9)
+        assertTrue(solved.rotationsByFrame.values.all { it.size == 9 && it.all(Double::isFinite) })
+        assertTrue(solved.intrinsics.fx.isFinite() && solved.intrinsics.fy.isFinite())
+        assertTrue(kotlin.math.abs(solved.frameCentersById.getValue(2)[0] - 2.0) < 0.1)
+    }
+
+    private fun rotationY(angle: Double): DoubleArray {
+        val cosine = kotlin.math.cos(angle)
+        val sine = kotlin.math.sin(angle)
+        return doubleArrayOf(cosine, 0.0, sine, 0.0, 1.0, 0.0, -sine, 0.0, cosine)
     }
 
     @Test

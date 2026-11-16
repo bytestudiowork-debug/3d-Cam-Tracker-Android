@@ -206,7 +206,7 @@ internal class GlomapGlobalBundleAdjuster {
 
     companion object {
         init {
-            System.loadLibrary("trackstudio_glomap")
+            System.loadLibrary("trackstudio_reconstruction")
         }
     }
 }

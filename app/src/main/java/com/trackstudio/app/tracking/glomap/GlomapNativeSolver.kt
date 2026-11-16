@@ -145,7 +145,7 @@ internal class GlomapNativeSolver {
 
     companion object {
         init {
-            System.loadLibrary("trackstudio_glomap")
+            System.loadLibrary("trackstudio_reconstruction")
         }
     }
 }

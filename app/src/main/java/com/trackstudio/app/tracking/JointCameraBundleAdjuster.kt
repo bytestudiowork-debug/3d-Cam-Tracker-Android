@@ -22,7 +22,6 @@ internal class JointCameraBundleAdjuster {
         val observation: CameraFeatureObservation
     )
 
-    /** The native library is loaded by the incremental position solve before this adapter is called. */
     fun solve(
         frameCentersById: Map<Int, DoubleArray>,
         rotationsByFrame: Map<Int, DoubleArray>,
@@ -205,5 +204,11 @@ internal class JointCameraBundleAdjuster {
                 value[1] * (value[3] * value[8] - value[5] * value[6]) +
                 value[2] * (value[3] * value[7] - value[4] * value[6])
         return determinant.isFinite() && kotlin.math.abs(determinant - 1.0) <= 1e-3
+    }
+
+    companion object {
+        init {
+            System.loadLibrary("trackstudio_reconstruction")
+        }
     }
 }
