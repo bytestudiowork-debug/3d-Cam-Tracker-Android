@@ -128,6 +128,41 @@ class CameraSolveExporterTest {
     }
 
     @Test
+    fun observationIntrinsicsDescribeRectifiedPixelsInsteadOfSourceSkew() {
+        val calibration = CameraCalibration(
+            imageWidth = 640,
+            imageHeight = 480,
+            fx = 500.0,
+            fy = 510.0,
+            cx = 320.0,
+            cy = 240.0,
+            skew = 5.0,
+            distortionCoefficients = listOf(0.08, -0.02, 0.001, -0.001)
+        )
+        val observationIntrinsics = CameraIntrinsics(500.0, 0.0, 320.0, 510.0, 240.0)
+        val result = CameraTrackingResult(
+            poses = emptyList(),
+            diagnostics = emptyList(),
+            processedFrames = 0,
+            solvedFramePairs = 0,
+            totalMatches = 0,
+            totalInliers = 0,
+            inlierRatio = 0.0,
+            isCameraMotionEstimated = false,
+            inputCameraCalibration = calibration,
+            observationCoordinateModel = CameraObservationCoordinateModel.CALIBRATED_PINHOLE_PIXELS,
+            observationCameraIntrinsics = observationIntrinsics
+        )
+
+        val json = CameraSolveExporter.toJson(result)
+
+        assertEquals(observationIntrinsics, result.effectiveCameraIntrinsics)
+        assertTrue(json.contains("\"inputCameraCalibration\": {\"imageWidth\": 640"))
+        assertTrue(json.contains("\"observationCameraIntrinsics\": {\"fx\": 500.0, \"skew\": 0.0"))
+        assertTrue(json.contains("\"effectiveCameraIntrinsics\": {\"fx\": 500.0, \"skew\": 0.0"))
+    }
+
+    @Test
     fun nonFiniteOptionalCostsAreWrittenAsJsonNull() {
         val result = CameraTrackingResult(
             poses = emptyList(),

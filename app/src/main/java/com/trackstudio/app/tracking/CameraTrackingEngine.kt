@@ -132,10 +132,11 @@ data class CameraTrackingResult(
     val inputCameraCalibration: CameraCalibration? = null,
     val observationCoordinateModel: CameraObservationCoordinateModel =
         CameraObservationCoordinateModel.PINHOLE_PIXELS_ASSUMED,
-    val refinedCameraIntrinsics: CameraIntrinsics? = null
+    val refinedCameraIntrinsics: CameraIntrinsics? = null,
+    val observationCameraIntrinsics: CameraIntrinsics? = null
 ) {
     val effectiveCameraIntrinsics: CameraIntrinsics?
-        get() = refinedCameraIntrinsics ?: inputCameraCalibration?.let { calibration ->
+        get() = refinedCameraIntrinsics ?: observationCameraIntrinsics ?: inputCameraCalibration?.let { calibration ->
             CameraIntrinsics(
                 fx = calibration.fx,
                 skew = calibration.skew,

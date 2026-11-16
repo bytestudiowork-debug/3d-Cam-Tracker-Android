@@ -12,11 +12,113 @@ import org.junit.Test
 import org.junit.runner.RunWith
 import org.opencv.core.CvType
 import org.opencv.core.Mat
+import org.opencv.core.MatOfDouble
 import java.util.Random
 import kotlin.math.roundToInt
 
 @RunWith(AndroidJUnit4::class)
 class CameraTrackingEngineEndToEndTest {
+    @Test
+    fun skewCompensatedUndistortionMapMatchesForwardProjection() {
+        assertTrue("OpenCV runtime is unavailable", OpenCvRuntime.ensureLoaded())
+        val calibration = CameraCalibration(
+            imageWidth = 1280,
+            imageHeight = 720,
+            fx = 800.0,
+            fy = 790.0,
+            cx = 640.0,
+            cy = 360.0,
+            skew = 5.0,
+            distortionCoefficients = listOf(
+                0.08, -0.025, 0.001, -0.002, 0.003,
+                0.006, -0.004, 0.001,
+                0.0002, -0.0001, 0.0003, -0.0002,
+                0.07, -0.045
+            )
+        )
+        val cameraMatrix = Mat(3, 3, CvType.CV_64F)
+        cameraMatrix.put(
+            0, 0,
+            800.0, 0.0, 640.0,
+            0.0, 790.0, 360.0,
+            0.0, 0.0, 1.0
+        )
+        val distortion = MatOfDouble().also {
+            it.fromArray(*calibration.distortionCoefficients.toDoubleArray())
+        }
+        var maps: Pair<Mat, Mat>? = null
+        try {
+            val skewMaps = createSkewCompensatedUndistortionMaps(calibration, cameraMatrix, distortion)
+            maps = skewMaps
+            val outputX = 800
+            val outputY = 281
+            val cameraPoint = doubleArrayOf(
+                (outputX - calibration.cx) / calibration.fx,
+                (outputY - calibration.cy) / calibration.fy,
+                1.0
+            )
+            val expectedRawPixel = calibration.projectRawPixel(cameraPoint)
+            val mapXValue = FloatArray(1)
+            val mapYValue = FloatArray(1)
+            skewMaps.first.get(outputY, outputX, mapXValue)
+            skewMaps.second.get(outputY, outputX, mapYValue)
+
+            assertEquals(expectedRawPixel[0], mapXValue[0].toDouble(), 2e-4)
+            assertEquals(expectedRawPixel[1], mapYValue[0].toDouble(), 2e-4)
+        } finally {
+            maps?.first?.release()
+            maps?.second?.release()
+            cameraMatrix.release()
+            distortion.release()
+        }
+    }
+
+    @Test
+    fun calibratedSolveReportsTheRectifiedObservationIntrinsics() = runBlocking {
+        val calibration = CameraCalibration(
+            imageWidth = 640,
+            imageHeight = 480,
+            fx = 500.0,
+            fy = 510.0,
+            cx = 320.0,
+            cy = 240.0,
+            skew = 5.0,
+            distortionCoefficients = listOf(0.08, -0.02, 0.001, -0.001)
+        )
+        val delegate = object : ReconstructionEngine {
+            override suspend fun solve(
+                frameCount: Int,
+                cameraMatrix: Mat,
+                frameProvider: suspend (Int) -> Mat?,
+                onProgress: suspend (CameraTrackingProgress) -> Unit
+            ): CameraTrackingResult {
+                assertEquals(0.0, cameraMatrix.get(0, 1)[0], 0.0)
+                return CameraTrackingResult(
+                    poses = emptyList(),
+                    diagnostics = emptyList(),
+                    processedFrames = 0,
+                    solvedFramePairs = 0,
+                    totalMatches = 0,
+                    totalInliers = 0,
+                    inlierRatio = 0.0,
+                    isCameraMotionEstimated = false
+                )
+            }
+        }
+
+        val result = delegate.solve(
+            frameCount = 3,
+            calibration = calibration,
+            frameProvider = {
+                throw AssertionError("The synthetic delegate must not request source frames")
+            }
+        )
+
+        assertEquals(5.0, result.inputCameraCalibration?.skew ?: Double.NaN, 0.0)
+        assertEquals(0.0, result.observationCameraIntrinsics?.skew ?: Double.NaN, 0.0)
+        assertEquals(0.0, result.effectiveCameraIntrinsics?.skew ?: Double.NaN, 0.0)
+    }
+
     @Test
     fun nativeSparseL1BridgePreservesFrameAndAxisLayout() {
         assertTrue("Native sparse solver library is unavailable", NativeL1Solver.isAvailable)

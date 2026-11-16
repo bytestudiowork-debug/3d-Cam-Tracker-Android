@@ -67,6 +67,12 @@ internal object CameraSolveExporter {
                 jsonArray(calibration.distortionCoefficients.toDoubleArray()) + "}"
         } ?: "null"
         line("  \"inputCameraCalibration\": $sourceCalibrationJson,")
+        val observationIntrinsicsJson = result.observationCameraIntrinsics?.let {
+            "{\"fx\": ${jsonNumber(it.fx)}, \"skew\": ${jsonNumber(it.skew)}, " +
+                "\"cx\": ${jsonNumber(it.cx)}, \"fy\": ${jsonNumber(it.fy)}, " +
+                "\"cy\": ${jsonNumber(it.cy)}}"
+        } ?: "null"
+        line("  \"observationCameraIntrinsics\": $observationIntrinsicsJson,")
         val intrinsics = result.refinedCameraIntrinsics
         val intrinsicsJson = intrinsics?.let {
             "{\"fx\": ${jsonNumber(it.fx)}, \"skew\": ${jsonNumber(it.skew)}, " +
