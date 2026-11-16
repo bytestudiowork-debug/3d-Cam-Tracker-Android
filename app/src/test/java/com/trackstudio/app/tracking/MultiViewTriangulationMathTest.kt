@@ -6,6 +6,7 @@ import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
+import org.opencv.core.Point3
 
 class MultiViewTriangulationMathTest {
     private val intrinsics = PinholeIntrinsics(
@@ -117,6 +118,35 @@ class MultiViewTriangulationMathTest {
         )
 
         assertNull(estimate)
+    }
+
+    @Test
+    fun finalTriangulationStatsMatchFinalLandmarkCountAndMeans() {
+        val initial = TriangulationStats(
+            inputTracks = 5,
+            triangulatedLandmarks = 2,
+            rejectedShortTracks = 1,
+            rejectedMissingPoses = 1,
+            rejectedInvalidGeometry = 1,
+            rejectedReprojection = 0,
+            meanReprojectionErrorPx = 9.0,
+            meanTriangulationAngleDegrees = 2.0
+        )
+        val finalLandmarks = listOf(
+            CameraLandmark(10, Point3(1.0, 2.0, 3.0), 3, 0.5, 12.0),
+            CameraLandmark(11, Point3(4.0, 5.0, 6.0), 4, 1.5, 18.0)
+        )
+
+        val result = initial.withFinalLandmarks(finalLandmarks)
+
+        assertEquals(2, result.triangulatedLandmarks)
+        assertEquals(1.0, result.meanReprojectionErrorPx, 1e-12)
+        assertEquals(15.0, result.meanTriangulationAngleDegrees, 1e-12)
+        assertEquals(5, result.inputTracks)
+        assertEquals(1, result.rejectedShortTracks)
+        assertEquals(1, result.rejectedMissingPoses)
+        assertEquals(1, result.rejectedInvalidGeometry)
+        assertEquals(0, result.rejectedReprojection)
     }
 
     private fun view(frame: Int, centerX: Double, centerY: Double, point: DoubleArray): TriangulationView {

@@ -171,3 +171,12 @@ data class TriangulationStats(
     val meanReprojectionErrorPx: Double = 0.0,
     val meanTriangulationAngleDegrees: Double = 0.0
 )
+
+internal fun TriangulationStats.withFinalLandmarks(landmarks: List<CameraLandmark>): TriangulationStats =
+    copy(
+        triangulatedLandmarks = landmarks.size,
+        meanReprojectionErrorPx = landmarks.map { it.meanReprojectionErrorPx }
+            .takeIf { it.isNotEmpty() }?.average() ?: 0.0,
+        meanTriangulationAngleDegrees = landmarks.map { it.triangulationAngleDegrees }
+            .takeIf { it.isNotEmpty() }?.average() ?: 0.0
+    )

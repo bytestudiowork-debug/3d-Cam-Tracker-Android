@@ -863,6 +863,7 @@ internal class IncrementalSfMSolver(
             var jointBundleAdjustmentStatus = "Skipped: insufficient registered observations"
             var jointBundleAdjustmentPositiveDepthRatio = Double.NaN
             var jointBundleAdjustmentPrincipalPointRefinementEnabled = false
+            var jointRefinedTrackIds: Set<Int> = emptySet()
             var refinedCameraIntrinsics: CameraIntrinsics? = null
 
             val jointTracks = trackBuilder.build(trackIds = landmarksByTrack.keys)
@@ -982,6 +983,7 @@ internal class IncrementalSfMSolver(
                                 refinedCameraIntrinsics = candidate.intrinsics
                                 jointBundleAdjustmentApplied = true
                                 jointBundleAdjustmentStatus = "Applied"
+                                jointRefinedTrackIds = candidate.pointsByTrackId.keys.toSet()
                             } else {
                                 jointBundleAdjustmentStatus =
                                     "No cost improvement; kept incremental solution"
@@ -1033,13 +1035,22 @@ internal class IncrementalSfMSolver(
                     matrix.put(0, 0, *intrinsics.toRowMajorMatrix())
                 }
             } ?: cameraMatrix
-            val finalStats = try {
+            val finalTriangulation = try {
                 SfMTriangulator.triangulate(
                     tracks, poseByFrame.filterNotNull(), finalCameraMatrix
-                ).stats
+                )
             } finally {
                 if (finalCameraMatrix !== cameraMatrix) finalCameraMatrix.release()
             }
+            val finalLandmarks = finalTriangulation.landmarks.map { triangulated ->
+                val refined = if (jointBundleAdjustmentApplied && triangulated.trackId in jointRefinedTrackIds) {
+                    landmarksByTrack[triangulated.trackId]
+                } else null
+                refined?.copy(
+                    triangulationAngleDegrees = triangulated.triangulationAngleDegrees
+                ) ?: triangulated
+            }
+            val finalStats = finalTriangulation.stats.withFinalLandmarks(finalLandmarks)
             onProgress(CameraTrackingProgress(
                 frameCount, frameCount, "Camera solve complete",
                 overallFraction = 1f,
@@ -1055,8 +1066,10 @@ internal class IncrementalSfMSolver(
                 totalInliers = totalInliers,
                 inlierRatio = (totalInliers.toDouble() / allCorrespondences).coerceIn(0.0, 1.0),
                 isCameraMotionEstimated = registeredFrames >= 2,
-                featureTracks = trackBuilder.build(trackIds = landmarksByTrack.keys),
-                landmarks = landmarksByTrack.values.toList(),
+                featureTracks = trackBuilder.build(
+                    trackIds = finalLandmarks.mapTo(linkedSetOf<Int>()) { it.trackId }
+                ),
+                landmarks = finalLandmarks,
                 triangulationStats = finalStats,
                 initialPairFrames = selected.firstFrame to selected.secondFrame,
                 registeredCameraCount = registeredFrames,
