@@ -115,7 +115,8 @@ internal object OpenCvInitialPairEvaluator {
                         homographyInlierCount = countMaskInliers(homographyMask, matchCount)
                         val initialHomography = DoubleArray(9)
                         if (estimatedHomography.rows() == 3 && estimatedHomography.cols() == 3 &&
-                            estimatedHomography.get(0, 0, initialHomography) == initialHomography.size
+                            estimatedHomography.get(0, 0, initialHomography) ==
+                                initialHomography.size * java.lang.Double.BYTES
                         ) {
                             val polished = OpenCvHomographyLocalOptimizer.refine(
                                 matchedFirst.toTypedArray(),
@@ -178,7 +179,9 @@ internal object OpenCvInitialPairEvaluator {
                     val selectedEssential = bestEssential
                     if (selectedEssential != null) {
                         val initialEssential = DoubleArray(9)
-                        if (selectedEssential.get(0, 0, initialEssential) == initialEssential.size) {
+                        if (selectedEssential.get(0, 0, initialEssential) ==
+                            initialEssential.size * java.lang.Double.BYTES
+                        ) {
                             val polished = OpenCvTwoViewLocalOptimizer.refine(
                                 matchedFirst.toTypedArray(),
                                 matchedSecond.toTypedArray(),

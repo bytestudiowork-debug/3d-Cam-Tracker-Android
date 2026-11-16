@@ -40,7 +40,7 @@ internal object OpenCvTwoViewLocalOptimizer {
             !confidence.isFinite() || confidence !in 0.0..1.0 || maximumIterations <= 0
         ) return null
         val k = DoubleArray(9)
-        if (cameraMatrix.get(0, 0, k) != k.size) return null
+        if (cameraMatrix.get(0, 0, k) != k.size * java.lang.Double.BYTES) return null
         val initialFundamental = EpipolarGeometryMath.fundamentalFromEssential(initialEssential, k)
             ?: return null
         val initialModel = EssentialModel(initialEssential.copyOf(), initialFundamental)
@@ -74,7 +74,9 @@ internal object OpenCvTwoViewLocalOptimizer {
                     ).clone()
                     try {
                         val essential = DoubleArray(9)
-                        if (candidate.get(0, 0, essential) != essential.size) return@mapNotNull null
+                        if (candidate.get(0, 0, essential) != essential.size * java.lang.Double.BYTES) {
+                            return@mapNotNull null
+                        }
                         val fundamental = EpipolarGeometryMath.fundamentalFromEssential(essential, k)
                             ?: return@mapNotNull null
                         EssentialModel(essential, fundamental)
@@ -133,8 +135,10 @@ internal object OpenCvTwoViewLocalOptimizer {
             if (finalInliers.size != inliers) return null
             val rotationValues = DoubleArray(9)
             val translationValues = DoubleArray(3)
-            if (rotation.get(0, 0, rotationValues) != rotationValues.size ||
-                translation.get(0, 0, translationValues) != translationValues.size ||
+            val expectedRotationBytes = rotationValues.size * java.lang.Double.BYTES
+            val expectedTranslationBytes = translationValues.size * java.lang.Double.BYTES
+            if (rotation.get(0, 0, rotationValues) != expectedRotationBytes ||
+                translation.get(0, 0, translationValues) != expectedTranslationBytes ||
                 rotationValues.any { !it.isFinite() } || translationValues.any { !it.isFinite() }
             ) return null
             return Result(

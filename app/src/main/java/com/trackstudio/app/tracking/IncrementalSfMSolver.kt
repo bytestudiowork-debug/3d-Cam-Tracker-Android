@@ -1286,7 +1286,9 @@ internal class IncrementalSfMSolver(
                     val selectedEssential = bestEssential
                     if (selectedEssential != null) {
                         val initialEssential = DoubleArray(9)
-                        if (selectedEssential.get(0, 0, initialEssential) == initialEssential.size) {
+                        if (selectedEssential.get(0, 0, initialEssential) ==
+                            initialEssential.size * java.lang.Double.BYTES
+                        ) {
                             val polished = OpenCvTwoViewLocalOptimizer.refine(
                                 matchedPoints1,
                                 matchedPoints2,

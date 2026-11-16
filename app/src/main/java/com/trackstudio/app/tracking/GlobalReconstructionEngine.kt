@@ -622,7 +622,9 @@ class GlobalReconstructionEngine(
                 }
                 if (bestInliers > 0 && !bestEssential.empty()) {
                     val initialEssential = DoubleArray(9)
-                    if (bestEssential.get(0, 0, initialEssential) == initialEssential.size) {
+                    if (bestEssential.get(0, 0, initialEssential) ==
+                        initialEssential.size * java.lang.Double.BYTES
+                    ) {
                         val polished = OpenCvTwoViewLocalOptimizer.refine(
                             matched.map { first.keypoints[it.first].pt }.toTypedArray(),
                             matched.map { second.keypoints[it.second].pt }.toTypedArray(),

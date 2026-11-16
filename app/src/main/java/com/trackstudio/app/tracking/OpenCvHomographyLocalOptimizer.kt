@@ -53,7 +53,7 @@ internal object OpenCvHomographyLocalOptimizer {
                     return emptyList()
                 }
                 val values = DoubleArray(9)
-                if (fitted.get(0, 0, values) != values.size) return emptyList()
+                if (fitted.get(0, 0, values) != values.size * java.lang.Double.BYTES) return emptyList()
                 return listOfNotNull(HomographyGeometryMath.fromMatrix(values))
             } catch (_: CvException) {
                 return emptyList()
