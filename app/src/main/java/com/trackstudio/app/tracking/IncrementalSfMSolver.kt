@@ -88,12 +88,9 @@ internal class IncrementalSfMSolver(
                 val source = frameProvider(index)
                     ?: throw IllegalStateException("Unable to decode frame ${index + 1}.")
                 try {
-                    val frameSize = source.cols() to source.rows()
-                    val expectedSize = referenceFrameSize
-                    require(expectedSize == null || frameSize == expectedSize) {
-                        "All decoded frames in a reconstruction must use the same image dimensions."
-                    }
-                    if (expectedSize == null) referenceFrameSize = frameSize
+                    referenceFrameSize = TrackingFrameDimensions.validate(
+                        referenceFrameSize, source.cols(), source.rows()
+                    )
                     if (index in candidateFrames) {
                         val gray = toGray(source)
                         val keypoints = org.opencv.core.MatOfKeyPoint()
@@ -297,6 +294,14 @@ internal class IncrementalSfMSolver(
                     )
                     val source = frameProvider(frameIndex)
                         ?: throw IllegalStateException("Unable to decode frame ${frameIndex + 1}.")
+                    try {
+                        referenceFrameSize = TrackingFrameDimensions.validate(
+                            referenceFrameSize, source.cols(), source.rows()
+                        )
+                    } catch (failure: Throwable) {
+                        source.release()
+                        throw failure
+                    }
                     val gray = toGray(source)
                     val keypointsMat = org.opencv.core.MatOfKeyPoint()
                     val descriptors = Mat()
@@ -480,6 +485,14 @@ internal class IncrementalSfMSolver(
                     )
                     val source = frameProvider(frameIndex)
                         ?: throw IllegalStateException("Unable to decode frame ${frameIndex + 1}.")
+                    try {
+                        referenceFrameSize = TrackingFrameDimensions.validate(
+                            referenceFrameSize, source.cols(), source.rows()
+                        )
+                    } catch (failure: Throwable) {
+                        source.release()
+                        throw failure
+                    }
                     val gray = toGray(source)
                     val keypointsMat = org.opencv.core.MatOfKeyPoint()
                     val descriptors = Mat()
