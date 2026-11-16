@@ -73,6 +73,57 @@ class MultiViewTriangulationMathTest {
         assertNotNull(estimate)
         assertEquals(listOf(0, 1, 2), estimate!!.inlierIndices)
         assertArrayEquals(worldPoint, estimate.pointWorld, 1e-5)
+        assertTrue(estimate.localOptimizationPasses > 0)
+    }
+
+    @Test
+    fun tracksWithAtMost15ViewsEnumerateEveryTwoViewHypothesis() {
+        val worldPoint = doubleArrayOf(0.12, -0.08, 8.0)
+        val observations = (0 until 10).map { frame ->
+            view(frame, centerX = frame * 0.1, centerY = (frame % 2) * 0.02, point = worldPoint)
+        }
+
+        val estimate = MultiViewTriangulationMath.estimate(
+            observations = observations,
+            intrinsics = intrinsics,
+            minimumParallaxDegrees = 0.1,
+            maximumAngularErrorDegrees = 0.05,
+            minimumInlierRatio = 1.0
+        )
+
+        assertNotNull(estimate)
+        assertEquals(45, estimate!!.ransacTrials)
+        assertEquals((0 until 10).toList(), estimate.inlierIndices)
+        assertArrayEquals(worldPoint, estimate.pointWorld, 1e-6)
+    }
+
+    @Test
+    fun longTrackUsesRepeatableConfidenceLimitedHypothesisBudget() {
+        val worldPoint = doubleArrayOf(0.12, -0.08, 8.0)
+        val observations = (0 until 20).map { frame ->
+            view(frame, centerX = frame * 0.3, centerY = (frame % 3) * 0.03, point = worldPoint)
+        }
+        val estimate = MultiViewTriangulationMath.estimate(
+            observations = observations,
+            intrinsics = intrinsics,
+            minimumParallaxDegrees = 1.5,
+            maximumAngularErrorDegrees = 0.05,
+            minimumInlierRatio = 1.0
+        )
+        val repeat = MultiViewTriangulationMath.estimate(
+            observations = observations,
+            intrinsics = intrinsics,
+            minimumParallaxDegrees = 1.5,
+            maximumAngularErrorDegrees = 0.05,
+            minimumInlierRatio = 1.0
+        )
+
+        assertNotNull(estimate)
+        assertNotNull(repeat)
+        assertEquals(2, estimate!!.ransacTrials)
+        assertEquals(estimate.ransacTrials, repeat!!.ransacTrials)
+        assertEquals(estimate.inlierIndices, repeat.inlierIndices)
+        assertArrayEquals(estimate.pointWorld, repeat.pointWorld, 1e-12)
     }
 
     @Test

@@ -2,6 +2,8 @@ package com.trackstudio.app.tracking
 
 import kotlin.math.acos
 import kotlin.math.abs
+import kotlin.math.ceil
+import kotlin.math.ln
 import kotlin.math.sqrt
 
 internal data class TriangulationView(
@@ -13,11 +15,21 @@ internal data class TriangulationView(
 internal data class MultiViewTriangulationEstimate(
     val pointWorld: DoubleArray,
     val inlierIndices: List<Int>,
-    val triangulationAngleDegrees: Double
+    val triangulationAngleDegrees: Double,
+    val ransacTrials: Int = 0,
+    val localOptimizationPasses: Int = 0
 )
 
-/** Pure calibrated DLT and bounded deterministic consensus for mobile reconstruction. */
+/** Calibrated DLT with COLMAP-derived locally optimized consensus for mobile reconstruction. */
 internal object MultiViewTriangulationMath {
+    /*
+     * The estimator and local-optimization loop adapt COLMAP's
+     * TriangulationEstimator/EstimateTriangulation and LORANSAC at
+     * c5f9cefc87e5dd596b638e4cee0ff543c7d14755. The small-track exhaustive
+     * policy follows IncrementalTriangulator::TriangulateTrack. Mobile
+     * hypothesis and observation limits remain Android-specific.
+     * See app/src/main/assets/licenses/colmap-triangulation-license.txt.
+     */
     fun estimate(
         observations: List<TriangulationView>,
         intrinsics: PinholeIntrinsics,
@@ -41,81 +53,109 @@ internal object MultiViewTriangulationMath {
         require(maximumHypotheses > 0)
         if (observations.size < 2 || observations.any { !isValid(it) }) return null
 
-        val pairIndices = sampleIndices(observations.size, maximumPairObservations)
+        val exhaustiveSampling = observations.size <= EXHAUSTIVE_SAMPLING_THRESHOLD
+        val pairIndices = sampleIndices(
+            observations.size,
+            if (exhaustiveSampling) observations.size else maximumPairObservations
+        )
         val scoringIndices = sampleIndices(observations.size, maximumScoringObservations)
         val pairHypotheses = mutableListOf<PairHypothesis>()
         for (firstSlot in 0 until pairIndices.lastIndex) {
             for (secondSlot in firstSlot + 1 until pairIndices.size) {
-                val firstIndex = pairIndices[firstSlot]
-                val secondIndex = pairIndices[secondSlot]
-                val angle = rayAngleDegrees(observations[firstIndex], observations[secondIndex], intrinsics)
-                if (!angle.isFinite() || angle < minimumParallaxDegrees || angle >= 179.0 ||
-                    cameraCentersCoincide(observations[firstIndex].pose, observations[secondIndex].pose)
-                ) continue
-                pairHypotheses += PairHypothesis(firstIndex, secondIndex, angle)
+                pairHypotheses += PairHypothesis(pairIndices[firstSlot], pairIndices[secondSlot])
             }
         }
         if (pairHypotheses.isEmpty()) return null
-        pairHypotheses.sortWith(
-            compareByDescending<PairHypothesis> { it.angleDegrees }
-                .thenBy { it.firstIndex }
-                .thenBy { it.secondIndex }
-        )
+        val hypotheses = if (exhaustiveSampling) pairHypotheses else sampleValues(pairHypotheses, maximumHypotheses)
+        val minimumTrials = if (exhaustiveSampling) hypotheses.size else 0
+        val maximumTrials = hypotheses.size
+        val maximumAngularResidual = maximumAngularErrorDegrees * maximumAngularErrorDegrees
+        var dynamicMaximumTrials = maximumTrials
+        var bestModel: DoubleArray? = null
+        var bestSupport = InlierSupport(0, Double.POSITIVE_INFINITY)
+        var ransacTrials = 0
+        var localOptimizationPasses = 0
 
-        val boundedHypotheses = sampleValues(pairHypotheses, maximumHypotheses)
-        var bestPoint: DoubleArray? = null
-        var bestAngle = 0.0
-        var bestSupport = -1
-        var bestResidualSum = Double.POSITIVE_INFINITY
-        for (hypothesis in boundedHypotheses) {
-            val point = triangulateDlt(
+        for ((trial, hypothesis) in hypotheses.withIndex()) {
+            ransacTrials++
+            val model = estimateModel(
                 listOf(observations[hypothesis.firstIndex], observations[hypothesis.secondIndex]),
-                intrinsics
-            ) ?: continue
-            val firstCameraPoint = worldToCamera(observations[hypothesis.firstIndex].pose, point)
-            val secondCameraPoint = worldToCamera(observations[hypothesis.secondIndex].pose, point)
-            if (firstCameraPoint[2] <= 1e-9 || secondCameraPoint[2] <= 1e-9) continue
-
-            var support = 0
-            var residualSum = 0.0
-            for (index in scoringIndices) {
-                val observation = observations[index]
-                val error = angularErrorDegrees(point, observation, intrinsics)
-                if (error <= maximumAngularErrorDegrees &&
-                    (maximumReprojectionErrorPx == null ||
-                        reprojectionErrorPixels(point, observation, intrinsics) <= maximumReprojectionErrorPx)
-                ) {
-                    support++
-                    residualSum += error
+                intrinsics,
+                minimumParallaxDegrees
+            )
+            if (model != null) {
+                val support = evaluateSupport(
+                    model,
+                    scoringIndices,
+                    observations,
+                    intrinsics,
+                    maximumAngularResidual,
+                    maximumReprojectionErrorPx
+                )
+                if (isLeftSupportBetter(support, bestSupport)) {
+                    bestModel = model
+                    bestSupport = support
+                    var inlierIndices = consensusInliers(
+                        model,
+                        observations,
+                        intrinsics,
+                        maximumAngularErrorDegrees,
+                        maximumReprojectionErrorPx
+                    )
+                    if (support.numInliers > MIN_NUM_SAMPLES && inlierIndices.size > MIN_NUM_SAMPLES) {
+                        for (localTrial in 0 until MAX_LOCAL_TRIALS) {
+                            val inlierViews = inlierIndices.map(observations::get)
+                            if (inlierViews.size <= MIN_NUM_SAMPLES) break
+                            val previousBestInliers = bestSupport.numInliers
+                            val localModel = estimateModel(inlierViews, intrinsics, minimumParallaxDegrees)
+                                ?: break
+                            localOptimizationPasses++
+                            val localSupport = evaluateSupport(
+                                localModel,
+                                scoringIndices,
+                                observations,
+                                intrinsics,
+                                maximumAngularResidual,
+                                maximumReprojectionErrorPx
+                            )
+                            if (isLeftSupportBetter(localSupport, bestSupport)) {
+                                bestModel = localModel
+                                bestSupport = localSupport
+                            }
+                            if (bestSupport.numInliers <= previousBestInliers) break
+                            inlierIndices = consensusInliers(
+                                bestModel!!,
+                                observations,
+                                intrinsics,
+                                maximumAngularErrorDegrees,
+                                maximumReprojectionErrorPx
+                            )
+                        }
+                    }
+                    dynamicMaximumTrials = minOf(
+                        maximumTrials,
+                        computeRansacTrialLimit(bestSupport.numInliers, scoringIndices.size)
+                    )
                 }
             }
-            if (support > bestSupport || (support == bestSupport && residualSum < bestResidualSum)) {
-                bestPoint = point
-                bestAngle = hypothesis.angleDegrees
-                bestSupport = support
-                bestResidualSum = residualSum
-            }
+            if (trial >= dynamicMaximumTrials && trial >= minimumTrials) break
         }
 
-        var point = bestPoint ?: return null
-        var inliers = consensusInliers(
+        val point = bestModel ?: return null
+        val inliers = consensusInliers(
             point, observations, intrinsics, maximumAngularErrorDegrees, maximumReprojectionErrorPx
         )
-        if (inliers.size < 2 || inliers.size.toDouble() / observations.size < minimumInlierRatio) return null
-
-        point = triangulateDlt(inliers.map { observations[it] }, intrinsics) ?: return null
-        inliers = consensusInliers(
-            point, observations, intrinsics, maximumAngularErrorDegrees, maximumReprojectionErrorPx
+        if (inliers.size < MIN_NUM_SAMPLES || inliers.size.toDouble() / observations.size < minimumInlierRatio) {
+            return null
+        }
+        val finalAngle = maximumTriangulationAngleDegrees(point, inliers.map(observations::get))
+        return MultiViewTriangulationEstimate(
+            point,
+            inliers,
+            finalAngle,
+            ransacTrials,
+            localOptimizationPasses
         )
-        if (inliers.size < 2 || inliers.size.toDouble() / observations.size < minimumInlierRatio) return null
-
-        // One final all-inlier solve keeps the returned point tied to the final consensus set.
-        point = triangulateDlt(inliers.map { observations[it] }, intrinsics) ?: return null
-        inliers = consensusInliers(
-            point, observations, intrinsics, maximumAngularErrorDegrees, maximumReprojectionErrorPx
-        )
-        if (inliers.size < 2 || inliers.size.toDouble() / observations.size < minimumInlierRatio) return null
-        return MultiViewTriangulationEstimate(point, inliers, bestAngle)
     }
 
     /** Linear homogeneous two-view DLT; for three or more views uses bearing-ray projectors. */
@@ -161,11 +201,115 @@ internal object MultiViewTriangulationMath {
         return Math.toDegrees(acos(dot))
     }
 
-    private data class PairHypothesis(
-        val firstIndex: Int,
-        val secondIndex: Int,
-        val angleDegrees: Double
-    )
+    private data class PairHypothesis(val firstIndex: Int, val secondIndex: Int)
+
+    private data class InlierSupport(val numInliers: Int, val residualSum: Double)
+
+    private fun estimateModel(
+        observations: List<TriangulationView>,
+        intrinsics: PinholeIntrinsics,
+        minimumParallaxDegrees: Double
+    ): DoubleArray? {
+        if (observations.size < MIN_NUM_SAMPLES) return null
+        val point = triangulateDlt(observations, intrinsics) ?: return null
+        if (observations.any { worldToCamera(it.pose, point)[2] <= 1e-9 }) return null
+        val angle = maximumTriangulationAngleDegrees(point, observations)
+        if (angle < minimumParallaxDegrees) return null
+        return point
+    }
+
+    private fun maximumTriangulationAngleDegrees(
+        pointWorld: DoubleArray,
+        observations: List<TriangulationView>
+    ): Double {
+        var maximumAngle = 0.0
+        for (firstIndex in 0 until observations.lastIndex) {
+            for (secondIndex in firstIndex + 1 until observations.size) {
+                maximumAngle = maxOf(
+                    maximumAngle,
+                    triangulationAngleDegrees(
+                        pointWorld,
+                        observations[firstIndex].pose,
+                        observations[secondIndex].pose
+                    )
+                )
+            }
+        }
+        return maximumAngle
+    }
+
+    private fun triangulationAngleDegrees(
+        pointWorld: DoubleArray,
+        firstPose: CameraPose,
+        secondPose: CameraPose
+    ): Double {
+        val firstCenter = CameraPoseGeometry.cameraCenterWorld(firstPose)
+        val secondCenter = CameraPoseGeometry.cameraCenterWorld(secondPose)
+        val firstDx = pointWorld[0] - firstCenter[0]
+        val firstDy = pointWorld[1] - firstCenter[1]
+        val firstDz = pointWorld[2] - firstCenter[2]
+        val secondDx = pointWorld[0] - secondCenter[0]
+        val secondDy = pointWorld[1] - secondCenter[1]
+        val secondDz = pointWorld[2] - secondCenter[2]
+        val firstLengthSquared = firstDx * firstDx + firstDy * firstDy + firstDz * firstDz
+        val secondLengthSquared = secondDx * secondDx + secondDy * secondDy + secondDz * secondDz
+        val baselineX = firstCenter[0] - secondCenter[0]
+        val baselineY = firstCenter[1] - secondCenter[1]
+        val baselineZ = firstCenter[2] - secondCenter[2]
+        val baselineLengthSquared = baselineX * baselineX + baselineY * baselineY + baselineZ * baselineZ
+        val denominator = 2.0 * sqrt(firstLengthSquared * secondLengthSquared)
+        if (!denominator.isFinite() || denominator == 0.0) return 0.0
+        val cosine = ((firstLengthSquared + secondLengthSquared - baselineLengthSquared) / denominator)
+            .coerceIn(-1.0, 1.0)
+        val angle = acos(cosine)
+        return Math.toDegrees(minOf(angle, Math.PI - angle))
+    }
+
+    private fun evaluateSupport(
+        pointWorld: DoubleArray,
+        scoringIndices: List<Int>,
+        observations: List<TriangulationView>,
+        intrinsics: PinholeIntrinsics,
+        maximumAngularResidual: Double,
+        maximumReprojectionErrorPx: Double?
+    ): InlierSupport {
+        var numInliers = 0
+        var residualSum = 0.0
+        for (index in scoringIndices) {
+            val observation = observations[index]
+            val angularError = angularErrorDegrees(pointWorld, observation, intrinsics)
+            val residual = angularError * angularError
+            if (residual <= maximumAngularResidual &&
+                (maximumReprojectionErrorPx == null ||
+                    reprojectionErrorPixels(pointWorld, observation, intrinsics) <= maximumReprojectionErrorPx)
+            ) {
+                numInliers++
+                residualSum += residual
+            }
+        }
+        return InlierSupport(numInliers, residualSum)
+    }
+
+    private fun isLeftSupportBetter(left: InlierSupport, right: InlierSupport): Boolean =
+        left.numInliers > right.numInliers ||
+            (left.numInliers == right.numInliers && left.residualSum < right.residualSum)
+
+    private fun computeRansacTrialLimit(numInliers: Int, numSamples: Int): Int {
+        if (numSamples < MIN_NUM_SAMPLES || numInliers < MIN_NUM_SAMPLES) return Int.MAX_VALUE
+        var probabilityOfInlierSample = 1.0
+        for (sampleIndex in 0 until MIN_NUM_SAMPLES) {
+            probabilityOfInlierSample *=
+                (numInliers - sampleIndex).toDouble() / (numSamples - sampleIndex).toDouble()
+        }
+        val probabilityOfOutlierSample = 1.0 - probabilityOfInlierSample
+        if (probabilityOfOutlierSample <= 0.0) return 1
+        if (probabilityOfOutlierSample >= 1.0) return Int.MAX_VALUE
+        val requiredTrials = ceil(
+            ln(1.0 - RANSAC_CONFIDENCE) / ln(probabilityOfOutlierSample) * DYNAMIC_TRIALS_MULTIPLIER
+        )
+        if (!requiredTrials.isFinite() || requiredTrials >= Int.MAX_VALUE) return Int.MAX_VALUE
+        return requiredTrials.toInt().coerceAtLeast(1)
+    }
 
     private fun consensusInliers(
         point: DoubleArray,
@@ -384,17 +528,6 @@ internal object MultiViewTriangulationMath {
         )
     }
 
-    private fun cameraCentersCoincide(first: CameraPose, second: CameraPose): Boolean {
-        val a = CameraPoseGeometry.cameraCenterWorld(first)
-        val b = CameraPoseGeometry.cameraCenterWorld(second)
-        val dx = a[0] - b[0]
-        val dy = a[1] - b[1]
-        val dz = a[2] - b[2]
-        val distance = sqrt(dx * dx + dy * dy + dz * dz)
-        val scale = maxOf(sqrt(a.sumOf { it * it }), sqrt(b.sumOf { it * it }))
-        return distance == 0.0 || (scale > 0.0 && distance <= 1e-12 * scale)
-    }
-
     private fun sampleIndices(size: Int, maximum: Int): List<Int> {
         if (size <= maximum) return (0 until size).toList()
         return (0 until maximum).map { index -> index * (size - 1) / (maximum - 1) }
@@ -449,4 +582,10 @@ internal object MultiViewTriangulationMath {
     }
 
     private fun identity4() = Array(4) { row -> DoubleArray(4) { column -> if (row == column) 1.0 else 0.0 } }
+
+    private const val MIN_NUM_SAMPLES = 2
+    private const val EXHAUSTIVE_SAMPLING_THRESHOLD = 15
+    private const val MAX_LOCAL_TRIALS = 10
+    private const val RANSAC_CONFIDENCE = 0.9999
+    private const val DYNAMIC_TRIALS_MULTIPLIER = 3.0
 }
