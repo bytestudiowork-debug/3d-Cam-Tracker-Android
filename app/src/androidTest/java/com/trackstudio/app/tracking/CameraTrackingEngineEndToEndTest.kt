@@ -291,7 +291,14 @@ class CameraTrackingEngineEndToEndTest {
             }
 
             assertEquals(frames.size, result.processedFrames)
-            assertTrue("Registered cameras=${result.registeredCameraCount}", result.registeredCameraCount >= 3)
+            val frameSummary = result.diagnostics.joinToString("; ") { diagnostic ->
+                "frame ${diagnostic.frameIndex}: matches=${diagnostic.matchedFeatures}, " +
+                    "inliers=${diagnostic.inlierFeatures}, ${diagnostic.status}"
+            }
+            assertTrue(
+                "Registered cameras=${result.registeredCameraCount}; seed=${result.initialPairFrames}; $frameSummary",
+                result.registeredCameraCount >= 3
+            )
             assertTrue("Initial pair was not reported", result.initialPairFrames != null)
             assertTrue("Only ${result.totalInliers} inliers were accumulated", result.totalInliers >= 100)
             assertTrue("Only ${result.featureTracks.size} final tracks", result.featureTracks.size >= 30)
