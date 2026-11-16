@@ -134,7 +134,13 @@ internal fun createSkewCompensatedUndistortionMaps(
     distortion: MatOfDouble
 ): Pair<Mat, Mat> {
     require(calibration.hasDistortion && calibration.skew != 0.0)
-    val rotation = Mat.eye(3, 3, CvType.CV_64F).toMat()
+    val rotation = Mat(3, 3, CvType.CV_64F)
+    rotation.put(
+        0, 0,
+        1.0, 0.0, 0.0,
+        0.0, 1.0, 0.0,
+        0.0, 0.0, 1.0
+    )
     val mapX = Mat()
     val mapY = Mat()
     val correctedMapX = Mat()
