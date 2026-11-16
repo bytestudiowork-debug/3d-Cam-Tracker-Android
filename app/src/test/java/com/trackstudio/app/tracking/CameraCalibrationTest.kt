@@ -158,4 +158,19 @@ class CameraCalibrationTest {
             cy = 240.0
         )
     }
+
+    @Test(expected = IllegalArgumentException::class)
+    fun rejectsSingularRationalDistortionDenominator() {
+        val calibration = CameraCalibration(
+            imageWidth = 640,
+            imageHeight = 480,
+            fx = 500.0,
+            fy = 500.0,
+            cx = 320.0,
+            cy = 240.0,
+            distortionCoefficients = listOf(0.0, 0.0, 0.0, 0.0, 0.0, -1.0, 0.0, 0.0)
+        )
+
+        calibration.projectRawPixel(doubleArrayOf(1.0, 0.0, 1.0))
+    }
 }

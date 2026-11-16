@@ -10,9 +10,13 @@ import org.junit.Assert.assertThrows
 import org.junit.Assert.assertTrue
 import org.junit.Test
 import org.junit.runner.RunWith
+import org.opencv.calib3d.Calib3d
 import org.opencv.core.CvType
 import org.opencv.core.Mat
 import org.opencv.core.MatOfDouble
+import org.opencv.core.MatOfPoint2f
+import org.opencv.core.MatOfPoint3f
+import org.opencv.core.Point3
 import java.util.Random
 import kotlin.math.roundToInt
 
@@ -70,6 +74,73 @@ class CameraTrackingEngineEndToEndTest {
             maps?.second?.release()
             cameraMatrix.release()
             distortion.release()
+        }
+    }
+
+    @Test
+    fun distortionCoefficientFamiliesMatchOpenCvProjectPoints() {
+        assertTrue("OpenCV runtime is unavailable", OpenCvRuntime.ensureLoaded())
+        val coefficientFamilies = listOf(
+            listOf(0.08, -0.025, 0.001, -0.002),
+            listOf(0.08, -0.025, 0.001, -0.002, 0.003),
+            listOf(0.08, -0.025, 0.001, -0.002, 0.003, 0.006, -0.004, 0.001),
+            listOf(0.08, -0.025, 0.001, -0.002, 0.003, 0.006, -0.004, 0.001,
+                0.0002, -0.0001, 0.0003, -0.0002),
+            listOf(0.08, -0.025, 0.001, -0.002, 0.003, 0.006, -0.004, 0.001,
+                0.0002, -0.0001, 0.0003, -0.0002, 0.07, -0.045)
+        )
+        val cameraPoints = listOf(
+            doubleArrayOf(0.32, -0.18, 1.4),
+            doubleArrayOf(-0.41, 0.27, 1.7),
+            doubleArrayOf(0.11, 0.35, 1.0)
+        )
+        val cameraMatrix = Mat(3, 3, CvType.CV_64F)
+        cameraMatrix.put(0, 0, 800.0, 0.0, 640.0, 0.0, 790.0, 360.0, 0.0, 0.0, 1.0)
+        val rotationVector = Mat(3, 1, CvType.CV_64F).also { it.put(0, 0, 0.0, 0.0, 0.0) }
+        val translationVector = Mat(3, 1, CvType.CV_64F).also { it.put(0, 0, 0.0, 0.0, 0.0) }
+        val objectPoints = MatOfPoint3f().also { points ->
+            points.fromArray(*cameraPoints.map { Point3(it[0], it[1], it[2]) }.toTypedArray())
+        }
+        try {
+            coefficientFamilies.forEach { coefficients ->
+                val calibration = CameraCalibration(
+                    imageWidth = 1280,
+                    imageHeight = 720,
+                    fx = 800.0,
+                    fy = 790.0,
+                    cx = 640.0,
+                    cy = 360.0,
+                    distortionCoefficients = coefficients
+                )
+                val distortion = MatOfDouble().also { it.fromArray(*coefficients.toDoubleArray()) }
+                val imagePoints = MatOfPoint2f()
+                try {
+                    Calib3d.projectPoints(
+                        objectPoints, rotationVector, translationVector,
+                        cameraMatrix, distortion, imagePoints
+                    )
+                    val actual = imagePoints.toArray()
+                    cameraPoints.forEachIndexed { pointIndex, point ->
+                        val expected = calibration.projectRawPixel(point)
+                        assertEquals(
+                            "x pixel for ${coefficients.size} coefficients, point $pointIndex",
+                            expected[0], actual[pointIndex].x, 5e-4
+                        )
+                        assertEquals(
+                            "y pixel for ${coefficients.size} coefficients, point $pointIndex",
+                            expected[1], actual[pointIndex].y, 5e-4
+                        )
+                    }
+                } finally {
+                    distortion.release()
+                    imagePoints.release()
+                }
+            }
+        } finally {
+            objectPoints.release()
+            rotationVector.release()
+            translationVector.release()
+            cameraMatrix.release()
         }
     }
 
