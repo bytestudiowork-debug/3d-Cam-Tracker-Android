@@ -50,6 +50,55 @@ class FeatureTrackBuilderTest {
     }
 
     @Test
+    fun seedPairDoesNotReuseFirstFrameFeature() {
+        val builder = FeatureTrackBuilder()
+
+        builder.seedPair(
+            firstFrame = 0,
+            secondFrame = 1,
+            firstKeypoints = arrayOf(keypoint(10f, 10f)),
+            secondKeypoints = arrayOf(keypoint(20f, 20f), keypoint(30f, 30f)),
+            inlierMatches = listOf(0 to 0, 0 to 1)
+        )
+
+        val track = builder.build().single()
+        assertEquals(listOf(0, 1), track.observations.map { it.frameIndex })
+        assertEquals(20.0, track.observations.last().x, 0.0)
+    }
+
+    @Test
+    fun forwardExtensionDoesNotReusePreviousFrameFeature() {
+        val builder = FeatureTrackBuilder()
+
+        builder.addInlierMatches(
+            frameIndex = 1,
+            previousKeypoints = arrayOf(keypoint(10f, 10f)),
+            currentKeypoints = arrayOf(keypoint(20f, 20f), keypoint(30f, 30f)),
+            matches = listOf(0 to 0, 0 to 1)
+        )
+
+        val track = builder.build().single()
+        assertEquals(listOf(0, 1), track.observations.map { it.frameIndex })
+        assertEquals(20.0, track.observations.last().x, 0.0)
+    }
+
+    @Test
+    fun backwardExtensionDoesNotReuseLaterFrameFeature() {
+        val builder = FeatureTrackBuilder()
+
+        builder.addInlierMatchesBackward(
+            frameIndex = 1,
+            laterKeypoints = arrayOf(keypoint(20f, 20f)),
+            earlierKeypoints = arrayOf(keypoint(10f, 10f), keypoint(15f, 15f)),
+            matches = listOf(0 to 0, 0 to 1)
+        )
+
+        val track = builder.build().single()
+        assertEquals(listOf(1, 2), track.observations.map { it.frameIndex })
+        assertEquals(10.0, track.observations.first().x, 0.0)
+    }
+
+    @Test
     fun reversePassCreatesTrackWhenFeatureWasNotInInitializationPair() {
         val builder = FeatureTrackBuilder()
         val frame2 = keypoint(20f, 20f)

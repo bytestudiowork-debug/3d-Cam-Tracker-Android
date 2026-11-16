@@ -29,6 +29,7 @@ internal class FeatureTrackBuilder {
         val assignments = mutableMapOf<Int, Int>()
         for ((firstIndex, secondIndex) in inlierMatches) {
             if (firstIndex !in firstKeypoints.indices ||
+                firstIndex in firstAssignments ||
                 secondIndex !in secondKeypoints.indices ||
                 secondIndex in assignments
             ) continue
@@ -70,8 +71,10 @@ internal class FeatureTrackBuilder {
         matches: List<Pair<Int, Int>>
     ) {
         val earlierAssignments = mutableMapOf<Int, Int>()
+        val usedLaterIndices = HashSet<Int>()
         for ((laterIndex, earlierIndex) in matches) {
             if (laterIndex !in laterKeypoints.indices ||
+                laterIndex in usedLaterIndices ||
                 earlierIndex !in earlierKeypoints.indices ||
                 earlierIndex in earlierAssignments
             ) continue
@@ -107,6 +110,7 @@ internal class FeatureTrackBuilder {
                 else observations.add(insertAt, observation)
             }
             earlierAssignments[earlierIndex] = trackId
+            usedLaterIndices += laterIndex
         }
         assignmentsByFrame[frameIndex] = earlierAssignments
         previousAssignments = earlierAssignments
@@ -120,9 +124,11 @@ internal class FeatureTrackBuilder {
     ) {
         val previousFrameAssignments = previousAssignments.toMutableMap()
         val currentAssignments = mutableMapOf<Int, Int>()
+        val usedPreviousIndices = HashSet<Int>()
 
         for ((previousIndex, currentIndex) in matches) {
             if (previousIndex !in previousKeypoints.indices ||
+                previousIndex in usedPreviousIndices ||
                 currentIndex !in currentKeypoints.indices ||
                 currentIndex in currentAssignments
             ) continue
@@ -150,6 +156,7 @@ internal class FeatureTrackBuilder {
                 y = currentKeypoints[currentIndex].pt.y
             )
             currentAssignments[currentIndex] = trackId
+            usedPreviousIndices += previousIndex
         }
 
         assignmentsByFrame[frameIndex - 1] = previousFrameAssignments
