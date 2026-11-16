@@ -86,8 +86,8 @@ internal object IncrementalCameraRegistrar {
         val objectPoints = MatOfPoint3f()
         val imagePoints = MatOfPoint2f()
         val distortion = MatOfDouble()
-        val rotationVector = Mat()
-        val translationVector = Mat()
+        var rotationVector = Mat()
+        var translationVector = Mat()
         val inlierIndices = Mat()
         val inlierObjectPoints = MatOfPoint3f()
         val inlierImagePoints = MatOfPoint2f()
@@ -117,6 +117,20 @@ internal object IncrementalCameraRegistrar {
                     frameIndex, correspondenceCount, "PnP-RANSAC could not estimate a stable pose"
                 )
             }
+
+            val normalizedRotationVector = toDoubleVector(rotationVector)
+            val normalizedTranslationVector = toDoubleVector(translationVector)
+            if (normalizedRotationVector == null || normalizedTranslationVector == null) {
+                normalizedRotationVector?.release()
+                normalizedTranslationVector?.release()
+                return CameraRegistrationResult.rejected(
+                    frameIndex, correspondenceCount, "Invalid PnP rotation/translation vector output"
+                )
+            }
+            rotationVector.release()
+            translationVector.release()
+            rotationVector = normalizedRotationVector
+            translationVector = normalizedTranslationVector
 
             val rawInlierCount = inlierIndices.total().toInt()
             var inlierIds = (0 until rawInlierCount).mapNotNull { index ->
@@ -334,6 +348,25 @@ internal object IncrementalCameraRegistrar {
             inlierImagePoints.release()
             projectedPoints.release()
             rotationMatrix.release()
+        }
+    }
+
+    private fun toDoubleVector(source: Mat): Mat? {
+        if (source.empty() || source.total() != 3L || source.channels() != 1) return null
+        val converted = Mat()
+        return try {
+            source.convertTo(converted, CvType.CV_64F)
+            if (converted.empty() || converted.total() != 3L ||
+                converted.channels() != 1 || converted.type() != CvType.CV_64F
+            ) {
+                converted.release()
+                null
+            } else {
+                converted
+            }
+        } catch (_: CvException) {
+            converted.release()
+            null
         }
     }
 

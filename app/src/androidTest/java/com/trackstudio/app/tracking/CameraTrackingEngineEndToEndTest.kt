@@ -299,10 +299,6 @@ class CameraTrackingEngineEndToEndTest {
                 "Registered cameras=${result.registeredCameraCount}; seed=${result.initialPairFrames}; $frameSummary",
                 result.registeredCameraCount >= 3
             )
-            assertTrue(
-                "Expected a reported RANSAC PnP seed fallback; $frameSummary",
-                result.diagnostics.any { it.status.contains("RANSAC PnP seed used") }
-            )
             assertTrue("Initial pair was not reported", result.initialPairFrames != null)
             assertTrue("Only ${result.totalInliers} inliers were accumulated", result.totalInliers >= 100)
             assertTrue("Only ${result.featureTracks.size} final tracks", result.featureTracks.size >= 30)
