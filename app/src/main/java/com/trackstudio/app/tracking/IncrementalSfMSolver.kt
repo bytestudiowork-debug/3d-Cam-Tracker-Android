@@ -17,6 +17,15 @@ import com.trackstudio.app.tracking.glomap.GlomapNativeSolver
 import kotlin.math.hypot
 import kotlin.math.max
 
+internal fun <T> withSourceReleaseOnFailure(source: Mat, block: (Mat) -> T): T {
+    try {
+        return block(source)
+    } catch (failure: Throwable) {
+        source.release()
+        throw failure
+    }
+}
+
 /**
  * Incremental, map-based camera solve.
  *
@@ -294,15 +303,12 @@ internal class IncrementalSfMSolver(
                     )
                     val source = frameProvider(frameIndex)
                         ?: throw IllegalStateException("Unable to decode frame ${frameIndex + 1}.")
-                    try {
+                    val gray = withSourceReleaseOnFailure(source) { ownedSource ->
                         referenceFrameSize = TrackingFrameDimensions.validate(
-                            referenceFrameSize, source.cols(), source.rows()
+                            referenceFrameSize, ownedSource.cols(), ownedSource.rows()
                         )
-                    } catch (failure: Throwable) {
-                        source.release()
-                        throw failure
+                        toGray(ownedSource)
                     }
-                    val gray = toGray(source)
                     val keypointsMat = org.opencv.core.MatOfKeyPoint()
                     val descriptors = Mat()
                     try {
@@ -485,15 +491,12 @@ internal class IncrementalSfMSolver(
                     )
                     val source = frameProvider(frameIndex)
                         ?: throw IllegalStateException("Unable to decode frame ${frameIndex + 1}.")
-                    try {
+                    val gray = withSourceReleaseOnFailure(source) { ownedSource ->
                         referenceFrameSize = TrackingFrameDimensions.validate(
-                            referenceFrameSize, source.cols(), source.rows()
+                            referenceFrameSize, ownedSource.cols(), ownedSource.rows()
                         )
-                    } catch (failure: Throwable) {
-                        source.release()
-                        throw failure
+                        toGray(ownedSource)
                     }
-                    val gray = toGray(source)
                     val keypointsMat = org.opencv.core.MatOfKeyPoint()
                     val descriptors = Mat()
                     try {
@@ -1381,7 +1384,7 @@ internal class IncrementalSfMSolver(
         }
     }
 
-    private fun toGray(source: Mat): Mat {
+    internal fun toGray(source: Mat): Mat {
         val gray = Mat()
         when (source.channels()) {
             1 -> source.copyTo(gray)

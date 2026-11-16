@@ -5,6 +5,16 @@ import org.junit.Assert.assertArrayEquals
 import org.junit.Test
 
 class GlomapGlobalPositioningProblemBuilderTest {
+    @Test(expected = IllegalArgumentException::class)
+    fun rejectsDuplicateTrackIdsBeforeBuildingConstraints() {
+        val track = GlomapGlobalPositioningProblemBuilder.Track(
+            trackId = 7,
+            observations = listOf(observation(0), observation(1), observation(2))
+        )
+
+        GlomapGlobalPositioningProblemBuilder.build(listOf(track, track.copy()))
+    }
+
     @Test
     fun repeatedFrameMeasurementsDoNotCountAsIndependentViews() {
         val problem = GlomapGlobalPositioningProblemBuilder.build(

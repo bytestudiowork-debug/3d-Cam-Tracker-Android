@@ -69,6 +69,9 @@ internal object GlomapGlobalPositioningProblemBuilder {
         generateScales: Boolean = true
     ): Problem {
         require(minimumViews >= 2)
+        require(tracks.map { it.trackId }.distinct().size == tracks.size) {
+            "Track IDs must be unique."
+        }
         val constraints = ArrayList<Constraint>()
         var shortTracks = 0
         var invalidObservations = 0
