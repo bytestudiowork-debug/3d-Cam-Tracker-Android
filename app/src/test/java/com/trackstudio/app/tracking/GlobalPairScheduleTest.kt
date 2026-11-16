@@ -14,6 +14,7 @@ class GlobalPairScheduleTest {
         val expectedReferencePairs = setOf(
             0 to 1,
             0 to 2,
+            0 to 3,
             0 to 4,
             1 to 2,
             1 to 3,
@@ -27,6 +28,19 @@ class GlobalPairScheduleTest {
 
         assertEquals(expectedReferencePairs, actual.toSet())
         assertEquals(actual.size, actual.distinct().size)
+    }
+
+    @Test
+    fun fiveFrameScheduleFillsFeasibleBudgetWithoutDroppingTheAdjacentBackbone() {
+        val actual = GlobalReconstructionEngine().buildPairSchedule(
+            frameCount = 5,
+            maximumPairs = 8
+        )
+
+        assertEquals(8, actual.size)
+        assertEquals(actual.size, actual.distinct().size)
+        assertTrue((0 until 4).all { (it to it + 1) in actual })
+        assertTrue(actual.all { (first, second) -> first >= 0 && first < second && second < 5 })
     }
 
     @Test

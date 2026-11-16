@@ -412,11 +412,20 @@ class GlobalReconstructionEngine(
                 }
             )
             val poseByFrame = poses.associateBy { it.frameIndex }
+            val projectionIntrinsics = refinedIntrinsics?.let {
+                PinholeIntrinsics(it.fx, it.fy, it.skew, it.cx, it.cy)
+            } ?: PinholeIntrinsics(
+                fx = resultCameraMatrix.get(0, 0)[0],
+                fy = resultCameraMatrix.get(1, 1)[0],
+                skew = resultCameraMatrix.get(0, 1)[0],
+                cx = resultCameraMatrix.get(0, 2)[0],
+                cy = resultCameraMatrix.get(1, 2)[0]
+            )
             val bundleLandmarks = tracks.mapNotNull trackLoop@ { track ->
                 val point = finalPoints[track.id] ?: return@trackLoop null
                 val errors = track.observations.mapNotNull observationLoop@ { observation ->
                     val pose = poseByFrame[observation.frameIndex] ?: return@observationLoop null
-                    reprojectionError(resultCameraMatrix, pose, point, observation)
+                    reprojectionError(projectionIntrinsics, pose, point, observation)
                 }
                 if (errors.size < 2) return@trackLoop null
                 CameraLandmark(
@@ -570,6 +579,14 @@ class GlobalReconstructionEngine(
             }
             remaining -= sampleCount
         }
+        if (pairs.size < pairBudget) {
+            pairLoop@ for (baseline in 2 until frameCount) {
+                for (first in 0 until frameCount - baseline) {
+                    pairs += first to first + baseline
+                    if (pairs.size >= pairBudget) break@pairLoop
+                }
+            }
+        }
         return pairs.toList()
     }
 
@@ -706,7 +723,7 @@ class GlobalReconstructionEngine(
     }
 
     private fun reprojectionError(
-        cameraMatrix: Mat,
+        intrinsics: PinholeIntrinsics,
         pose: CameraPose,
         point: DoubleArray,
         observation: CameraFeatureObservation
@@ -716,15 +733,9 @@ class GlobalReconstructionEngine(
         val x = r[0] * point[0] + r[1] * point[1] + r[2] * point[2] + t[0]
         val y = r[3] * point[0] + r[4] * point[1] + r[5] * point[2] + t[1]
         val z = r[6] * point[0] + r[7] * point[1] + r[8] * point[2] + t[2]
-        if (!z.isFinite() || z <= 1e-6) return null
-        val fx = cameraMatrix.get(0, 0)[0]
-        val skew = cameraMatrix.get(0, 1)[0]
-        val cx = cameraMatrix.get(0, 2)[0]
-        val fy = cameraMatrix.get(1, 1)[0]
-        val cy = cameraMatrix.get(1, 2)[0]
-        val dx = (fx * x + skew * y) / z + cx - observation.x
-        val dy = fy * y / z + cy - observation.y
-        return sqrt(dx * dx + dy * dy).takeIf { it.isFinite() }
+        return CameraProjectionMath.reprojectionError(
+            x, y, z, observation.x, observation.y, intrinsics
+        )
     }
 
     private fun toGray(source: Mat): Mat {

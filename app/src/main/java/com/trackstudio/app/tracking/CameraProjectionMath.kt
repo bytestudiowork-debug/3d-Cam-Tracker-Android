@@ -23,6 +23,21 @@ internal object CameraProjectionMath {
         )
     }
 
+    fun reprojectionError(
+        cameraX: Double,
+        cameraY: Double,
+        cameraZ: Double,
+        observedX: Double,
+        observedY: Double,
+        intrinsics: PinholeIntrinsics
+    ): Double? {
+        if (!cameraZ.isFinite() || cameraZ <= 1e-6) return null
+        val dx = (intrinsics.fx * cameraX + intrinsics.skew * cameraY) / cameraZ +
+            intrinsics.cx - observedX
+        val dy = intrinsics.fy * cameraY / cameraZ + intrinsics.cy - observedY
+        return kotlin.math.sqrt(dx * dx + dy * dy).takeIf { it.isFinite() }
+    }
+
     fun jacobian(point: DoubleArray, intrinsics: PinholeIntrinsics): Array<DoubleArray> {
         val inverseZ = 1.0 / point[2]
         val inverseZSquared = inverseZ * inverseZ
