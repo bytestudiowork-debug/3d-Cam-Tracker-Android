@@ -23,7 +23,7 @@ import kotlin.math.roundToInt
 @RunWith(AndroidJUnit4::class)
 class CameraTrackingEngineEndToEndTest {
     @Test
-    fun solvePnPRansacColumnVectorsReadBackAsCv64ByteCounts() {
+    fun solvePnPRansacAndRodriguesReadBackCv64ByteCounts() {
         assertTrue("OpenCV runtime is unavailable", OpenCvRuntime.ensureLoaded())
         val objectPoints = MatOfPoint3f()
         val imagePoints = MatOfPoint2f()
@@ -33,6 +33,7 @@ class CameraTrackingEngineEndToEndTest {
         val seedTranslation = Mat(3, 1, CvType.CV_64F)
         val rotation = Mat()
         val translation = Mat()
+        val rotationMatrix = Mat()
         val inliers = Mat()
         try {
             cameraMatrix.put(
@@ -90,6 +91,18 @@ class CameraTrackingEngineEndToEndTest {
             assertEquals("tvec get returns copied bytes", expectedBytes, translation.get(0, 0, translationValues))
             assertTrue("rvec values were not copied", rotationValues.all { it.isFinite() })
             assertTrue("tvec values were not copied", translationValues.all { it.isFinite() })
+
+            Calib3d.Rodrigues(rotation, rotationMatrix)
+            assertEquals("Rodrigues rows", 3, rotationMatrix.rows())
+            assertEquals("Rodrigues columns", 3, rotationMatrix.cols())
+            assertEquals("Rodrigues type", CvType.CV_64F, rotationMatrix.type())
+            val rotationMatrixValues = DoubleArray(9)
+            assertEquals(
+                "Rodrigues get returns copied bytes",
+                rotationMatrixValues.size * java.lang.Double.BYTES,
+                rotationMatrix.get(0, 0, rotationMatrixValues)
+            )
+            assertTrue("Rodrigues matrix values were not copied", rotationMatrixValues.all { it.isFinite() })
         } finally {
             objectPoints.release()
             imagePoints.release()
@@ -99,6 +112,7 @@ class CameraTrackingEngineEndToEndTest {
             seedTranslation.release()
             rotation.release()
             translation.release()
+            rotationMatrix.release()
             inliers.release()
         }
     }

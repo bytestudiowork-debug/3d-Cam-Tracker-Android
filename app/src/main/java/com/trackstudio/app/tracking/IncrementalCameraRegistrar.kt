@@ -396,7 +396,10 @@ internal object IncrementalCameraRegistrar {
             if (vector.put(0, 0, *rotationVector) != 3) return null
             Calib3d.Rodrigues(vector, matrix)
             val rotation = DoubleArray(9)
-            if (matrix.get(0, 0, rotation) != rotation.size || rotation.any { !it.isFinite() }) {
+            val expectedRotationReadBytes = rotation.size * java.lang.Double.BYTES
+            if (matrix.get(0, 0, rotation) != expectedRotationReadBytes ||
+                rotation.any { !it.isFinite() }
+            ) {
                 return null
             }
             PoseModel(rotationVector.copyOf(), translation.copyOf(), rotation)
