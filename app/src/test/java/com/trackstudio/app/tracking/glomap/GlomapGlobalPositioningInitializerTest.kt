@@ -116,6 +116,26 @@ class GlomapGlobalPositioningInitializerTest {
         assertEquals(0, result.randomEngineSamplesConsumed)
     }
 
+    @Test
+    fun duplicateImageObservationsDoNotSatisfyMinimumViewCount() {
+        val result = GlomapGlobalPositioningInitializer.initialize(
+            frames = listOf(frame(1), frame(2), frame(3)),
+            images = listOf(
+                GlomapGlobalPositioningInitializer.ImageInput(11, 1, true),
+                GlomapGlobalPositioningInitializer.ImageInput(22, 2, true),
+                GlomapGlobalPositioningInitializer.ImageInput(33, 3, true)
+            ),
+            imagePairs = emptyList(),
+            tracks = listOf(
+                GlomapGlobalPositioningInitializer.TrackInput(7, listOf(11, 11, 22))
+            )
+        )
+
+        assertTrue(result.constrainedFrameIds.isEmpty())
+        assertFalse(result.initializedPointTrackIds.contains(7))
+        assertEquals(0, result.randomEngineSamplesConsumed)
+    }
+
     private fun frame(
         id: Int,
         center: DoubleArray = doubleArrayOf(1.0, 2.0, 3.0),

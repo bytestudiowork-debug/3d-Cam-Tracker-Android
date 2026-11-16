@@ -73,6 +73,7 @@ internal object GlomapGlobalPositioningInitializer {
         }
 
         val imageById = images.associateBy { it.imageId }
+        val distinctObservationImageIdsByTrack = tracks.map { it.observationImageIds.distinct() }
         val constrained = LinkedHashSet<Int>()
 
         // Upstream first inserts frame IDs for every valid image pair.
@@ -83,9 +84,10 @@ internal object GlomapGlobalPositioningInitializer {
         }
 
         // Then inserts registered-image frames for tracks with enough views.
-        for (track in tracks) {
-            if (track.observationImageIds.size < options.minimumViewsPerTrack) continue
-            for (imageId in track.observationImageIds) {
+        for ((trackIndex, track) in tracks.withIndex()) {
+            val observationImageIds = distinctObservationImageIdsByTrack[trackIndex]
+            if (observationImageIds.size < options.minimumViewsPerTrack) continue
+            for (imageId in observationImageIds) {
                 val image = imageById[imageId] ?: continue
                 if (image.isRegistered) constrained += image.frameId
             }
@@ -115,9 +117,9 @@ internal object GlomapGlobalPositioningInitializer {
 
         val points = LinkedHashMap<Int, DoubleArray?>(tracks.size)
         val initialized = LinkedHashSet<Int>()
-        for (track in tracks) {
+        for ((trackIndex, track) in tracks.withIndex()) {
             var point = track.initializedPoint?.copyOf()
-            if (track.observationImageIds.size >= options.minimumViewsPerTrack &&
+            if (distinctObservationImageIdsByTrack[trackIndex].size >= options.minimumViewsPerTrack &&
                 options.optimizePoints && options.generateRandomPoints
             ) {
                 point = random.randomVector3d(-1.0, 1.0, 100.0)
