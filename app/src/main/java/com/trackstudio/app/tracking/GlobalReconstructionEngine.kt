@@ -1,5 +1,6 @@
 package com.trackstudio.app.tracking
 
+import com.trackstudio.app.tracking.colmap.ColmapTrackCompleter
 import com.trackstudio.app.tracking.glomap.GlomapGlobalPositioningInitializer
 import com.trackstudio.app.tracking.glomap.GlomapGlobalPositioningProblemBuilder
 import com.trackstudio.app.tracking.glomap.GlomapGlobalBundleAdjuster
@@ -426,12 +427,6 @@ class GlobalReconstructionEngine(
                     totalFrames = frameCount
                 )
             )
-            val triangulated = SfMTriangulator.triangulate(
-                reconstructionTracks, poses, resultCameraMatrix,
-                onProgress = { completed, total ->
-                    publishProgress("Triangulating landmarks " + completed + "/" + total, 0.94f + 0.02f * completed.toFloat() / total.coerceAtLeast(1))
-                }
-            )
             val poseByFrame = poses.associateBy { it.frameIndex }
             val projectionIntrinsics = refinedIntrinsics?.let {
                 PinholeIntrinsics(it.fx, it.fy, it.skew, it.cx, it.cy)
@@ -442,6 +437,48 @@ class GlobalReconstructionEngine(
                 cx = resultCameraMatrix.get(0, 2)[0],
                 cy = resultCameraMatrix.get(1, 2)[0]
             )
+            var triangulationPass = 0
+            val triangulationProgress: (Int, Int) -> Unit = { completed, total ->
+                val progressStart = if (triangulationPass == 0) 0.94f else 0.955f
+                publishProgress(
+                    "Triangulating landmarks " + completed + "/" + total,
+                    progressStart + 0.015f * completed.toFloat() / total.coerceAtLeast(1)
+                )
+            }
+            var triangulated = SfMTriangulator.triangulate(
+                reconstructionTracks, poses, resultCameraMatrix,
+                onProgress = triangulationProgress
+            )
+            val completion = ColmapTrackCompleter.completeTracks(
+                tracks = reconstructionTracks,
+                landmarks = triangulated.landmarks,
+                pairMatches = activePairs.map { pair ->
+                    ColmapTrackCompleter.PairMatches(pair.first, pair.second, pair.inlierMatches)
+                },
+                activeFrames = activeFrames.toSet(),
+                poses = poses,
+                intrinsics = projectionIntrinsics,
+                featureAt = { frame, feature ->
+                    val keypoint = frames.getOrNull(frame)?.keypoints?.getOrNull(feature)
+                    keypoint?.let {
+                        CameraFeatureObservation(frame, it.pt.x, it.pt.y, feature)
+                    }
+                }
+            )
+            if (completion.addedObservations > 0) {
+                reconstructionTracks = GlomapTrackFilter.filterAfterBundleAdjustment(
+                    tracks = completion.tracks,
+                    cameraCentersByFrame = finalCenters,
+                    rotationsByFrame = finalRotations,
+                    pointsByTrackId = finalPoints,
+                    intrinsics = refinedIntrinsics ?: initialIntrinsics
+                ).tracks
+                triangulationPass = 1
+                triangulated = SfMTriangulator.triangulate(
+                    reconstructionTracks, poses, resultCameraMatrix,
+                    onProgress = triangulationProgress
+                )
+            }
             val bundleLandmarks = reconstructionTracks.mapNotNull trackLoop@ { track ->
                 val point = finalPoints[track.id] ?: return@trackLoop null
                 val errors = track.observations.mapNotNull observationLoop@ { observation ->
@@ -822,14 +859,17 @@ internal class GlobalTrackGraphBuilder(
     ): List<CameraFeatureTrack> = build(activeFrames) { frame, feature ->
         val keypoint = frames.getOrNull(frame)?.keypoints?.getOrNull(feature)
         if (keypoint == null) null
-        else CameraFeatureObservation(frame, keypoint.pt.x, keypoint.pt.y)
+        else CameraFeatureObservation(frame, keypoint.pt.x, keypoint.pt.y, feature)
     }
 
     fun buildFromLocations(
         featureLocationsByFrame: Map<Int, List<CameraFeatureObservation>>,
         activeFrames: Set<Int>
     ): List<CameraFeatureTrack> = build(activeFrames) { frame, feature ->
-        featureLocationsByFrame[frame]?.getOrNull(feature)
+        featureLocationsByFrame[frame]?.getOrNull(feature)?.copy(
+            frameIndex = frame,
+            featureIndex = feature
+        )
     }
 
     private fun build(

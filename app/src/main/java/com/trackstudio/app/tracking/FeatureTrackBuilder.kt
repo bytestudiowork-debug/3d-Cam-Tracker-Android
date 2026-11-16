@@ -245,7 +245,8 @@ internal class FeatureTrackBuilder {
 data class CameraFeatureObservation(
     val frameIndex: Int,
     val x: Double,
-    val y: Double
+    val y: Double,
+    val featureIndex: Int = -1
 )
 
 data class CameraFeatureTrack(

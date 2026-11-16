@@ -28,7 +28,7 @@
  * POSSIBILITY OF SUCH DAMAGE.
  *
  * Android adaptation of glomap/processors/track_filter.cc from
- * colmap/glomap commit 99806d0869f802fad218516a2e027793e7ca687d.
+ * colmap/glomap 1.2.0 commit 0edb1b8435e0f9a594318908b81a31f078a51bf7.
  */
 package com.trackstudio.app.tracking.glomap
 
