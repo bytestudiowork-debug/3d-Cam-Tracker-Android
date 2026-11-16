@@ -14,6 +14,7 @@ import com.trackstudio.app.tracking.glomap.GlomapPostRetriangulationRefinement
 import com.trackstudio.app.tracking.glomap.GlomapReconstructionNormalizer
 import com.trackstudio.app.tracking.glomap.GlomapCovisibilityPruner
 import com.trackstudio.app.tracking.glomap.GlomapTrackQuotaSelector
+import com.trackstudio.app.tracking.glomap.GlomapImagePairInlierScorer
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.async
 import kotlinx.coroutines.awaitAll
@@ -76,7 +77,8 @@ class GlobalReconstructionEngine(
     private data class FundamentalPair(
         val first: Int,
         val second: Int,
-        val matches: List<Pair<Int, Int>>,
+        val fundamentalInlierIndices: IntArray,
+        val allMatches: MutableList<Pair<Int, Int>>,
         val fundamentalMatrix: DoubleArray,
         val matchCount: Int
     )
@@ -1037,7 +1039,7 @@ class GlobalReconstructionEngine(
         val matched = matcher.match(first.descriptors, second.descriptors)
             .filter { (query, train) ->
                 query in first.keypoints.indices && train in second.keypoints.indices
-            }
+            }.toMutableList()
         if (matched.size < 30) return null
 
         val points1 = MatOfPoint2f()
@@ -1053,19 +1055,23 @@ class GlobalReconstructionEngine(
             if (fundamental.empty() || fundamental.rows() != 3 || fundamental.cols() != 3 ||
                 fundamentalMask.empty() || fundamentalMask.total().toInt() != matched.size
             ) return null
-            val fundamentalInlierMatches = matched.indices.mapNotNull { index ->
+            val fundamentalInlierIndices = IntArray(matched.size)
+            var inlierCount = 0
+            for (index in matched.indices) {
                 val maskValue = if (fundamentalMask.rows() == 1) {
                     fundamentalMask.get(0, index)
                 } else {
                     fundamentalMask.get(index, 0)
                 }
                 val accepted = maskValue?.firstOrNull() ?: 0.0
-                if (accepted != 0.0) matched[index] else null
+                if (accepted != 0.0) fundamentalInlierIndices[inlierCount++] = index
             }
-            val inlierCount = fundamentalInlierMatches.size
             if (inlierCount < 30 || inlierCount.toDouble() / matched.size < 0.20) return null
             val fundamentalValues = OpenCvMatrixReadback.readCv64F(fundamental, 3, 3) ?: return null
-            FundamentalPair(firstIndex, secondIndex, fundamentalInlierMatches, fundamentalValues, matched.size)
+            FundamentalPair(
+                firstIndex, secondIndex, fundamentalInlierIndices.copyOf(inlierCount), matched,
+                fundamentalValues, matched.size
+            )
         } finally {
             points1.release()
             points2.release()
@@ -1086,9 +1092,18 @@ class GlobalReconstructionEngine(
         second: FrameFeatures,
         cameraMatrix: Mat
     ): VerifiedPair? {
-        if (first.keypoints.isEmpty() || second.keypoints.isEmpty()) return null
-        val matched = pair.matches
-        if (matched.size < 30) return null
+        if (first.keypoints.isEmpty() || second.keypoints.isEmpty() ||
+            pair.allMatches.size != pair.matchCount ||
+            pair.fundamentalInlierIndices.any { it !in pair.allMatches.indices }
+        ) {
+            pair.allMatches.clear()
+            return null
+        }
+        val matched = pair.fundamentalInlierIndices.map { pair.allMatches[it] }
+        if (matched.size < 30) {
+            pair.allMatches.clear()
+            return null
+        }
 
         val points1 = MatOfPoint2f()
         val points2 = MatOfPoint2f()
@@ -1179,12 +1194,33 @@ class GlobalReconstructionEngine(
                 if (!translationNorm.isFinite() || translationNorm < 1e-9) return null
                 for (i in translationValues.indices) translationValues[i] /= translationNorm
 
-                val inlierMatches = (0 until bestMask.rows()).mapNotNull { index ->
-                    val accepted = bestMask.get(index, 0)?.firstOrNull() ?: 0.0
-                    if (accepted != 0.0) matched[index] else null
-                }
-                if (inlierMatches.size != bestInliers || inlierMatches.size < 30 ||
-                    inlierMatches.size.toDouble() / pair.matchCount < 0.20
+                if (pair.allMatches.size != pair.matchCount) return null
+                val cameraMatrixValues = OpenCvMatrixReadback.readCv64F(cameraMatrix, 3, 3) ?: return null
+                val pinholeIntrinsics = PinholeIntrinsics(
+                    fx = cameraMatrixValues[0],
+                    fy = cameraMatrixValues[4],
+                    skew = cameraMatrixValues[1],
+                    cx = cameraMatrixValues[2],
+                    cy = cameraMatrixValues[5]
+                )
+                val rescored = GlomapImagePairInlierScorer.scoreEssential(
+                    firstPixels = pair.allMatches.map { match ->
+                        val point = first.keypoints[match.first].pt
+                        point.x to point.y
+                    },
+                    secondPixels = pair.allMatches.map { match ->
+                        val point = second.keypoints[match.second].pt
+                        point.x to point.y
+                    },
+                    firstIntrinsics = pinholeIntrinsics,
+                    secondIntrinsics = pinholeIntrinsics,
+                    rotation = rotationValues,
+                    translation = translationValues
+                ) ?: return null
+                val inlierMatches = rescored.inlierIndices.map { pair.allMatches[it] }
+                if (inlierMatches.size < GlomapImagePairInlierScorer.MINIMUM_INLIERS ||
+                    inlierMatches.size.toDouble() / pair.matchCount <
+                    GlomapImagePairInlierScorer.MINIMUM_INLIER_RATIO
                 ) return null
                 VerifiedPair(
                     pair.first, pair.second, rotationValues,
@@ -1201,6 +1237,7 @@ class GlobalReconstructionEngine(
             bestRotation.release()
             bestTranslation.release()
             bestEssential.release()
+            pair.allMatches.clear()
         }
     }
 

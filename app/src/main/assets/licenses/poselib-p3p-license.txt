@@ -5,6 +5,8 @@ PoseLib commit: f119951fca625133112acde48daffa5f20eba451
 Pinned by COLMAP commit: c5f9cefc87e5dd596b638e4cee0ff543c7d14755
 Original method: Y. Ding, J. Yang, V. Larsson, C. Olsson, and K. Åström, "Revisiting the P3P Problem," CVPR 2023.
 
+This notice also covers the PoseLib-derived CheckCheirality mathematics adapted through pinned GLOMAP glomap/math/two_view_geometry.cc, which attributes that function to Viktor Larsson.
+
 BSD 3-Clause License
 
 Copyright (c) 2020, Viktor Larsson
