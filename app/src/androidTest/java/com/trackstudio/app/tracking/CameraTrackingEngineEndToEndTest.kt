@@ -159,14 +159,24 @@ class CameraTrackingEngineEndToEndTest {
             cameraMatrix.release()
         } ?: throw AssertionError("Joint Ceres adapter rejected the synthetic map")
 
-        assertTrue(solved.initialCost.isFinite() && solved.initialCost > 0.0)
-        assertTrue(solved.finalCost.isFinite() && solved.finalCost < solved.initialCost)
-        assertTrue(SolverObjective.didNotIncrease(solved.initialCost, solved.finalCost))
-        assertEquals(truePoints.size, solved.pointsByTrackId.size)
-        assertTrue(solved.positiveDepthRatio >= 0.9)
-        assertTrue(solved.rotationsByFrame.values.all { it.size == 9 && it.all(Double::isFinite) })
-        assertTrue(solved.intrinsics.fx.isFinite() && solved.intrinsics.fy.isFinite())
-        assertTrue(kotlin.math.abs(solved.frameCentersById.getValue(2)[0] - 2.0) < 0.1)
+        assertTrue("Invalid initial joint-BA cost: ${solved.initialCost}", solved.initialCost.isFinite() && solved.initialCost > 0.0)
+        assertTrue(
+            "Joint-BA cost did not decrease: ${solved.initialCost} -> ${solved.finalCost}",
+            solved.finalCost.isFinite() && solved.finalCost < solved.initialCost
+        )
+        assertTrue(
+            "Joint-BA objective increased: ${solved.initialCost} -> ${solved.finalCost}",
+            SolverObjective.didNotIncrease(solved.initialCost, solved.finalCost)
+        )
+        assertEquals("Recovered track count", truePoints.size, solved.pointsByTrackId.size)
+        assertTrue("Positive-depth ratio=${solved.positiveDepthRatio}", solved.positiveDepthRatio >= 0.9)
+        assertTrue(
+            "Invalid solved rotations",
+            solved.rotationsByFrame.values.all { it.size == 9 && it.all(Double::isFinite) }
+        )
+        assertTrue("Invalid refined focal lengths: ${solved.intrinsics}", solved.intrinsics.fx.isFinite() && solved.intrinsics.fy.isFinite())
+        val centerError = kotlin.math.abs(solved.frameCentersById.getValue(2)[0] - 2.0)
+        assertTrue("Recovered frame-2 center differs by $centerError: ${solved.frameCentersById.getValue(2).contentToString()}", centerError < 0.1)
     }
 
     private fun rotationY(angle: Double): DoubleArray {
