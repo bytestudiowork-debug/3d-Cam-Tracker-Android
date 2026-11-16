@@ -105,7 +105,7 @@ data class CameraTrackingResult(
     val triangulationStats: TriangulationStats = TriangulationStats(),
     val initialPairFrames: Pair<Int, Int>? = null,
     val registeredCameraCount: Int = 0,
-    /** Global-path rotations after view-graph averaging and optional joint bundle refinement. */
+    /** Global-path rotations after view-graph averaging and accepted bundle-adjustment passes. */
     val globalRotationsByFrame: Map<Int, DoubleArray> = emptyMap(),
     val viewGraphEdgeCount: Int = 0,
     val viewGraphAcceptedEdgeCount: Int = 0,
@@ -138,7 +138,12 @@ data class CameraTrackingResult(
     val observationCoordinateModel: CameraObservationCoordinateModel =
         CameraObservationCoordinateModel.PINHOLE_PIXELS_ASSUMED,
     val refinedCameraIntrinsics: CameraIntrinsics? = null,
-    val observationCameraIntrinsics: CameraIntrinsics? = null
+    val observationCameraIntrinsics: CameraIntrinsics? = null,
+    val postRetriangulationBundleAdjustmentApplied: Boolean = false,
+    val postRetriangulationBundleAdjustmentInitialCost: Double = Double.NaN,
+    val postRetriangulationBundleAdjustmentFinalCost: Double = Double.NaN,
+    val postRetriangulationBundleAdjustmentIterations: Int = 0,
+    val postRetriangulationBundleAdjustmentStatus: String = "Not run"
 ) {
     val effectiveCameraIntrinsics: CameraIntrinsics?
         get() = refinedCameraIntrinsics ?: observationCameraIntrinsics ?: inputCameraCalibration?.let { calibration ->

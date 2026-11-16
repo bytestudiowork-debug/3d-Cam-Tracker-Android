@@ -10,6 +10,7 @@ import com.trackstudio.app.tracking.glomap.GlomapViewGraphCalibrator
 import com.trackstudio.app.tracking.glomap.GlomapBundleAdjustmentSchedule
 import com.trackstudio.app.tracking.glomap.GlomapNativeSolver
 import com.trackstudio.app.tracking.glomap.GlomapTrackFilter
+import com.trackstudio.app.tracking.glomap.GlomapPostRetriangulationRefinement
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.async
 import kotlinx.coroutines.awaitAll
@@ -486,11 +487,11 @@ class GlobalReconstructionEngine(
                 bundleResult == null -> "Objective increased; retained global-positioning result"
                 else -> "Applied"
             }
-            val finalCenters = bundleResult?.frameCentersById ?: positionResult.frameCentersById
-            val finalRotations = bundleResult?.rotationsByFrame ?: rotations
+            var finalCenters = bundleResult?.frameCentersById ?: positionResult.frameCentersById
+            var finalRotations = bundleResult?.rotationsByFrame ?: rotations
             val finalPoints = bundleResult?.pointsByTrackId ?: positionResult.pointsByTrackId
             var finalPointsForLandmarks = finalPoints
-            val refinedIntrinsics = bundleResult?.intrinsics
+            var refinedIntrinsics = bundleResult?.intrinsics
             if (bundleResult != null) {
                 reconstructionTracks = bundleCandidate?.tracks ?: reconstructionTracks
             }
@@ -501,7 +502,7 @@ class GlobalReconstructionEngine(
                 }
             } else workingCameraMatrix
 
-            val poses = activeFrames.mapNotNull { frame ->
+            var poses = activeFrames.mapNotNull { frame ->
                 val rotation = finalRotations[frame] ?: return@mapNotNull null
                 val center = finalCenters[frame] ?: return@mapNotNull null
                 val translation = doubleArrayOf(
@@ -522,8 +523,8 @@ class GlobalReconstructionEngine(
                     totalFrames = frameCount
                 )
             )
-            val poseByFrame = poses.associateBy { it.frameIndex }
-            val projectionIntrinsics = refinedIntrinsics?.let {
+            var poseByFrame = poses.associateBy { it.frameIndex }
+            var projectionIntrinsics = refinedIntrinsics?.let {
                 PinholeIntrinsics(it.fx, it.fy, it.skew, it.cx, it.cy)
             } ?: PinholeIntrinsics(
                 fx = resultCameraMatrix.get(0, 0)[0],
@@ -639,6 +640,124 @@ class GlobalReconstructionEngine(
                 }
                 finalPointsForLandmarks = mergedPoints
             }
+            val postRetriangulationInitialState =
+                GlomapPostRetriangulationRefinement.State(
+                    frameCentersById = finalCenters,
+                    rotationsByFrame = finalRotations,
+                    pointsByTrackId = finalPointsForLandmarks,
+                    tracks = reconstructionTracks,
+                    intrinsics = refinedIntrinsics ?: effectiveIntrinsics
+                )
+            val postRetriangulationProgressStart = maxOf(
+                0.96f,
+                0.94f + 0.0125f * (triangulationPass + 1)
+            ).coerceAtMost(0.99f)
+            val postRetriangulationProgressEnd = postRetriangulationProgressStart +
+                (0.995f - postRetriangulationProgressStart) * 0.4f
+            onProgress(
+                CameraTrackingProgress(
+                    frameIndex = frameCount,
+                    frameCount = frameCount,
+                    phase = "Refining reconstruction after retriangulation",
+                    overallFraction = postRetriangulationProgressStart,
+                    completedFrames = decodedFrames,
+                    totalFrames = frameCount
+                )
+            )
+            val postRetriangulationRefinement = try {
+                val postRetriangulationBundleAdjuster = GlomapGlobalBundleAdjuster()
+                GlomapPostRetriangulationRefinement.refine(
+                    initialState = postRetriangulationInitialState,
+                    solveBundleAdjustment = { state, solveIndex ->
+                        try {
+                            val stageCameraMatrix = Mat(3, 3, CvType.CV_64F)
+                            try {
+                                stageCameraMatrix.put(0, 0, *state.intrinsics.toRowMajorMatrix())
+                                postRetriangulationBundleAdjuster.solve(
+                                    frameCentersById = state.frameCentersById,
+                                    rotationsByFrame = state.rotationsByFrame,
+                                    pointsByTrackId = state.pointsByTrackId,
+                                    tracks = state.tracks,
+                                    cameraMatrix = stageCameraMatrix,
+                                    imageWidth = frameSizes.single().first,
+                                    imageHeight = frameSizes.single().second,
+                                    optimizeRotations = true,
+                                    optimizeTranslation = true,
+                                    maxIterations = 45,
+                                    numThreads = if (activeFrames.size >= 300) 2 else Runtime.getRuntime().availableProcessors().coerceIn(1, 4),
+                                    onIteration = { iteration, total ->
+                                        val solveFraction = (
+                                            solveIndex.toFloat() +
+                                                iteration.toFloat() / total.coerceAtLeast(1)
+                                            ) / 2f
+                                        publishProgress(
+                                            "Post-retriangulation bundle adjustment " +
+                                                (solveIndex + 1) + "/2",
+                                            postRetriangulationProgressStart +
+                                                (postRetriangulationProgressEnd - postRetriangulationProgressStart) *
+                                                solveFraction.coerceIn(0f, 1f)
+                                        )
+                                    }
+                                )
+                            } finally {
+                                stageCameraMatrix.release()
+                            }
+                        } catch (_: LinkageError) {
+                            null
+                        }
+                    }
+                )
+            } catch (_: LinkageError) {
+                GlomapPostRetriangulationRefinement.refine(
+                    initialState = postRetriangulationInitialState,
+                    solveBundleAdjustment = { _, _ -> null }
+                )
+            }
+            val postFirstAccepted = postRetriangulationRefinement.firstBundleAdjustment
+                ?.takeIf { postRetriangulationRefinement.firstBundleAdjustmentAccepted }
+            val postSecondAccepted = postRetriangulationRefinement.secondBundleAdjustment
+                ?.takeIf { postRetriangulationRefinement.secondBundleAdjustmentAccepted }
+            val postLastAccepted = postRetriangulationRefinement.lastAcceptedBundleAdjustment
+            val postRetriangulationBundleAdjustmentStatus = when {
+                postRetriangulationRefinement.firstBundleAdjustment == null ->
+                    "Unavailable; retained retriangulated state"
+                !postRetriangulationRefinement.firstBundleAdjustmentAccepted ->
+                    "Objective increased; retained retriangulated state"
+                postRetriangulationRefinement.secondBundleAdjustment == null ->
+                    "Second solve unavailable; retained first adjustment"
+                !postRetriangulationRefinement.secondBundleAdjustmentAccepted ->
+                    "Second objective increased; retained first adjustment"
+                else -> "Applied"
+            }
+            val postRetriangulationBundleAdjustmentIterations =
+                (postFirstAccepted?.iterations ?: 0) + (postSecondAccepted?.iterations ?: 0)
+            val postRetriangulationState = postRetriangulationRefinement.state
+            reconstructionTracks = postRetriangulationState.tracks
+            finalCenters = postRetriangulationState.frameCentersById
+            finalRotations = postRetriangulationState.rotationsByFrame
+            finalPointsForLandmarks = postRetriangulationState.pointsByTrackId
+            projectionIntrinsics = PinholeIntrinsics(
+                fx = postRetriangulationState.intrinsics.fx,
+                fy = postRetriangulationState.intrinsics.fy,
+                skew = postRetriangulationState.intrinsics.skew,
+                cx = postRetriangulationState.intrinsics.cx,
+                cy = postRetriangulationState.intrinsics.cy
+            )
+            if (postLastAccepted != null) {
+                refinedIntrinsics = postRetriangulationState.intrinsics
+            }
+            resultCameraMatrix.put(0, 0, *postRetriangulationState.intrinsics.toRowMajorMatrix())
+            poses = activeFrames.mapNotNull { frame ->
+                val rotation = finalRotations[frame] ?: return@mapNotNull null
+                val center = finalCenters[frame] ?: return@mapNotNull null
+                val translation = doubleArrayOf(
+                    -(rotation[0] * center[0] + rotation[1] * center[1] + rotation[2] * center[2]),
+                    -(rotation[3] * center[0] + rotation[4] * center[1] + rotation[5] * center[2]),
+                    -(rotation[6] * center[0] + rotation[7] * center[1] + rotation[8] * center[2])
+                )
+                CameraPose(frame, rotation.copyOf(), translation, CameraPoseStatus.RELATIVE_ESTIMATE)
+            }
+            poseByFrame = poses.associateBy { it.frameIndex }
             val bundleLandmarks = reconstructionTracks.mapNotNull trackLoop@ { track ->
                 val point = finalPointsForLandmarks[track.id] ?: return@trackLoop null
                 val errors = track.observations.mapNotNull observationLoop@ { observation ->
@@ -654,16 +773,23 @@ class GlobalReconstructionEngine(
                 )
             }
             val landmarkRefinementStart = maxOf(
+                postRetriangulationProgressEnd,
                 0.96f,
                 0.94f + 0.0125f * (triangulationPass + 1)
             ).coerceAtMost(0.99f)
             val mergedLandmarks = linkedMapOf<Int, CameraLandmark>()
             bundleLandmarks.forEach { mergedLandmarks[it.trackId] = it }
-            triangulated.landmarks.forEach { candidate ->
-                val previous = mergedLandmarks[candidate.trackId]
-                if (previous == null ||
-                    candidate.meanReprojectionErrorPx < previous.meanReprojectionErrorPx
-                ) mergedLandmarks[candidate.trackId] = candidate
+            if (postRetriangulationRefinement.acceptedBundleAdjustmentCount == 0) {
+                val survivingTrackIds = reconstructionTracks.asSequence()
+                    .filter { it.observations.size >= 2 }
+                    .map { it.id }
+                    .toSet()
+                triangulated.landmarks.filter { it.trackId in survivingTrackIds }.forEach { candidate ->
+                    val previous = mergedLandmarks[candidate.trackId]
+                    if (previous == null ||
+                        candidate.meanReprojectionErrorPx < previous.meanReprojectionErrorPx
+                    ) mergedLandmarks[candidate.trackId] = candidate
+                }
             }
             val refinedLandmarks = MobileBundleAdjuster.optimizeLandmarks(
                 featureTracks = reconstructionTracks,
@@ -768,6 +894,15 @@ class GlobalReconstructionEngine(
                     bundleResult?.positiveDepthRatio ?: Double.NaN,
                 jointBundleAdjustmentPrincipalPointRefinementEnabled =
                     bundleResult?.principalPointRefinementEnabled ?: false,
+                postRetriangulationBundleAdjustmentApplied = postLastAccepted != null,
+                postRetriangulationBundleAdjustmentInitialCost =
+                    postFirstAccepted?.initialCost ?: Double.NaN,
+                postRetriangulationBundleAdjustmentFinalCost =
+                    postLastAccepted?.finalCost ?: Double.NaN,
+                postRetriangulationBundleAdjustmentIterations =
+                    postRetriangulationBundleAdjustmentIterations,
+                postRetriangulationBundleAdjustmentStatus =
+                    postRetriangulationBundleAdjustmentStatus,
                 globalViewGraphFocalCalibrationApplied = calibrationResult?.focalLengthUpdated ?: false,
                 globalViewGraphInitialFocalLength = initialIntrinsics.fx * 0.5 + initialIntrinsics.fy * 0.5,
                 globalViewGraphFocalLength = effectiveIntrinsics.fx * 0.5 + effectiveIntrinsics.fy * 0.5,
