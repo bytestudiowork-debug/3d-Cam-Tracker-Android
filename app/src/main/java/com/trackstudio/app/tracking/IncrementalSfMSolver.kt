@@ -898,8 +898,8 @@ internal class IncrementalSfMSolver(
                             pointsByTrackId = jointPoints,
                             tracks = jointTracks,
                             cameraMatrix = cameraMatrix,
-                            imageWidth = firstFrame.cols(),
-                            imageHeight = firstFrame.rows(),
+                            imageWidth = firstFrame.width,
+                            imageHeight = firstFrame.height,
                             maxIterations = 45,
                             numThreads = Runtime.getRuntime().availableProcessors().coerceIn(1, 4)
                         )
