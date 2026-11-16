@@ -175,8 +175,18 @@ class CameraTrackingEngineEndToEndTest {
             solved.rotationsByFrame.values.all { it.size == 9 && it.all(Double::isFinite) }
         )
         assertTrue("Invalid refined focal lengths: ${solved.intrinsics}", solved.intrinsics.fx.isFinite() && solved.intrinsics.fy.isFinite())
-        val centerError = kotlin.math.abs(solved.frameCentersById.getValue(2)[0] - 2.0)
-        assertTrue("Recovered frame-2 center differs by $centerError: ${solved.frameCentersById.getValue(2).contentToString()}", centerError < 0.1)
+        val recoveredCenter2 = solved.frameCentersById.getValue(2)
+        val recoveredRadius = kotlin.math.sqrt(recoveredCenter2.sumOf { it * it })
+        val fixedGaugeRadius = kotlin.math.sqrt(2.15 * 2.15 + 0.03 * 0.03 + 0.04 * 0.04)
+        assertTrue(
+            "Scale-anchor radius changed: expected $fixedGaugeRadius, got $recoveredRadius",
+            kotlin.math.abs(recoveredRadius - fixedGaugeRadius) < 1e-6
+        )
+        assertTrue(
+            "Scale-anchor direction was not recovered: ${recoveredCenter2.contentToString()}",
+            recoveredCenter2[0] > 0.0 && kotlin.math.abs(recoveredCenter2[1]) < 0.1 &&
+                kotlin.math.abs(recoveredCenter2[2]) < 0.1
+        )
     }
 
     private fun rotationY(angle: Double): DoubleArray {
