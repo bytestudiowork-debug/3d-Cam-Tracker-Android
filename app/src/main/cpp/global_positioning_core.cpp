@@ -101,6 +101,11 @@ bool RunGlobalPositioning(const std::vector<double>& initial_frame_centers,
         problem.SetParameterLowerBound(scale, 0, 1e-5);
     }
 
+    // BATA observes only point-to-camera differences, so the scene's common
+    // translation is unobservable. Preserve the initialized origin by fixing
+    // the camera in the first active observation.
+    problem.SetParameterBlockConstant(
+            frame_centers.data() + frame_indices.front() * 3);
     // GLOMAP's ONLY_POINTS gauge handling fixes the first active observation scale.
     problem.SetParameterBlockConstant(scales.data());
 
@@ -123,7 +128,7 @@ bool RunGlobalPositioning(const std::vector<double>& initial_frame_centers,
     options.linear_solver_type = ceres::SPARSE_SCHUR;
     // SPARSE_SCHUR performs a direct sparse Schur solve; iterative-Schur
     // preconditioners (including CLUSTER_TRIDIAGONAL) do not apply here.
-    // Keep the upstream objective, robust losses, gauge constraints and
+    // Keep the upstream objective, robust losses, scale gauge and
     // parameter ordering unchanged.
     options.max_num_iterations = iteration_limit;
     options.num_threads = std::min(num_threads, 4);

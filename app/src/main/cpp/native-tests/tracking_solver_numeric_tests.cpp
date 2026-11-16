@@ -583,8 +583,9 @@ void TestGlobalPositioningCeresRecovery() {
     std::vector<double> directions;
     std::vector<double> initial_scales;
     std::vector<double> loss_scales;
+    const int observation_frame_order[] = {1, 0, 2};
     for (int track = 0; track < 36; ++track) {
-        for (int frame = 0; frame < 3; ++frame) {
+        for (const int frame : observation_frame_order) {
             const double dx = truth_points[track * 3] - truth_centers[frame * 3];
             const double dy = truth_points[track * 3 + 1] - truth_centers[frame * 3 + 1];
             const double dz = truth_points[track * 3 + 2] - truth_centers[frame * 3 + 2];
@@ -612,8 +613,14 @@ void TestGlobalPositioningCeresRecovery() {
                     result.points.size() == truth_points.size() &&
                     result.scales.size() == frame_indices.size(),
             "GLOMAP positioning returned malformed camera, point, or scale arrays");
+    Require(frame_indices.front() == 1,
+            "GLOMAP gauge fixture did not select the intended first active frame");
     Require(progress_calls > 0 && result.iterations > 0,
             "GLOMAP positioning did not report native solver progress");
+    for (int axis = 0; axis < 3; ++axis) {
+        Require(std::abs(result.frame_centers[3 + axis] - initial_centers[3 + axis]) < 1e-12,
+                "GLOMAP positioning moved the first active camera's translation gauge");
+    }
     Require(std::abs(result.scales.front() - initial_scales.front()) < 1e-12,
             "GLOMAP positioning changed the first fixed observation scale");
     Require(std::all_of(result.scales.begin(), result.scales.end(),
