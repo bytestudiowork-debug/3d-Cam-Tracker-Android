@@ -48,8 +48,9 @@ internal object CameraPoseRefiner {
         )
         val rotation = DoubleArray(3)
         val translation = DoubleArray(3)
-        if (initialRotationVector.get(0, 0, rotation) != rotation.size ||
-            initialTranslation.get(0, 0, translation) != translation.size
+        val expectedVectorReadBytes = rotation.size * java.lang.Double.BYTES
+        if (initialRotationVector.get(0, 0, rotation) != expectedVectorReadBytes ||
+            initialTranslation.get(0, 0, translation) != expectedVectorReadBytes
         ) return null
 
         val packed = nativeRefine(

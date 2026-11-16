@@ -165,13 +165,18 @@ internal object IncrementalCameraRegistrar {
             )
             val ransacRotationVector = DoubleArray(3)
             val ransacTranslation = DoubleArray(3)
-            if (rotationVector.get(0, 0, ransacRotationVector) != ransacRotationVector.size ||
-                translationVector.get(0, 0, ransacTranslation) != ransacTranslation.size
+            val expectedPoseReadBytes = ransacRotationVector.size * java.lang.Double.BYTES
+            val rotationReadBytes = rotationVector.get(0, 0, ransacRotationVector)
+            val translationReadBytes = translationVector.get(0, 0, ransacTranslation)
+            if (rotationReadBytes != expectedPoseReadBytes ||
+                translationReadBytes != expectedPoseReadBytes
             ) {
                 return CameraRegistrationResult.rejected(
                     frameIndex,
                     correspondenceCount,
-                    "Could not read the RANSAC PnP pose",
+                    "Could not read the RANSAC PnP pose: " +
+                        "rvec ${matrixReadSummary(rotationVector, rotationReadBytes, expectedPoseReadBytes)}; " +
+                        "tvec ${matrixReadSummary(translationVector, translationReadBytes, expectedPoseReadBytes)}",
                     inlierCount,
                     inlierRatio
                 )
@@ -350,6 +355,11 @@ internal object IncrementalCameraRegistrar {
             rotationMatrix.release()
         }
     }
+
+    private fun matrixReadSummary(matrix: Mat, readBytes: Int, expectedBytes: Int): String =
+        "${matrix.rows()}x${matrix.cols()}, type=${matrix.type()}, depth=${matrix.depth()}, " +
+            "channels=${matrix.channels()}, total=${matrix.total()}, " +
+            "continuous=${matrix.isContinuous()}, read=$readBytes/$expectedBytes bytes"
 
     private fun toDoubleVector(source: Mat): Mat? {
         if (source.empty() || source.total() != 3L || source.channels() != 1) return null

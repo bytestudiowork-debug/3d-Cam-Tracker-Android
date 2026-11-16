@@ -23,6 +23,87 @@ import kotlin.math.roundToInt
 @RunWith(AndroidJUnit4::class)
 class CameraTrackingEngineEndToEndTest {
     @Test
+    fun solvePnPRansacColumnVectorsReadBackAsCv64ByteCounts() {
+        assertTrue("OpenCV runtime is unavailable", OpenCvRuntime.ensureLoaded())
+        val objectPoints = MatOfPoint3f()
+        val imagePoints = MatOfPoint2f()
+        val cameraMatrix = Mat(3, 3, CvType.CV_64F)
+        val distortion = MatOfDouble()
+        val seedRotation = Mat(3, 1, CvType.CV_64F)
+        val seedTranslation = Mat(3, 1, CvType.CV_64F)
+        val rotation = Mat()
+        val translation = Mat()
+        val inliers = Mat()
+        try {
+            cameraMatrix.put(
+                0, 0,
+                800.0, 0.0, 640.0,
+                0.0, 800.0, 360.0,
+                0.0, 0.0, 1.0
+            )
+            seedRotation.put(0, 0, 0.02, -0.04, 0.01)
+            seedTranslation.put(0, 0, 0.1, -0.05, 0.3)
+            objectPoints.fromArray(
+                Point3(-1.0, -0.7, 4.0),
+                Point3(-0.2, -1.1, 5.4),
+                Point3(0.8, -0.5, 4.6),
+                Point3(1.3, 0.4, 6.1),
+                Point3(0.4, 1.0, 5.1),
+                Point3(-0.9, 0.8, 6.5),
+                Point3(1.0, 0.9, 7.2),
+                Point3(-1.3, -0.2, 5.9)
+            )
+            Calib3d.projectPoints(
+                objectPoints, seedRotation, seedTranslation, cameraMatrix, distortion, imagePoints
+            )
+
+            assertTrue(
+                "Synthetic solvePnPRansac should estimate a pose",
+                Calib3d.solvePnPRansac(
+                    objectPoints,
+                    imagePoints,
+                    cameraMatrix,
+                    distortion,
+                    rotation,
+                    translation,
+                    false,
+                    500,
+                    1.0f,
+                    0.999,
+                    inliers,
+                    Calib3d.SOLVEPNP_EPNP
+                )
+            )
+            assertEquals("rvec rows", 3, rotation.rows())
+            assertEquals("rvec columns", 1, rotation.cols())
+            assertEquals("rvec type", CvType.CV_64F, rotation.type())
+            assertEquals("rvec channels", 1, rotation.channels())
+            assertEquals("tvec rows", 3, translation.rows())
+            assertEquals("tvec columns", 1, translation.cols())
+            assertEquals("tvec type", CvType.CV_64F, translation.type())
+            assertEquals("tvec channels", 1, translation.channels())
+
+            val rotationValues = DoubleArray(3)
+            val translationValues = DoubleArray(3)
+            val expectedBytes = rotationValues.size * java.lang.Double.BYTES
+            assertEquals("rvec get returns copied bytes", expectedBytes, rotation.get(0, 0, rotationValues))
+            assertEquals("tvec get returns copied bytes", expectedBytes, translation.get(0, 0, translationValues))
+            assertTrue("rvec values were not copied", rotationValues.all { it.isFinite() })
+            assertTrue("tvec values were not copied", translationValues.all { it.isFinite() })
+        } finally {
+            objectPoints.release()
+            imagePoints.release()
+            cameraMatrix.release()
+            distortion.release()
+            seedRotation.release()
+            seedTranslation.release()
+            rotation.release()
+            translation.release()
+            inliers.release()
+        }
+    }
+
+    @Test
     fun skewCompensatedUndistortionMapMatchesForwardProjection() {
         assertTrue("OpenCV runtime is unavailable", OpenCvRuntime.ensureLoaded())
         val calibration = CameraCalibration(
