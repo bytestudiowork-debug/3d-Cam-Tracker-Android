@@ -51,9 +51,29 @@ class GlomapGlobalPositioningProblemBuilderTest {
             listOf(observation(0), observation(1), observation(2, rotation = DoubleArray(9)))
         )
         val problem = GlomapGlobalPositioningProblemBuilder.build(listOf(short, invalid))
-        assertEquals(2, problem.constraints.size)
+        assertEquals(0, problem.constraints.size)
+        assertEquals(0, problem.acceptedTrackCount)
+        assertEquals(2, problem.skippedShortTracks)
+        assertEquals(1, problem.skippedInvalidObservations)
+    }
+
+    @Test
+    fun requiresThreeValidObservationsAfterFiltering() {
+        val track = GlomapGlobalPositioningProblemBuilder.Track(
+            3,
+            listOf(
+                observation(0),
+                observation(1),
+                observation(2),
+                observation(3, rotation = DoubleArray(9))
+            )
+        )
+
+        val problem = GlomapGlobalPositioningProblemBuilder.build(listOf(track))
+
+        assertEquals(3, problem.constraints.size)
         assertEquals(1, problem.acceptedTrackCount)
-        assertEquals(1, problem.skippedShortTracks)
+        assertEquals(0, problem.skippedShortTracks)
         assertEquals(1, problem.skippedInvalidObservations)
     }
 

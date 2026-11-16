@@ -75,22 +75,21 @@ internal object GlomapGlobalPositioningProblemBuilder {
         var acceptedTracks = 0
 
         for (track in tracks) {
-            if (track.observations.size < minimumViews) {
+            val validObservations = track.observations.filter { observation ->
+                val valid = isRotation(observation.rotation) &&
+                    isVector3(observation.cameraCenter) &&
+                    isVector3(observation.undistortedFeatureDirection)
+                if (!valid) invalidObservations++
+                valid
+            }
+            if (validObservations.size < minimumViews) {
                 shortTracks++
                 continue
             }
             val point = track.initializedPoint?.takeIf(::isVector3)
             var trackAdded = false
 
-            for (observation in track.observations) {
-                if (!isRotation(observation.rotation) ||
-                    !isVector3(observation.cameraCenter) ||
-                    !isVector3(observation.undistortedFeatureDirection)
-                ) {
-                    invalidObservations++
-                    continue
-                }
-
+            for (observation in validObservations) {
                 // Upstream: translation = CamFromWorld().rotation.inverse()
                 //            * image.features_undist[observation.second]
                 val translation = multiplyTranspose(
