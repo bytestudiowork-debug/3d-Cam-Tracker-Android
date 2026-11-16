@@ -197,6 +197,7 @@ internal class FeatureTrackBuilder {
         }
 
         assignmentsByFrame[frameIndex] = currentAssignments
+        previousAssignments = currentAssignments
     }
 
     fun breakContinuity() {

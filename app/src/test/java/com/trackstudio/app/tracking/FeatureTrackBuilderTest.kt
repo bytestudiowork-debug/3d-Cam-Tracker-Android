@@ -104,6 +104,42 @@ class FeatureTrackBuilderTest {
     }
 
     @Test
+    fun keyframeRelocalizationContinuesTrackIntoNextAdjacentFrame() {
+        val builder = FeatureTrackBuilder()
+        val first = keypoint(10f, 10f)
+        val anchor = keypoint(12f, 10f)
+        val recovered = keypoint(18f, 11f)
+        val next = keypoint(20f, 12f)
+
+        builder.seedPair(
+            firstFrame = 0,
+            secondFrame = 1,
+            firstKeypoints = arrayOf(first),
+            secondKeypoints = arrayOf(anchor),
+            inlierMatches = listOf(0 to 0)
+        )
+        builder.breakContinuity()
+        builder.addInlierMatchesFromFrame(
+            sourceFrame = 1,
+            frameIndex = 3,
+            sourceKeypoints = arrayOf(anchor),
+            currentKeypoints = arrayOf(recovered),
+            matches = listOf(0 to 0)
+        )
+        builder.addInlierMatches(
+            frameIndex = 4,
+            previousKeypoints = arrayOf(recovered),
+            currentKeypoints = arrayOf(next),
+            matches = listOf(0 to 0)
+        )
+
+        val tracks = builder.build()
+        assertEquals(1, tracks.size)
+        assertEquals(listOf(0, 1, 3, 4), tracks.single().observations.map { it.frameIndex })
+        assertEquals(20.0, tracks.single().observations.last().x, 0.0)
+    }
+
+    @Test
     fun progressLabelAndFractionAreBounded() {
         val progress = CameraTrackingProgress(
             frameIndex = 240,
