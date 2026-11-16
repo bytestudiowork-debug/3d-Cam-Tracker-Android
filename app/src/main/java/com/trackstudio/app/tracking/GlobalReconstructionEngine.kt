@@ -2,6 +2,7 @@ package com.trackstudio.app.tracking
 
 import com.trackstudio.app.tracking.colmap.ColmapTrackCompleter
 import com.trackstudio.app.tracking.colmap.ColmapTrackMerger
+import com.trackstudio.app.tracking.colmap.ColmapTrackRetriangulator
 import com.trackstudio.app.tracking.glomap.GlomapGlobalPositioningInitializer
 import com.trackstudio.app.tracking.glomap.GlomapGlobalPositioningProblemBuilder
 import com.trackstudio.app.tracking.glomap.GlomapGlobalBundleAdjuster
@@ -441,31 +442,33 @@ class GlobalReconstructionEngine(
             )
             var triangulationPass = 0
             val triangulationProgress: (Int, Int) -> Unit = { completed, total ->
-                val progressStart = if (triangulationPass == 0) 0.94f else 0.955f
+                val progressStart = 0.94f + 0.0125f * triangulationPass
                 publishProgress(
                     "Triangulating landmarks " + completed + "/" + total,
-                    progressStart + 0.015f * completed.toFloat() / total.coerceAtLeast(1)
+                    progressStart + 0.0125f * completed.toFloat() / total.coerceAtLeast(1)
                 )
             }
             var triangulated = SfMTriangulator.triangulate(
                 reconstructionTracks, poses, resultCameraMatrix,
                 onProgress = triangulationProgress
             )
+            val featureAt: (Int, Int) -> CameraFeatureObservation? = { frame, feature ->
+                val keypoint = frames.getOrNull(frame)?.keypoints?.getOrNull(feature)
+                keypoint?.let {
+                    CameraFeatureObservation(frame, it.pt.x, it.pt.y, feature)
+                }
+            }
+            val pairMatchesForCompletion = activePairs.map { pair ->
+                ColmapTrackCompleter.PairMatches(pair.first, pair.second, pair.inlierMatches)
+            }
             val completion = ColmapTrackCompleter.completeTracks(
                 tracks = reconstructionTracks,
                 landmarks = triangulated.landmarks,
-                pairMatches = activePairs.map { pair ->
-                    ColmapTrackCompleter.PairMatches(pair.first, pair.second, pair.inlierMatches)
-                },
+                pairMatches = pairMatchesForCompletion,
                 activeFrames = activeFrames.toSet(),
                 poses = poses,
                 intrinsics = projectionIntrinsics,
-                featureAt = { frame, feature ->
-                    val keypoint = frames.getOrNull(frame)?.keypoints?.getOrNull(feature)
-                    keypoint?.let {
-                        CameraFeatureObservation(frame, it.pt.x, it.pt.y, feature)
-                    }
-                }
+                featureAt = featureAt
             )
             if (completion.addedObservations > 0) {
                 reconstructionTracks = GlomapTrackFilter.filterAfterBundleAdjustment(
@@ -475,11 +478,48 @@ class GlobalReconstructionEngine(
                     pointsByTrackId = finalPoints,
                     intrinsics = refinedIntrinsics ?: initialIntrinsics
                 )
-                triangulationPass = 1
+                triangulationPass++
                 triangulated = SfMTriangulator.triangulate(
                     reconstructionTracks, poses, resultCameraMatrix,
                     onProgress = triangulationProgress
                 )
+            }
+            val retriangulation = ColmapTrackRetriangulator.retriangulate(
+                tracks = reconstructionTracks,
+                landmarks = triangulated.landmarks,
+                pairMatches = activePairs.map { pair ->
+                    ColmapTrackRetriangulator.PairMatches(
+                        pair.first, pair.second, pair.inlierMatches
+                    )
+                },
+                poses = poses,
+                intrinsics = projectionIntrinsics,
+                featureAt = featureAt
+            )
+            if (retriangulation.addedObservations > 0) {
+                reconstructionTracks = retriangulation.tracks
+                triangulationPass++
+                triangulated = SfMTriangulator.triangulate(
+                    reconstructionTracks, poses, resultCameraMatrix,
+                    onProgress = triangulationProgress
+                )
+                val completionAfterRetriangulation = ColmapTrackCompleter.completeTracks(
+                    tracks = reconstructionTracks,
+                    landmarks = triangulated.landmarks,
+                    pairMatches = pairMatchesForCompletion,
+                    activeFrames = activeFrames.toSet(),
+                    poses = poses,
+                    intrinsics = projectionIntrinsics,
+                    featureAt = featureAt
+                )
+                if (completionAfterRetriangulation.addedObservations > 0) {
+                    reconstructionTracks = completionAfterRetriangulation.tracks
+                    triangulationPass++
+                    triangulated = SfMTriangulator.triangulate(
+                        reconstructionTracks, poses, resultCameraMatrix,
+                        onProgress = triangulationProgress
+                    )
+                }
             }
             val trackMerging = ColmapTrackMerger.mergeTracks(
                 tracks = reconstructionTracks,
@@ -521,6 +561,10 @@ class GlobalReconstructionEngine(
                     meanReprojectionErrorPx = errors.average()
                 )
             }
+            val landmarkRefinementStart = maxOf(
+                0.96f,
+                0.94f + 0.0125f * (triangulationPass + 1)
+            ).coerceAtMost(0.99f)
             val mergedLandmarks = linkedMapOf<Int, CameraLandmark>()
             bundleLandmarks.forEach { mergedLandmarks[it.trackId] = it }
             triangulated.landmarks.forEach { candidate ->
@@ -535,7 +579,12 @@ class GlobalReconstructionEngine(
                 poses = poses,
                 cameraMatrix = resultCameraMatrix,
                 onProgress = { completed, total ->
-                    publishProgress("Refining landmarks " + completed + "/" + total, 0.96f + 0.03f * completed.toFloat() / total.coerceAtLeast(1))
+                    publishProgress(
+                        "Refining landmarks " + completed + "/" + total,
+                        landmarkRefinementStart +
+                            (0.995f - landmarkRefinementStart) *
+                            completed.toFloat() / total.coerceAtLeast(1)
+                    )
                 }
             )
             publishProgress("Finalizing camera diagnostics", 0.995f)
