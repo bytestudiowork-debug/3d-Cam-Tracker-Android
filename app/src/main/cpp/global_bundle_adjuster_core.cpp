@@ -10,6 +10,7 @@
 #include <limits>
 #include <memory>
 #include <numeric>
+#include <unordered_set>
 #include <utility>
 #include <vector>
 
@@ -194,10 +195,12 @@ bool RunGlobalBundleAdjustment(const std::vector<double>& initial_camera_centers
     DisjointSet components(frame_count);
     std::vector<int> first_frame_for_track(point_count, -1);
     std::vector<int> observations_per_track(point_count, 0);
+    std::vector<std::unordered_set<int>> observed_frames_by_track(point_count);
     for (size_t i = 0; i < frame_indices.size(); ++i) {
         const int frame = frame_indices[i];
         const int track = track_indices[i];
         if (frame < 0 || frame >= frame_count || track < 0 || track >= point_count) return false;
+        if (!observed_frames_by_track[track].insert(frame).second) return false;
         if (first_frame_for_track[track] < 0) first_frame_for_track[track] = frame;
         else components.Unite(first_frame_for_track[track], frame);
         ++observations_per_track[track];

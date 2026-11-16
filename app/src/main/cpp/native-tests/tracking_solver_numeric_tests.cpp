@@ -547,6 +547,27 @@ void TestBundleAdjustmentRejectsDisconnectedGraph() {
             "disconnected camera-track graph was accepted");
 }
 
+void TestBundleAdjustmentRejectsRepeatedFrameObservation() {
+    const std::vector<double> centers = {
+            0, 0, 0, 1, 0, 0, 0, 1, 0};
+    const std::vector<double> identity = {
+            1, 0, 0, 0, 1, 0, 0, 0, 1};
+    std::vector<double> rotations;
+    for (int frame = 0; frame < 3; ++frame) {
+        rotations.insert(rotations.end(), identity.begin(), identity.end());
+    }
+    const std::vector<double> points = {0, 0, 5, 0, 0, 6};
+    const std::vector<int> frame_indices = {0, 0, 1, 0, 1, 2};
+    const std::vector<int> track_indices = {0, 0, 0, 1, 1, 1};
+    const std::vector<double> image_points(12, 640.0);
+    const std::vector<double> intrinsics = {700, 0, 640, 700, 360};
+    tracking::GlobalBundleAdjustmentResult result;
+    Require(!tracking::RunGlobalBundleAdjustment(
+                    centers, rotations, points, frame_indices, track_indices,
+                    image_points, intrinsics, 30, 1, &result),
+            "bundle adjustment accepted duplicate measurements from one frame");
+}
+
 void TestGlobalPositioningCeresRecovery() {
     const std::vector<double> truth_centers = {
             0.0, 0.0, 0.0,
@@ -699,6 +720,7 @@ int main() {
         TestBundleAdjustmentJointRecoveryOutliersAndGauge();
         TestObservablePrincipalPointRefinement();
         TestBundleAdjustmentRejectsDisconnectedGraph();
+        TestBundleAdjustmentRejectsRepeatedFrameObservation();
         TestGlobalPositioningCeresRecovery();
         TestGlobalPositioningRejectsDisconnectedTrackGraph();
         TestMalformedRotationIsRejected();

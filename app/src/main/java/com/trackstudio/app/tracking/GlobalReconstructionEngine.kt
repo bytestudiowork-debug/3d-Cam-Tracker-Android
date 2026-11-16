@@ -786,6 +786,7 @@ internal class GlobalTrackGraphBuilder(
         matches: List<Pair<Int, Int>>
     ) {
         require(firstFrame >= 0 && secondFrame >= 0)
+        require(firstFrame != secondFrame) { "Verified matches must connect distinct frames." }
         for ((firstFeature, secondFeature) in matches) {
             require(firstFeature >= 0 && secondFeature >= 0)
             val a = node(firstFrame, firstFeature)

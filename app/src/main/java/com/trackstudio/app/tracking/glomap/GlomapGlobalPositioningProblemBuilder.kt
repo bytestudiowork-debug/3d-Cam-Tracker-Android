@@ -75,8 +75,10 @@ internal object GlomapGlobalPositioningProblemBuilder {
         var acceptedTracks = 0
 
         for (track in tracks) {
+            val observationCountsByFrame = track.observations.groupingBy { it.frameIndex }.eachCount()
             val validObservations = track.observations.filter { observation ->
-                val valid = isRotation(observation.rotation) &&
+                val valid = observationCountsByFrame[observation.frameIndex] == 1 &&
+                    isRotation(observation.rotation) &&
                     isVector3(observation.cameraCenter) &&
                     isVector3(observation.undistortedFeatureDirection)
                 if (!valid) invalidObservations++

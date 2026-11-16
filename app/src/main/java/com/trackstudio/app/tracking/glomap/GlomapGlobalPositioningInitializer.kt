@@ -64,6 +64,9 @@ internal object GlomapGlobalPositioningInitializer {
         require(options.minimumViewsPerTrack >= 2)
         require(frames.map { it.frameId }.distinct().size == frames.size)
         require(images.map { it.imageId }.distinct().size == images.size)
+        require(tracks.map { it.trackId }.distinct().size == tracks.size) {
+            "Track IDs must be unique."
+        }
         frames.forEach {
             requireVector(it.cameraCenterFromPose, "frame camera center")
             requireVector(it.existingTranslation, "frame translation")
@@ -73,7 +76,9 @@ internal object GlomapGlobalPositioningInitializer {
         }
 
         val imageById = images.associateBy { it.imageId }
-        val distinctObservationImageIdsByTrack = tracks.map { it.observationImageIds.distinct() }
+        val distinctObservationImageIdsByTrack = tracks.map { track ->
+            track.observationImageIds.distinct().filter { it in imageById }
+        }
         val constrained = LinkedHashSet<Int>()
 
         // Upstream first inserts frame IDs for every valid image pair.

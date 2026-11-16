@@ -5,6 +5,11 @@ import org.junit.Assert.assertTrue
 import org.junit.Test
 
 class GlobalTrackGraphBuilderTest {
+    @Test(expected = IllegalArgumentException::class)
+    fun rejectsVerifiedMatchesWithinTheSameFrame() {
+        GlobalTrackGraphBuilder().addVerifiedMatches(0, 0, listOf(0 to 1))
+    }
+
     @Test
     fun consolidatesSameFrameObservationsAtTenPixelBoundary() {
         val builder = joinedRepeatedFrameGraph(

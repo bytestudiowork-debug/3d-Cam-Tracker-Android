@@ -136,6 +136,35 @@ class GlomapGlobalPositioningInitializerTest {
         assertEquals(0, result.randomEngineSamplesConsumed)
     }
 
+    @Test
+    fun missingImageReferencesDoNotSatisfyMinimumViewCount() {
+        val result = GlomapGlobalPositioningInitializer.initialize(
+            frames = listOf(frame(1), frame(2), frame(3)),
+            images = listOf(GlomapGlobalPositioningInitializer.ImageInput(11, 1, true)),
+            imagePairs = emptyList(),
+            tracks = listOf(
+                GlomapGlobalPositioningInitializer.TrackInput(7, listOf(11, 22, 33))
+            )
+        )
+
+        assertTrue(result.constrainedFrameIds.isEmpty())
+        assertFalse(result.initializedPointTrackIds.contains(7))
+        assertEquals(0, result.randomEngineSamplesConsumed)
+    }
+
+    @Test(expected = IllegalArgumentException::class)
+    fun duplicateTrackIdsAreRejectedBeforeMapInsertion() {
+        GlomapGlobalPositioningInitializer.initialize(
+            frames = emptyList(),
+            images = emptyList(),
+            imagePairs = emptyList(),
+            tracks = listOf(
+                GlomapGlobalPositioningInitializer.TrackInput(7, emptyList()),
+                GlomapGlobalPositioningInitializer.TrackInput(7, emptyList())
+            )
+        )
+    }
+
     private fun frame(
         id: Int,
         center: DoubleArray = doubleArrayOf(1.0, 2.0, 3.0),

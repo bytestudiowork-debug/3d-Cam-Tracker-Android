@@ -6,6 +6,28 @@ import org.junit.Test
 
 class GlomapGlobalPositioningProblemBuilderTest {
     @Test
+    fun repeatedFrameMeasurementsDoNotCountAsIndependentViews() {
+        val problem = GlomapGlobalPositioningProblemBuilder.build(
+            listOf(
+                GlomapGlobalPositioningProblemBuilder.Track(
+                    3,
+                    listOf(observation(0), observation(0), observation(1))
+                ),
+                GlomapGlobalPositioningProblemBuilder.Track(
+                    4,
+                    listOf(observation(3), observation(3), observation(4), observation(5), observation(6))
+                )
+            )
+        )
+
+        assertEquals(3, problem.constraints.size)
+        assertEquals(1, problem.acceptedTrackCount)
+        assertEquals(1, problem.skippedShortTracks)
+        assertEquals(4, problem.skippedInvalidObservations)
+        assertEquals(setOf(4), problem.constraints.map { it.trackId }.toSet())
+    }
+
+    @Test
     fun createsOnePointToCameraConstraintPerValidObservation() {
         val track = GlomapGlobalPositioningProblemBuilder.Track(
             trackId = 7,
