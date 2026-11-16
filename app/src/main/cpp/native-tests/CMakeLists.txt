@@ -16,6 +16,7 @@ add_executable(tracking_solver_numeric_tests
         ../camera_pose_refiner_core.cpp
         ../global_positioning_core.cpp
         ../global_bundle_adjuster_core.cpp
+        ../view_graph_calibration_core.cpp
         ../least_absolute_deviations_core.cpp)
 target_include_directories(tracking_solver_numeric_tests PRIVATE ..)
 target_link_libraries(tracking_solver_numeric_tests PRIVATE Ceres::ceres)

@@ -6,6 +6,7 @@ import com.trackstudio.app.tracking.colmap.ColmapTrackRetriangulator
 import com.trackstudio.app.tracking.glomap.GlomapGlobalPositioningInitializer
 import com.trackstudio.app.tracking.glomap.GlomapGlobalPositioningProblemBuilder
 import com.trackstudio.app.tracking.glomap.GlomapGlobalBundleAdjuster
+import com.trackstudio.app.tracking.glomap.GlomapViewGraphCalibrator
 import com.trackstudio.app.tracking.glomap.GlomapBundleAdjustmentSchedule
 import com.trackstudio.app.tracking.glomap.GlomapNativeSolver
 import com.trackstudio.app.tracking.glomap.GlomapTrackFilter
@@ -62,6 +63,14 @@ class GlobalReconstructionEngine(
         val height: Int
     )
 
+    private data class FundamentalPair(
+        val first: Int,
+        val second: Int,
+        val matches: List<Pair<Int, Int>>,
+        val fundamentalMatrix: DoubleArray,
+        val matchCount: Int
+    )
+
     private data class VerifiedPair(
         val first: Int,
         val second: Int,
@@ -93,6 +102,7 @@ class GlobalReconstructionEngine(
         }
         val featureExtractor = AndroidSiftFeatureExtractor(featureBudget)
         val frames = arrayOfNulls<FrameFeatures>(frameCount)
+        val workingCameraMatrix = cameraMatrix.clone()
         var refinedCameraMatrix: Mat? = null
         var decodedFrames = 0
         val solveContext = currentCoroutineContext()
@@ -154,15 +164,28 @@ class GlobalReconstructionEngine(
                 "All frames in a reconstruction must use the same nonzero image dimensions."
             }
 
+            val fx = workingCameraMatrix.get(0, 0)[0]
+            val skew = workingCameraMatrix.get(0, 1)[0]
+            val cx = workingCameraMatrix.get(0, 2)[0]
+            val fy = workingCameraMatrix.get(1, 1)[0]
+            val cy = workingCameraMatrix.get(1, 2)[0]
+            require(listOf(fx, skew, cx, fy, cy).all { it.isFinite() } && fx > 0.0 && fy > 0.0) {
+                "Camera intrinsics contain invalid focal lengths or principal point."
+            }
+            val initialIntrinsics = CameraIntrinsics(
+                fx = fx, skew = skew, cx = cx, fy = fy, cy = cy
+            )
+            var effectiveIntrinsics = initialIntrinsics
+
             // Long clips need both a connected temporal backbone and wider
             // baselines. The default 420-pair cap must not collapse a 588-frame
             // sequence into adjacent-only comparisons.
             val candidatePairs = buildPairSchedule(frameCount, maxOf(maximumPairCount, frameCount * 2))
-            val completedPairs = AtomicInteger(0)
+            val completedFundamentals = AtomicInteger(0)
             val progressMutex = Mutex()
             val workerCount = minOf(Runtime.getRuntime().availableProcessors().coerceAtLeast(1), 2, candidatePairs.size.coerceAtLeast(1))
             val chunks = candidatePairs.chunked((candidatePairs.size + workerCount - 1) / workerCount)
-            val verifiedPairs = coroutineScope {
+            val fundamentalPairs = coroutineScope {
                 chunks.map { chunk ->
                     async(Dispatchers.Default) {
                         val workerMatcher = SiftDescriptorMatcher(ratioThreshold)
@@ -171,20 +194,23 @@ class GlobalReconstructionEngine(
                                 currentCoroutineContext().ensureActive()
                                 val first = frames[pair.first] ?: return@mapNotNull null
                                 val second = frames[pair.second] ?: return@mapNotNull null
-                                val verified = verifyPair(pair.first, pair.second, first, second, cameraMatrix, workerMatcher)
-                                val completed = completedPairs.incrementAndGet()
+                                val candidate = estimateFundamentalPair(
+                                    pair.first, pair.second, first, second,
+                                    initialIntrinsics, workerMatcher
+                                )
+                                val completed = completedFundamentals.incrementAndGet()
                                 if (completed % 2 == 0 || completed == candidatePairs.size) {
                                     progressMutex.withLock {
-                                        val current = completedPairs.get()
+                                        val current = completedFundamentals.get()
                                         onProgress(CameraTrackingProgress(
                                             frameCount, frameCount,
-                                            "Verifying image pairs " + current + "/" + candidatePairs.size,
-                                            0.25f + 0.30f * current / candidatePairs.size.coerceAtLeast(1),
+                                            "Estimating view-graph fundamentals " + current + "/" + candidatePairs.size,
+                                            0.25f + 0.13f * current / candidatePairs.size.coerceAtLeast(1),
                                             decodedFrames, frameCount
                                         ))
                                     }
                                 }
-                                verified
+                                candidate
                             }
                         } finally {
                             workerMatcher.clear()
@@ -192,10 +218,62 @@ class GlobalReconstructionEngine(
                     }
                 }.awaitAll().flatten()
             }
-            // Descriptor Mats are no longer needed after pair verification.
-            // Release them before constructing the multi-view graph to lower
-            // peak native memory on long sequences.
+            // Descriptor Mats are no longer needed after fundamental estimation.
             frames.filterNotNull().forEach { it.descriptors.release() }
+
+            val calibrationResult = try {
+                GlomapViewGraphCalibrator().calibrate(
+                    fundamentals = fundamentalPairs.map { it.fundamentalMatrix },
+                    initialIntrinsics = initialIntrinsics
+                )
+            } catch (_: LinkageError) {
+                null
+            }
+            if (calibrationResult != null) {
+                effectiveIntrinsics = calibrationResult.intrinsics
+                workingCameraMatrix.put(0, 0, *effectiveIntrinsics.toRowMajorMatrix())
+            }
+            val pairsForPoseEstimation = if (calibrationResult == null) {
+                fundamentalPairs
+            } else {
+                fundamentalPairs.filterIndexed { index, _ ->
+                    index in calibrationResult.acceptedPairIndices
+                }
+            }
+            onProgress(CameraTrackingProgress(
+                frameCount, frameCount, "Calibrating view-graph focal length",
+                0.40f, decodedFrames, frameCount
+            ))
+
+            val completedVerifications = AtomicInteger(0)
+            val verificationChunks = pairsForPoseEstimation.chunked(
+                ((pairsForPoseEstimation.size + workerCount - 1) / workerCount).coerceAtLeast(1)
+            )
+            val verifiedPairs = coroutineScope {
+                verificationChunks.map { chunk ->
+                    async(Dispatchers.Default) {
+                        chunk.mapNotNull { pair ->
+                            currentCoroutineContext().ensureActive()
+                            val first = frames[pair.first] ?: return@mapNotNull null
+                            val second = frames[pair.second] ?: return@mapNotNull null
+                            val verified = verifyPair(pair, first, second, workingCameraMatrix)
+                            val completed = completedVerifications.incrementAndGet()
+                            if (completed % 2 == 0 || completed == pairsForPoseEstimation.size) {
+                                progressMutex.withLock {
+                                    val current = completedVerifications.get()
+                                    onProgress(CameraTrackingProgress(
+                                        frameCount, frameCount,
+                                        "Verifying calibrated image pairs " + current + "/" + pairsForPoseEstimation.size,
+                                        0.42f + 0.13f * current / pairsForPoseEstimation.size.coerceAtLeast(1),
+                                        decodedFrames, frameCount
+                                    ))
+                                }
+                            }
+                            verified
+                        }
+                    }
+                }.awaitAll().flatten()
+            }
             val totalMatches = verifiedPairs.sumOf { it.matchCount }
             val totalInliers = verifiedPairs.sumOf { it.inlierMatches.size }
             if (verifiedPairs.isEmpty()) {
@@ -281,25 +359,14 @@ class GlobalReconstructionEngine(
                 }
             )
 
-            val fx = cameraMatrix.get(0, 0)[0]
-            val skew = cameraMatrix.get(0, 1)[0]
-            val cx = cameraMatrix.get(0, 2)[0]
-            val fy = cameraMatrix.get(1, 1)[0]
-            val cy = cameraMatrix.get(1, 2)[0]
-            require(fx.isFinite() && fy.isFinite() && fx > 0.0 && fy > 0.0) {
-                "Camera intrinsics contain invalid focal lengths."
-            }
-            val initialIntrinsics = CameraIntrinsics(
-                fx = fx, skew = skew, cx = cx, fy = fy, cy = cy
-            )
-
             val positionTracks = tracks.map { track ->
                 val observations = track.observations.mapNotNull { observation ->
                     val rotation = rotations[observation.frameIndex] ?: return@mapNotNull null
                     val center = initializer.frameTranslationsById[observation.frameIndex]
                         ?: return@mapNotNull null
-                    val normalizedY = (observation.y - cy) / fy
-                    val normalizedX = (observation.x - cx - skew * normalizedY) / fx
+                    val normalizedY = (observation.y - effectiveIntrinsics.cy) / effectiveIntrinsics.fy
+                    val normalizedX = (observation.x - effectiveIntrinsics.cx -
+                        effectiveIntrinsics.skew * normalizedY) / effectiveIntrinsics.fx
                     GlomapGlobalPositioningProblemBuilder.CameraObservation(
                         frameIndex = observation.frameIndex,
                         rotation = rotation,
@@ -351,7 +418,7 @@ class GlobalReconstructionEngine(
                 cameraCentersByFrame = positionResult.frameCentersById,
                 rotationsByFrame = rotations,
                 pointsByTrackId = positionResult.pointsByTrackId,
-                intrinsics = initialIntrinsics,
+                intrinsics = effectiveIntrinsics,
                 hasPriorFocalLength = true
             )
 
@@ -373,7 +440,7 @@ class GlobalReconstructionEngine(
                         rotationsByFrame = rotations,
                         pointsByTrackId = positionResult.pointsByTrackId,
                         tracks = reconstructionTracks,
-                        intrinsics = initialIntrinsics
+                        intrinsics = effectiveIntrinsics
                     ),
                     stageSolver = { state, optimizeRotations, stageIndex ->
                         val stageCameraMatrix = Mat(3, 3, CvType.CV_64F)
@@ -432,7 +499,7 @@ class GlobalReconstructionEngine(
                     refinedCameraMatrix = matrix
                     matrix.put(0, 0, *refinedIntrinsics.toRowMajorMatrix())
                 }
-            } else cameraMatrix
+            } else workingCameraMatrix
 
             val poses = activeFrames.mapNotNull { frame ->
                 val rotation = finalRotations[frame] ?: return@mapNotNull null
@@ -501,7 +568,7 @@ class GlobalReconstructionEngine(
                     cameraCentersByFrame = finalCenters,
                     rotationsByFrame = finalRotations,
                     pointsByTrackId = finalPoints,
-                    intrinsics = refinedIntrinsics ?: initialIntrinsics
+                    intrinsics = refinedIntrinsics ?: effectiveIntrinsics
                 )
                 triangulationPass++
                 triangulated = SfMTriangulator.triangulate(
@@ -701,11 +768,22 @@ class GlobalReconstructionEngine(
                     bundleResult?.positiveDepthRatio ?: Double.NaN,
                 jointBundleAdjustmentPrincipalPointRefinementEnabled =
                     bundleResult?.principalPointRefinementEnabled ?: false,
+                globalViewGraphFocalCalibrationApplied = calibrationResult?.focalLengthUpdated ?: false,
+                globalViewGraphInitialFocalLength = initialIntrinsics.fx * 0.5 + initialIntrinsics.fy * 0.5,
+                globalViewGraphFocalLength = effectiveIntrinsics.fx * 0.5 + effectiveIntrinsics.fy * 0.5,
+                globalViewGraphRejectedPairCount = calibrationResult?.rejectedPairIndices?.size ?: 0,
+                globalViewGraphCalibrationStatus = when {
+                    calibrationResult == null -> "Unavailable; retained input focal length"
+                    calibrationResult.focalLengthUpdated -> "Applied"
+                    else -> "Pairs filtered; retained input focal length"
+                },
                 refinedCameraIntrinsics = refinedIntrinsics
+                    ?: effectiveIntrinsics.takeIf { calibrationResult?.focalLengthUpdated == true }
             )
         } finally {
             frames.filterNotNull().forEach { it.descriptors.release() }
             refinedCameraMatrix?.release()
+            workingCameraMatrix.release()
             featureExtractor.clear()
         }
     }
@@ -750,14 +828,14 @@ class GlobalReconstructionEngine(
         return pairs.toList()
     }
 
-    private fun verifyPair(
+    private fun estimateFundamentalPair(
         firstIndex: Int,
         secondIndex: Int,
         first: FrameFeatures,
         second: FrameFeatures,
-        cameraMatrix: Mat,
+        intrinsics: CameraIntrinsics,
         matcher: SiftDescriptorMatcher
-    ): VerifiedPair? {
+    ): FundamentalPair? {
         if (first.descriptors.empty() || second.descriptors.empty() ||
             first.keypoints.isEmpty() || second.keypoints.isEmpty()
         ) return null
@@ -766,6 +844,56 @@ class GlobalReconstructionEngine(
             .filter { (query, train) ->
                 query in first.keypoints.indices && train in second.keypoints.indices
             }
+        if (matched.size < 30) return null
+
+        val points1 = MatOfPoint2f()
+        val points2 = MatOfPoint2f()
+        val fundamentalMask = Mat()
+        var fundamental = Mat()
+        return try {
+            points1.fromList(matched.map { zeroSkewPoint(first.keypoints[it.first].pt, intrinsics) })
+            points2.fromList(matched.map { zeroSkewPoint(second.keypoints[it.second].pt, intrinsics) })
+            fundamental = Calib3d.findFundamentalMat(
+                points1, points2, Calib3d.FM_RANSAC, 1.0, 0.999, 900, fundamentalMask
+            )
+            if (fundamental.empty() || fundamental.rows() != 3 || fundamental.cols() != 3 ||
+                fundamentalMask.empty() || fundamentalMask.total().toInt() != matched.size
+            ) return null
+            val fundamentalInlierMatches = matched.indices.mapNotNull { index ->
+                val maskValue = if (fundamentalMask.rows() == 1) {
+                    fundamentalMask.get(0, index)
+                } else {
+                    fundamentalMask.get(index, 0)
+                }
+                val accepted = maskValue?.firstOrNull() ?: 0.0
+                if (accepted != 0.0) matched[index] else null
+            }
+            val inlierCount = fundamentalInlierMatches.size
+            if (inlierCount < 30 || inlierCount.toDouble() / matched.size < 0.20) return null
+            val fundamentalValues = OpenCvMatrixReadback.readCv64F(fundamental, 3, 3) ?: return null
+            FundamentalPair(firstIndex, secondIndex, fundamentalInlierMatches, fundamentalValues, matched.size)
+        } finally {
+            points1.release()
+            points2.release()
+            fundamentalMask.release()
+            fundamental.release()
+        }
+    }
+
+    private fun zeroSkewPoint(point: Point, intrinsics: CameraIntrinsics): Point =
+        Point(
+            point.x - intrinsics.skew * ((point.y - intrinsics.cy) / intrinsics.fy),
+            point.y
+        )
+
+    private fun verifyPair(
+        pair: FundamentalPair,
+        first: FrameFeatures,
+        second: FrameFeatures,
+        cameraMatrix: Mat
+    ): VerifiedPair? {
+        if (first.keypoints.isEmpty() || second.keypoints.isEmpty()) return null
+        val matched = pair.matches
         if (matched.size < 30) return null
 
         val points1 = MatOfPoint2f()
@@ -862,11 +990,11 @@ class GlobalReconstructionEngine(
                     if (accepted != 0.0) matched[index] else null
                 }
                 if (inlierMatches.size != bestInliers || inlierMatches.size < 30 ||
-                    inlierMatches.size.toDouble() / matched.size < 0.20
+                    inlierMatches.size.toDouble() / pair.matchCount < 0.20
                 ) return null
                 VerifiedPair(
-                    firstIndex, secondIndex, rotationValues,
-                    translationValues, inlierMatches, matched.size
+                    pair.first, pair.second, rotationValues,
+                    translationValues, inlierMatches, pair.matchCount
                 )
             } finally {
                 essential.release()

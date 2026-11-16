@@ -4,9 +4,12 @@
 #include "optimization_robust_policy.h"
 #include "global_positioning_core.h"
 #include "positioning_direction_residual.h"
+#include "view_graph_calibration_core.h"
 
 #include <ceres/loss_function.h>
 #include <ceres/rotation.h>
+#include <Eigen/Core>
+#include <Eigen/Geometry>
 
 #include <algorithm>
 #include <cmath>
@@ -846,6 +849,93 @@ void TestGlobalPositioningRejectsZeroDirection() {
             "global positioning accepted zero-length viewing directions");
 }
 
+Eigen::Matrix3d SkewMatrix(const Eigen::Vector3d& vector) {
+    Eigen::Matrix3d skew;
+    skew << 0.0, -vector.z(), vector.y(),
+            vector.z(), 0.0, -vector.x(),
+            -vector.y(), vector.x(), 0.0;
+    return skew;
+}
+
+Eigen::Matrix3d SyntheticFundamental(double focal,
+                                     double principal_x,
+                                     double principal_y,
+                                     int pair_index) {
+    Eigen::Matrix3d camera = Eigen::Matrix3d::Identity();
+    camera(0, 0) = focal;
+    camera(1, 1) = focal;
+    camera(0, 2) = principal_x;
+    camera(1, 2) = principal_y;
+    const Eigen::Vector3d axis(0.06 + 0.011 * pair_index,
+                               -0.12 + 0.007 * pair_index,
+                               0.04 + 0.009 * pair_index);
+    const Eigen::Matrix3d rotation = Eigen::AngleAxisd(
+            0.08 + 0.015 * pair_index, axis.normalized()).toRotationMatrix();
+    const Eigen::Vector3d translation(0.42 + 0.03 * pair_index,
+                                      -0.16 + 0.02 * pair_index,
+                                      0.09 + 0.013 * pair_index);
+    const Eigen::Matrix3d essential = SkewMatrix(translation) * rotation;
+    Eigen::Matrix3d fundamental = camera.inverse().transpose() * essential * camera.inverse();
+    fundamental /= fundamental.norm();
+    return fundamental;
+}
+
+void AppendRowMajor(const Eigen::Matrix3d& matrix, std::vector<double>* packed) {
+    for (int row = 0; row < 3; ++row) {
+        for (int col = 0; col < 3; ++col) packed->push_back(matrix(row, col));
+    }
+}
+
+void TestViewGraphFocalCalibrationRecoveryAndEdgeFiltering() {
+    constexpr double true_focal = 1200.0;
+    constexpr double principal_x = 640.0;
+    constexpr double principal_y = 360.0;
+    std::vector<double> fundamentals;
+    for (int pair_index = 0; pair_index < 10; ++pair_index) {
+        AppendRowMajor(SyntheticFundamental(true_focal, principal_x, principal_y,
+                                            pair_index),
+                       &fundamentals);
+    }
+    // One rank-two edge is inconsistent with the shared camera model. The
+    // robust Fetzer solve should retain the shared focal and invalidate it.
+    Eigen::Matrix3d mismatched_fundamental;
+    mismatched_fundamental <<
+            -1.0037475493, -0.01503000959, -0.6273950898,
+             0.07710208839, 1.087582599, -1.403222236,
+             0.4910696008, 0.7344655981, -0.6644424178;
+    AppendRowMajor(mismatched_fundamental, &fundamentals);
+
+    tracking::ViewGraphCalibrationResult result;
+    Require(tracking::RunViewGraphFocalCalibration(
+                    fundamentals, principal_x, principal_y,
+                    true_focal * 0.75, 100, 2, &result),
+            "view-graph focal calibration rejected a valid synthetic graph");
+    Require(std::abs(result.focal_length - true_focal) / true_focal < 0.02,
+            "view-graph focal calibration failed to recover the shared focal");
+    Require(result.final_cost < result.initial_cost,
+            "view-graph focal calibration did not reduce the robust objective");
+    Require(result.pair_error_norms.size() == 11 &&
+                    result.pair_is_valid.size() == 11,
+            "view-graph focal calibration lost per-pair diagnostics");
+    for (int pair_index = 0; pair_index < 10; ++pair_index) {
+        Require(result.pair_is_valid[static_cast<size_t>(pair_index)] != 0,
+                "view-graph focal calibration rejected a consistent edge");
+    }
+    Require(result.pair_is_valid.back() == 0,
+            "view-graph focal calibration retained a mismatched edge");
+
+    std::vector<double> with_degenerate = fundamentals;
+    with_degenerate.insert(with_degenerate.end(), 9, 0.0);
+    tracking::ViewGraphCalibrationResult degenerate_result;
+    Require(tracking::RunViewGraphFocalCalibration(
+                    with_degenerate, principal_x, principal_y,
+                    true_focal * 0.75, 100, 2, &degenerate_result),
+            "view-graph focal calibration failed on a graph with one degenerate edge");
+    Require(degenerate_result.pair_is_valid.size() == 12 &&
+                    degenerate_result.pair_is_valid.back() == 0,
+            "view-graph focal calibration accepted an all-zero fundamental matrix");
+}
+
 void TestMalformedRotationIsRejected() {
     double scaled_identity[9] = {2, 0, 0, 0, 2, 0, 0, 0, 2};
     Require(!tracking::IsValidRotationMatrix(scaled_identity),
@@ -872,6 +962,7 @@ int main() {
         TestGlobalPositioningRejectsDisconnectedTrackGraph();
         TestGlobalPositioningRejectsRepeatedFrameObservation();
         TestGlobalPositioningRejectsZeroDirection();
+        TestViewGraphFocalCalibrationRecoveryAndEdgeFiltering();
         TestMalformedRotationIsRejected();
         std::cout << "Native numerical regression tests passed.\n";
         return 0;
