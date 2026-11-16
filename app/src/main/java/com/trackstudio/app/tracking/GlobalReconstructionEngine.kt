@@ -1,6 +1,7 @@
 package com.trackstudio.app.tracking
 
 import com.trackstudio.app.tracking.colmap.ColmapTrackCompleter
+import com.trackstudio.app.tracking.colmap.ColmapTrackMerger
 import com.trackstudio.app.tracking.glomap.GlomapGlobalPositioningInitializer
 import com.trackstudio.app.tracking.glomap.GlomapGlobalPositioningProblemBuilder
 import com.trackstudio.app.tracking.glomap.GlomapGlobalBundleAdjuster
@@ -389,6 +390,7 @@ class GlobalReconstructionEngine(
             val finalCenters = bundleResult?.frameCentersById ?: positionResult.frameCentersById
             val finalRotations = bundleResult?.rotationsByFrame ?: rotations
             val finalPoints = bundleResult?.pointsByTrackId ?: positionResult.pointsByTrackId
+            var finalPointsForLandmarks = finalPoints
             val refinedIntrinsics = bundleResult?.intrinsics
             if (bundleResult != null) {
                 reconstructionTracks = GlomapTrackFilter.filterAfterBundleAdjustment(
@@ -479,8 +481,34 @@ class GlobalReconstructionEngine(
                     onProgress = triangulationProgress
                 )
             }
+            val trackMerging = ColmapTrackMerger.mergeTracks(
+                tracks = reconstructionTracks,
+                landmarks = triangulated.landmarks,
+                pairMatches = activePairs.map { pair ->
+                    ColmapTrackMerger.PairMatches(pair.first, pair.second, pair.inlierMatches)
+                },
+                poses = poses,
+                intrinsics = projectionIntrinsics
+            )
+            if (trackMerging.mergedTrackCount > 0) {
+                reconstructionTracks = trackMerging.tracks
+                triangulated = triangulated.copy(
+                    landmarks = trackMerging.landmarks,
+                    stats = triangulated.stats.withFinalLandmarks(trackMerging.landmarks)
+                )
+                val mergedPoints = finalPointsForLandmarks.toMutableMap()
+                trackMerging.removedTrackIds.forEach { mergedPoints.remove(it) }
+                trackMerging.mergedLandmarks.forEach { landmark ->
+                    mergedPoints[landmark.trackId] = doubleArrayOf(
+                        landmark.position.x,
+                        landmark.position.y,
+                        landmark.position.z
+                    )
+                }
+                finalPointsForLandmarks = mergedPoints
+            }
             val bundleLandmarks = reconstructionTracks.mapNotNull trackLoop@ { track ->
-                val point = finalPoints[track.id] ?: return@trackLoop null
+                val point = finalPointsForLandmarks[track.id] ?: return@trackLoop null
                 val errors = track.observations.mapNotNull observationLoop@ { observation ->
                     val pose = poseByFrame[observation.frameIndex] ?: return@observationLoop null
                     reprojectionError(projectionIntrinsics, pose, point, observation)
