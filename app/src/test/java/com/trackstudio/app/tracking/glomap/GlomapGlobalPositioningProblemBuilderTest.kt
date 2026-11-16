@@ -110,6 +110,25 @@ class GlomapGlobalPositioningProblemBuilderTest {
     }
 
     @Test
+    fun rejectsZeroLengthViewingDirection() {
+        val track = GlomapGlobalPositioningProblemBuilder.Track(
+            5,
+            listOf(
+                observation(0),
+                observation(1),
+                observation(2).copy(undistortedFeatureDirection = doubleArrayOf(0.0, 0.0, 0.0))
+            )
+        )
+
+        val problem = GlomapGlobalPositioningProblemBuilder.build(listOf(track))
+
+        assertEquals(0, problem.constraints.size)
+        assertEquals(0, problem.acceptedTrackCount)
+        assertEquals(1, problem.skippedShortTracks)
+        assertEquals(1, problem.skippedInvalidObservations)
+    }
+
+    @Test
     fun initializesScalesToOneWhenScaleGenerationIsEnabled() {
         val track = GlomapGlobalPositioningProblemBuilder.Track(
             3,

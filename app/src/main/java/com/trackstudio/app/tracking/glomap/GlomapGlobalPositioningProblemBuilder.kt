@@ -83,7 +83,7 @@ internal object GlomapGlobalPositioningProblemBuilder {
                 val valid = observationCountsByFrame[observation.frameIndex] == 1 &&
                     isRotation(observation.rotation) &&
                     isVector3(observation.cameraCenter) &&
-                    isVector3(observation.undistortedFeatureDirection)
+                    isDirection(observation.undistortedFeatureDirection)
                 if (!valid) invalidObservations++
                 valid
             }
@@ -157,6 +157,9 @@ internal object GlomapGlobalPositioningProblemBuilder {
 
     private fun isVector3(value: DoubleArray): Boolean =
         value.size == 3 && value.all { it.isFinite() }
+
+    private fun isDirection(value: DoubleArray): Boolean =
+        isVector3(value) && value.any { it != 0.0 }
 
     private fun isRotation(value: DoubleArray): Boolean {
         if (value.size != 9 || value.any { !it.isFinite() }) return false

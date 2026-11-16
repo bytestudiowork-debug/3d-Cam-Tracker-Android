@@ -701,6 +701,41 @@ void TestGlobalPositioningRejectsDisconnectedTrackGraph() {
             "global positioning accepted two disconnected camera-track components");
 }
 
+void TestGlobalPositioningRejectsRepeatedFrameObservation() {
+    const std::vector<double> centers = {
+            0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 2.0, 0.0, 0.0};
+    const std::vector<double> points = {0.0, 0.0, 5.0};
+    const std::vector<int> frame_indices = {0, 1, 2, 0};
+    const std::vector<int> track_indices = {0, 0, 0, 0};
+    const std::vector<double> directions = {
+            0.0, 0.0, 1.0, -0.2, 0.0, 1.0,
+            -0.4, 0.0, 1.0, 0.0, 0.0, 1.0};
+    const std::vector<double> scales(4, 0.2);
+    const std::vector<double> loss_scales(4, 1.0);
+    tracking::GlobalPositioningResult result;
+
+    Require(!tracking::RunGlobalPositioning(
+                    centers, points, frame_indices, track_indices, directions,
+                    scales, loss_scales, 20, 1, &result),
+            "global positioning accepted duplicate measurements from one frame");
+}
+
+void TestGlobalPositioningRejectsZeroDirection() {
+    const std::vector<double> centers(9, 0.0);
+    const std::vector<double> points(3, 0.0);
+    const std::vector<int> frame_indices = {0, 1, 2};
+    const std::vector<int> track_indices = {0, 0, 0};
+    const std::vector<double> directions(9, 0.0);
+    const std::vector<double> scales(3, 0.2);
+    const std::vector<double> loss_scales(3, 1.0);
+    tracking::GlobalPositioningResult result;
+
+    Require(!tracking::RunGlobalPositioning(
+                    centers, points, frame_indices, track_indices, directions,
+                    scales, loss_scales, 20, 1, &result),
+            "global positioning accepted zero-length viewing directions");
+}
+
 void TestMalformedRotationIsRejected() {
     double scaled_identity[9] = {2, 0, 0, 0, 2, 0, 0, 0, 2};
     Require(!tracking::IsValidRotationMatrix(scaled_identity),
@@ -723,6 +758,8 @@ int main() {
         TestBundleAdjustmentRejectsRepeatedFrameObservation();
         TestGlobalPositioningCeresRecovery();
         TestGlobalPositioningRejectsDisconnectedTrackGraph();
+        TestGlobalPositioningRejectsRepeatedFrameObservation();
+        TestGlobalPositioningRejectsZeroDirection();
         TestMalformedRotationIsRejected();
         std::cout << "Native numerical regression tests passed.\n";
         return 0;

@@ -99,12 +99,24 @@ bool RunGlobalPositioning(const std::vector<double>& initial_frame_centers,
 
     const int frame_count = static_cast<int>(initial_frame_centers.size() / 3);
     const int point_count = static_cast<int>(initial_points.size() / 3);
+    std::vector<std::pair<int, int>> observation_keys;
+    observation_keys.reserve(frame_indices.size());
     for (size_t i = 0; i < frame_indices.size(); ++i) {
         if (frame_indices[i] < 0 || frame_indices[i] >= frame_count ||
             track_indices[i] < 0 || track_indices[i] >= point_count ||
             loss_scales[i] <= 0.0) {
             return false;
         }
+        const double* direction = directions.data() + i * 3;
+        if (direction[0] == 0.0 && direction[1] == 0.0 && direction[2] == 0.0) {
+            return false;
+        }
+        observation_keys.emplace_back(frame_indices[i], track_indices[i]);
+    }
+    std::sort(observation_keys.begin(), observation_keys.end());
+    if (std::adjacent_find(observation_keys.begin(), observation_keys.end()) !=
+        observation_keys.end()) {
+        return false;
     }
 
     // A shared track couples its observing cameras. Reject multiple active
