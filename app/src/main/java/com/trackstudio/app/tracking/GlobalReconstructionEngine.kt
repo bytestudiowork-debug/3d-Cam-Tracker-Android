@@ -495,10 +495,11 @@ class GlobalReconstructionEngine(
             if (bundleResult != null) {
                 reconstructionTracks = bundleCandidate?.tracks ?: reconstructionTracks
             }
-            val resultCameraMatrix = if (refinedIntrinsics != null) {
+            val initialRefinedIntrinsics = refinedIntrinsics
+            val resultCameraMatrix = if (initialRefinedIntrinsics != null) {
                 Mat(3, 3, CvType.CV_64F).also { matrix ->
                     refinedCameraMatrix = matrix
-                    matrix.put(0, 0, *refinedIntrinsics.toRowMajorMatrix())
+                    matrix.put(0, 0, *initialRefinedIntrinsics.toRowMajorMatrix())
                 }
             } else workingCameraMatrix
 
