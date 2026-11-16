@@ -184,14 +184,22 @@ internal class FeatureTrackBuilder {
 
         for ((sourceIndex, currentIndex) in matches) {
             if (sourceIndex !in sourceKeypoints.indices ||
-                currentIndex !in currentKeypoints.indices ||
-                currentIndex in currentAssignments
+                currentIndex !in currentKeypoints.indices
             ) continue
             val trackId = sourceAssignments[sourceIndex] ?: continue
-            if (!usedTrackIds.add(trackId)) continue
-
+            val displacedTrackId = currentAssignments[currentIndex]
+            if (displacedTrackId == trackId) continue
             val observations = tracks[trackId] ?: continue
             if (observations.any { it.frameIndex == frameIndex }) continue
+            if (!usedTrackIds.add(trackId)) continue
+
+            if (displacedTrackId != null) {
+                currentAssignments.remove(currentIndex)
+                if (currentAssignments.values.none { it == displacedTrackId }) {
+                    tracks[displacedTrackId]?.removeAll { it.frameIndex == frameIndex }
+                    usedTrackIds.remove(displacedTrackId)
+                }
+            }
             val observation = CameraFeatureObservation(
                 frameIndex,
                 currentKeypoints[currentIndex].pt.x,
