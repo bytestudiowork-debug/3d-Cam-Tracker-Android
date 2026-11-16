@@ -54,7 +54,8 @@ internal object GlomapPostRetriangulationRefinement {
         val firstBundleAdjustment: GlomapGlobalBundleAdjuster.Result?,
         val firstBundleAdjustmentAccepted: Boolean,
         val secondBundleAdjustment: GlomapGlobalBundleAdjuster.Result?,
-        val secondBundleAdjustmentAccepted: Boolean
+        val secondBundleAdjustmentAccepted: Boolean,
+        val normalization: GlomapReconstructionNormalizer.Result
     ) {
         val acceptedBundleAdjustmentCount: Int
             get() = (if (firstBundleAdjustmentAccepted) 1 else 0) +
@@ -123,6 +124,15 @@ internal object GlomapPostRetriangulationRefinement {
             }
         }
 
+        val normalization = GlomapReconstructionNormalizer.normalize(
+            frameCentersById = state.frameCentersById,
+            pointsByTrackId = state.pointsByTrackId
+        )
+        state = state.copy(
+            frameCentersById = normalization.frameCentersById,
+            pointsByTrackId = normalization.pointsByTrackId
+        )
+
         val finalReprojection = filterByReprojection(
             state,
             DEFAULT_MAX_REPROJECTION_ERROR_NORMALIZED
@@ -140,7 +150,8 @@ internal object GlomapPostRetriangulationRefinement {
             firstBundleAdjustment = firstCandidate,
             firstBundleAdjustmentAccepted = firstAccepted != null,
             secondBundleAdjustment = secondCandidate,
-            secondBundleAdjustmentAccepted = secondAccepted != null
+            secondBundleAdjustmentAccepted = secondAccepted != null,
+            normalization = normalization
         )
     }
 

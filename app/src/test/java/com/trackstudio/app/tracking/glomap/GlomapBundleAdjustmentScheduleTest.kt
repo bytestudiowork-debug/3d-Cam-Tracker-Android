@@ -89,6 +89,37 @@ class GlomapBundleAdjustmentScheduleTest {
         assertEquals(4, result!!.completedStages)
     }
 
+    @Test
+    fun normalizesCameraCentersAndPointsBetweenBaIterations() {
+        val stateAtNextIteration = mutableListOf<GlomapBundleAdjustmentSchedule.State>()
+        val initial = state(trackCount = 1_000).copy(
+            pointsByTrackId = mapOf(5 to doubleArrayOf(0.5, 2.0, 3.0))
+        )
+
+        val result = GlomapBundleAdjustmentSchedule.solve(
+            initialState = initial,
+            numIterations = 2,
+            stageSolver = { current, _, stageIndex ->
+                if (stageIndex == 2) stateAtNextIteration += current
+                solved(current)
+            },
+            filterByReprojection = { current, _ ->
+                GlomapTrackFilter.Result(current.tracks, changedTrackCount = 2, removedObservationCount = 0)
+            },
+            filterByTriangulationAngle = { current ->
+                GlomapTrackFilter.Result(current.tracks, changedTrackCount = 0, removedObservationCount = 0)
+            }
+        )
+
+        assertNotNull(result)
+        val normalized = stateAtNextIteration.single()
+        assertEquals(-5.0, normalized.frameCentersById.getValue(0)[0], 1e-12)
+        assertEquals(5.0, normalized.frameCentersById.getValue(1)[0], 1e-12)
+        assertEquals(0.0, normalized.pointsByTrackId.getValue(5)[0], 1e-12)
+        assertEquals(-5.0, result!!.bundleResult.frameCentersById.getValue(0)[0], 1e-12)
+        assertEquals(0.0, result.bundleResult.pointsByTrackId.getValue(5)[0], 1e-12)
+    }
+
     private fun state(trackCount: Int): GlomapBundleAdjustmentSchedule.State =
         GlomapBundleAdjustmentSchedule.State(
             frameCentersById = mapOf(

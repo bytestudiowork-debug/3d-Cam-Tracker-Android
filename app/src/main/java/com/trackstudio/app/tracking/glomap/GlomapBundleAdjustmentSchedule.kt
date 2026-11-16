@@ -105,6 +105,15 @@ internal object GlomapBundleAdjustmentSchedule {
                 lastBundleResult = rotationResult
             }
 
+            val normalization = GlomapReconstructionNormalizer.normalize(
+                frameCentersById = state.frameCentersById,
+                pointsByTrackId = state.pointsByTrackId
+            )
+            state = state.copy(
+                frameCentersById = normalization.frameCentersById,
+                pointsByTrackId = normalization.pointsByTrackId
+            )
+
             var status = true
             var filteredTrackCount = 0
             while (status && iteration < numIterations) {
@@ -138,7 +147,11 @@ internal object GlomapBundleAdjustmentSchedule {
         return Result(
             bundleResult = lastResult.copy(
                 initialCost = initialCost ?: return null,
-                iterations = iterationCount
+                iterations = iterationCount,
+                frameCentersById = state.frameCentersById,
+                rotationsByFrame = state.rotationsByFrame,
+                pointsByTrackId = state.pointsByTrackId,
+                intrinsics = state.intrinsics
             ),
             tracks = state.tracks,
             completedStages = stageIndex

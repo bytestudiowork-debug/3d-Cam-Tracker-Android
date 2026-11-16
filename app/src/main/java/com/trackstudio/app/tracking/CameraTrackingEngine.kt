@@ -143,7 +143,13 @@ data class CameraTrackingResult(
     val postRetriangulationBundleAdjustmentInitialCost: Double = Double.NaN,
     val postRetriangulationBundleAdjustmentFinalCost: Double = Double.NaN,
     val postRetriangulationBundleAdjustmentIterations: Int = 0,
-    val postRetriangulationBundleAdjustmentStatus: String = "Not run"
+    val postRetriangulationBundleAdjustmentStatus: String = "Not run",
+    val globalCovisibilityPruningApplied: Boolean = false,
+    val globalCovisibilityClusterIdByFrame: Map<Int, Int> = emptyMap(),
+    val globalCovisibilityClusterCount: Int = 0,
+    val globalCovisibilityStrongThreshold: Double = Double.NaN,
+    val globalCovisibilityEligiblePairCount: Int = 0,
+    val globalCovisibilityBridgeIterations: Int = 0
 ) {
     val effectiveCameraIntrinsics: CameraIntrinsics?
         get() = refinedCameraIntrinsics ?: observationCameraIntrinsics ?: inputCameraCalibration?.let { calibration ->

@@ -11,6 +11,8 @@ import com.trackstudio.app.tracking.glomap.GlomapBundleAdjustmentSchedule
 import com.trackstudio.app.tracking.glomap.GlomapNativeSolver
 import com.trackstudio.app.tracking.glomap.GlomapTrackFilter
 import com.trackstudio.app.tracking.glomap.GlomapPostRetriangulationRefinement
+import com.trackstudio.app.tracking.glomap.GlomapReconstructionNormalizer
+import com.trackstudio.app.tracking.glomap.GlomapCovisibilityPruner
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.async
 import kotlinx.coroutines.awaitAll
@@ -49,7 +51,9 @@ import kotlinx.coroutines.sync.withLock
 class GlobalReconstructionEngine(
     private val maxFeatures: Int = 1400,
     private val ratioThreshold: Float = 0.8f,
-    private val maximumPairCount: Int = 420
+    private val maximumPairCount: Int = 420,
+    // GLOMAP's corresponding skip_pruning option defaults to true.
+    private val enableWeakConnectivityPruning: Boolean = false
 ) : ReconstructionEngine {
     init {
         require(maxFeatures in 500..4000)
@@ -397,7 +401,7 @@ class GlobalReconstructionEngine(
                     totalFrames = frameCount
                 )
             )
-            val positionResult = try {
+            val rawPositionResult = try {
                 GlomapNativeSolver().solve(
                     problem = positioningProblem,
                     frameCentersById = initializer.frameTranslationsById,
@@ -411,16 +415,24 @@ class GlobalReconstructionEngine(
             } catch (failure: LinkageError) {
                 throw IllegalStateException("The Android global-positioning library could not be loaded.", failure)
             } ?: throw IllegalStateException("The global camera-position and point solve did not converge to a usable solution.")
-            if (!SolverObjective.didNotIncrease(positionResult.initialCost, positionResult.finalCost)) {
+            if (!SolverObjective.didNotIncrease(rawPositionResult.initialCost, rawPositionResult.finalCost)) {
                 throw IllegalStateException("The global camera-position solve increased its objective; no result was published.")
             }
             var reconstructionTracks = GlomapTrackFilter.filterAfterPositioning(
                 tracks = tracks,
-                cameraCentersByFrame = positionResult.frameCentersById,
+                cameraCentersByFrame = rawPositionResult.frameCentersById,
                 rotationsByFrame = rotations,
-                pointsByTrackId = positionResult.pointsByTrackId,
+                pointsByTrackId = rawPositionResult.pointsByTrackId,
                 intrinsics = effectiveIntrinsics,
                 hasPriorFocalLength = true
+            )
+            val positionNormalization = GlomapReconstructionNormalizer.normalize(
+                frameCentersById = rawPositionResult.frameCentersById,
+                pointsByTrackId = rawPositionResult.pointsByTrackId
+            )
+            val positionResult = rawPositionResult.copy(
+                frameCentersById = positionNormalization.frameCentersById,
+                pointsByTrackId = positionNormalization.pointsByTrackId
             )
 
             onProgress(
@@ -737,6 +749,21 @@ class GlobalReconstructionEngine(
             finalCenters = postRetriangulationState.frameCentersById
             finalRotations = postRetriangulationState.rotationsByFrame
             finalPointsForLandmarks = postRetriangulationState.pointsByTrackId
+            val postNormalization = postRetriangulationRefinement.normalization
+            if (postNormalization.applied) {
+                triangulated = triangulated.copy(
+                    landmarks = triangulated.landmarks.map { landmark ->
+                        val point = postNormalization.transformPoint(
+                            doubleArrayOf(
+                                landmark.position.x,
+                                landmark.position.y,
+                                landmark.position.z
+                            )
+                        )
+                        landmark.copy(position = Point3(point[0], point[1], point[2]))
+                    }
+                )
+            }
             projectionIntrinsics = PinholeIntrinsics(
                 fx = postRetriangulationState.intrinsics.fx,
                 fy = postRetriangulationState.intrinsics.fy,
@@ -842,6 +869,15 @@ class GlobalReconstructionEngine(
             val averageInlierRatio = verifiedPairs.map {
                 it.inlierMatches.size.toDouble() / it.matchCount.coerceAtLeast(1)
             }.average().takeIf { it.isFinite() } ?: 0.0
+            val covisibilityPruning = if (enableWeakConnectivityPruning) {
+                GlomapCovisibilityPruner.prune(
+                    tracks = reconstructionTracks,
+                    allFrameIds = (0 until frameCount).toSet(),
+                    activeFrameIds = activeFrames.toSet()
+                )
+            } else {
+                null
+            }
             onProgress(
                 CameraTrackingProgress(
                     frameIndex = frameCount,
@@ -914,7 +950,16 @@ class GlobalReconstructionEngine(
                     else -> "Pairs filtered; retained input focal length"
                 },
                 refinedCameraIntrinsics = refinedIntrinsics
-                    ?: effectiveIntrinsics.takeIf { calibrationResult?.focalLengthUpdated == true }
+                    ?: effectiveIntrinsics.takeIf { calibrationResult?.focalLengthUpdated == true },
+                globalCovisibilityPruningApplied = covisibilityPruning != null,
+                globalCovisibilityClusterIdByFrame =
+                    covisibilityPruning?.clusterIdByFrame ?: emptyMap(),
+                globalCovisibilityClusterCount = covisibilityPruning?.clusterCount ?: 0,
+                globalCovisibilityStrongThreshold =
+                    covisibilityPruning?.strongThreshold ?: Double.NaN,
+                globalCovisibilityEligiblePairCount =
+                    covisibilityPruning?.eligiblePairWeights?.size ?: 0,
+                globalCovisibilityBridgeIterations = covisibilityPruning?.bridgeIterations ?: 0
             )
         } finally {
             frames.filterNotNull().forEach { it.descriptors.release() }

@@ -6,7 +6,8 @@ class CameraReconstructionOptions(
     val customMaxFeatures: Int = 1800,
     val globalMaxFeatures: Int = 1400,
     val ratioThreshold: Float = 0.8f,
-    val maximumPairCount: Int = 420
+    val maximumPairCount: Int = 420,
+    val enableWeakConnectivityPruning: Boolean = false
 ) {
     init {
         require(customMaxFeatures in 400..5000)
@@ -28,7 +29,8 @@ class CameraReconstructionEngine(
         ReconstructionMode.GLOBAL -> GlobalReconstructionEngine(
             maxFeatures = options.globalMaxFeatures,
             ratioThreshold = options.ratioThreshold,
-            maximumPairCount = options.maximumPairCount
+            maximumPairCount = options.maximumPairCount,
+            enableWeakConnectivityPruning = options.enableWeakConnectivityPruning
         )
     }
 

@@ -60,7 +60,9 @@ class GlomapPostRetriangulationRefinementTest {
         assertEquals(2, result.acceptedBundleAdjustmentCount)
         assertTrue(result.firstBundleAdjustmentAccepted)
         assertTrue(result.secondBundleAdjustmentAccepted)
-        assertEquals(2.0, result.state.frameCentersById.getValue(0)[0], 0.0)
+        assertEquals(0.0, result.state.frameCentersById.getValue(0)[0], 0.0)
+        assertEquals(-2.0, result.state.pointsByTrackId.getValue(7)!![0], 0.0)
+        assertEquals(-2.0, result.normalization.translation[0], 0.0)
         assertEquals(10, result.state.tracks.single().id)
         assertEquals(8.0, result.lastAcceptedBundleAdjustment?.finalCost ?: Double.NaN, 0.0)
     }
@@ -122,7 +124,9 @@ class GlomapPostRetriangulationRefinementTest {
         assertEquals(1, result.acceptedBundleAdjustmentCount)
         assertTrue(result.firstBundleAdjustmentAccepted)
         assertFalse(result.secondBundleAdjustmentAccepted)
-        assertEquals(1.0, result.state.frameCentersById.getValue(0)[0], 0.0)
+        assertEquals(0.0, result.state.frameCentersById.getValue(0)[0], 0.0)
+        assertEquals(-1.0, result.state.pointsByTrackId.getValue(7)!![0], 0.0)
+        assertEquals(-1.0, result.normalization.translation[0], 0.0)
         assertEquals(9, result.state.tracks.single().id)
     }
 
