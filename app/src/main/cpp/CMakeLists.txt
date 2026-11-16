@@ -75,6 +75,7 @@ find_library(jnigraphics-lib jnigraphics)
 
 add_library(trackstudio_reconstruction SHARED
         glomap_positioner.cpp
+        global_positioning_core.cpp
         glomap_bundle_adjuster.cpp
         global_bundle_adjuster_core.cpp)
 target_link_libraries(trackstudio_reconstruction PRIVATE Ceres::ceres ${log-lib})

@@ -2,6 +2,7 @@
 #include "global_bundle_adjuster_core.h"
 #include "least_absolute_deviations_core.h"
 #include "optimization_robust_policy.h"
+#include "global_positioning_core.h"
 #include "positioning_direction_residual.h"
 
 #include <ceres/loss_function.h>
@@ -546,6 +547,109 @@ void TestBundleAdjustmentRejectsDisconnectedGraph() {
             "disconnected camera-track graph was accepted");
 }
 
+void TestGlobalPositioningCeresRecovery() {
+    const std::vector<double> truth_centers = {
+            0.0, 0.0, 0.0,
+            0.18, 0.02, 0.01,
+            0.37, 0.07, 0.02};
+    std::vector<double> truth_points;
+    for (int track = 0; track < 36; ++track) {
+        truth_points.insert(truth_points.end(), {
+                (static_cast<double>(track % 9) - 4.0) * 0.075,
+                (static_cast<double>(track / 9) - 1.5) * 0.075,
+                1.2 + 0.015 * (track % 5)});
+    }
+
+    const double world_offset[3] = {1.5, -2.0, 0.7};
+    std::vector<double> initial_centers = truth_centers;
+    for (size_t i = 0; i < initial_centers.size(); i += 3) {
+        initial_centers[i] += world_offset[0];
+        initial_centers[i + 1] += world_offset[1];
+        initial_centers[i + 2] += world_offset[2];
+    }
+    initial_centers[3] += 0.012;
+    initial_centers[4] -= 0.009;
+    initial_centers[8] += 0.015;
+
+    std::vector<double> initial_points = truth_points;
+    for (int track = 0; track < 36; ++track) {
+        initial_points[track * 3] += world_offset[0] + 0.006 * std::sin(0.4 * track);
+        initial_points[track * 3 + 1] += world_offset[1] + 0.005 * std::cos(0.3 * track);
+        initial_points[track * 3 + 2] += world_offset[2] + 0.008 * std::sin(0.2 * track);
+    }
+
+    std::vector<int> frame_indices;
+    std::vector<int> track_indices;
+    std::vector<double> directions;
+    std::vector<double> initial_scales;
+    std::vector<double> loss_scales;
+    for (int track = 0; track < 36; ++track) {
+        for (int frame = 0; frame < 3; ++frame) {
+            const double dx = truth_points[track * 3] - truth_centers[frame * 3];
+            const double dy = truth_points[track * 3 + 1] - truth_centers[frame * 3 + 1];
+            const double dz = truth_points[track * 3 + 2] - truth_centers[frame * 3 + 2];
+            directions.insert(directions.end(), {dx / dz, dy / dz, 1.0});
+            frame_indices.push_back(frame);
+            track_indices.push_back(track);
+            initial_scales.push_back(frame_indices.size() == 1 ? 1.0 / dz : 1.0);
+            loss_scales.push_back(frame == 1 ? 0.5 : 1.0);
+        }
+    }
+
+    tracking::GlobalPositioningResult result;
+    int progress_calls = 0;
+    Require(tracking::RunGlobalPositioning(
+                    initial_centers, initial_points, frame_indices, track_indices,
+                    directions, initial_scales, loss_scales, 100, 1, &result,
+                    [&progress_calls](int, int) {
+                        ++progress_calls;
+                        return true;
+                    }),
+            "GLOMAP point-to-camera Ceres solve did not produce a usable result");
+    Require(result.final_cost < result.initial_cost * 0.05,
+            "GLOMAP positioning did not substantially reduce its robust BATA cost");
+    Require(result.frame_centers.size() == truth_centers.size() &&
+                    result.points.size() == truth_points.size() &&
+                    result.scales.size() == frame_indices.size(),
+            "GLOMAP positioning returned malformed camera, point, or scale arrays");
+    Require(progress_calls > 0 && result.iterations > 0,
+            "GLOMAP positioning did not report native solver progress");
+    Require(std::abs(result.scales.front() - initial_scales.front()) < 1e-12,
+            "GLOMAP positioning changed the first fixed observation scale");
+    Require(std::all_of(result.scales.begin(), result.scales.end(),
+                        [](double scale) { return std::isfinite(scale) && scale >= 1e-5; }),
+            "GLOMAP positioning violated the observation-scale lower bound");
+
+    for (int frame = 1; frame < 3; ++frame) {
+        double recovered_relative[3];
+        double expected_relative[3];
+        for (int axis = 0; axis < 3; ++axis) {
+            recovered_relative[axis] = result.frame_centers[frame * 3 + axis] -
+                                       result.frame_centers[axis];
+            expected_relative[axis] = truth_centers[frame * 3 + axis] -
+                                      truth_centers[axis];
+        }
+        Require(Distance3(recovered_relative, expected_relative) < 0.02,
+                "GLOMAP positioning camera centers did not recover the synthetic baseline");
+    }
+
+    double mean_relative_point_error = 0.0;
+    for (int track = 0; track < 36; ++track) {
+        double recovered_relative[3];
+        double expected_relative[3];
+        for (int axis = 0; axis < 3; ++axis) {
+            recovered_relative[axis] = result.points[track * 3 + axis] -
+                                       result.frame_centers[axis];
+            expected_relative[axis] = truth_points[track * 3 + axis] -
+                                      truth_centers[axis];
+        }
+        mean_relative_point_error += Distance3(recovered_relative, expected_relative);
+    }
+    mean_relative_point_error /= 36.0;
+    Require(mean_relative_point_error < 0.02,
+            "GLOMAP positioning points did not recover the synthetic scene geometry");
+}
+
 void TestMalformedRotationIsRejected() {
     double scaled_identity[9] = {2, 0, 0, 0, 2, 0, 0, 0, 2};
     Require(!tracking::IsValidRotationMatrix(scaled_identity),
@@ -565,6 +669,7 @@ int main() {
         TestBundleAdjustmentJointRecoveryOutliersAndGauge();
         TestObservablePrincipalPointRefinement();
         TestBundleAdjustmentRejectsDisconnectedGraph();
+        TestGlobalPositioningCeresRecovery();
         TestMalformedRotationIsRejected();
         std::cout << "Native numerical regression tests passed.\n";
         return 0;
