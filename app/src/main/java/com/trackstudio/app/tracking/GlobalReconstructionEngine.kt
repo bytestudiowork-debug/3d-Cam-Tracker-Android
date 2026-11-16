@@ -472,7 +472,7 @@ class GlobalReconstructionEngine(
                     rotationsByFrame = finalRotations,
                     pointsByTrackId = finalPoints,
                     intrinsics = refinedIntrinsics ?: initialIntrinsics
-                ).tracks
+                )
                 triangulationPass = 1
                 triangulated = SfMTriangulator.triangulate(
                     reconstructionTracks, poses, resultCameraMatrix,
