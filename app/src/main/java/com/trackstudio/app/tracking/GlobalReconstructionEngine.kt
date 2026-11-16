@@ -828,25 +828,17 @@ internal class GlobalTrackGraphBuilder(
         }
 
         val candidates = observations.mapNotNull { (root, values) ->
-            if (values.size !in minimumObservations..maximumObservations ||
-                values.any { !it.x.isFinite() || !it.y.isFinite() }
-            ) return@mapNotNull null
-
+            if (values.any { !it.x.isFinite() || !it.y.isFinite() }) {
+                return@mapNotNull null
+            }
             val ordered = values.sortedWith(
                 compareBy<CameraFeatureObservation>({ it.frameIndex }, { it.x }, { it.y })
             )
-            var distinctFrames = 0
-            var previousFrame = Int.MIN_VALUE
-            for (observation in ordered) {
-                if (observation.frameIndex != previousFrame) {
-                    distinctFrames++
-                    previousFrame = observation.frameIndex
-                }
-            }
-            if (distinctFrames < minimumObservations || !isConsistentWithinFrames(ordered)) {
+            val consolidated = consolidateFrameObservations(ordered) ?: return@mapNotNull null
+            if (consolidated.size !in minimumObservations..maximumObservations) {
                 return@mapNotNull null
             }
-            TrackCandidate(minimumNodeByRoot[root], ordered)
+            TrackCandidate(minimumNodeByRoot[root], consolidated)
         }.sortedWith(
             compareByDescending<TrackCandidate> { it.observations.size }
                 .thenByDescending { it.stableId }
@@ -857,8 +849,12 @@ internal class GlobalTrackGraphBuilder(
         }
     }
 
-    private fun isConsistentWithinFrames(observations: List<CameraFeatureObservation>): Boolean {
+    /** A feature track can contribute at most one measurement from each camera. */
+    private fun consolidateFrameObservations(
+        observations: List<CameraFeatureObservation>
+    ): List<CameraFeatureObservation>? {
         val thresholdSquared = inconsistencyThresholdPx * inconsistencyThresholdPx
+        val consolidated = ArrayList<CameraFeatureObservation>()
         var groupStart = 0
         while (groupStart < observations.size) {
             val frameIndex = observations[groupStart].frameIndex
@@ -870,12 +866,33 @@ internal class GlobalTrackGraphBuilder(
                 for (secondIndex in firstIndex + 1 until groupEnd) {
                     val dx = observations[firstIndex].x - observations[secondIndex].x
                     val dy = observations[firstIndex].y - observations[secondIndex].y
-                    if (dx * dx + dy * dy > thresholdSquared) return false
+                    if (dx * dx + dy * dy > thresholdSquared) return null
                 }
             }
+            val frameObservations = observations.subList(groupStart, groupEnd)
+            val medianX = median(frameObservations.map { it.x })
+            val medianY = median(frameObservations.map { it.y })
+            // Keep an observed keypoint rather than inventing an averaged pixel.
+            // The input ordering makes equal-distance ties deterministic.
+            val representative = frameObservations.minByOrNull { observation ->
+                val dx = observation.x - medianX
+                val dy = observation.y - medianY
+                dx * dx + dy * dy
+            } ?: return null
+            consolidated += representative
             groupStart = groupEnd
         }
-        return true
+        return consolidated
+    }
+
+    private fun median(values: List<Double>): Double {
+        val sorted = values.sorted()
+        val middle = sorted.size / 2
+        return if (sorted.size % 2 == 1) {
+            sorted[middle]
+        } else {
+            sorted[middle - 1] * 0.5 + sorted[middle] * 0.5
+        }
     }
 
     private fun node(frame: Int, feature: Int): Long =

@@ -6,8 +6,10 @@ import org.junit.Test
 
 class GlobalTrackGraphBuilderTest {
     @Test
-    fun joinsVerifiedEdgesAndKeepsSameFrameObservationsAtTenPixelBoundary() {
-        val builder = joinedRepeatedFrameGraph()
+    fun consolidatesSameFrameObservationsAtTenPixelBoundary() {
+        val builder = joinedRepeatedFrameGraph(
+            GlobalTrackGraphBuilder(maximumObservations = 3)
+        )
         val tracks = builder.buildFromLocations(
             featureLocationsByFrame = mapOf(
                 0 to listOf(observation(0, 0.0, 0.0), observation(0, 10.0, 0.0)),
@@ -18,8 +20,9 @@ class GlobalTrackGraphBuilderTest {
         )
 
         assertEquals(1, tracks.size)
-        assertEquals(4, tracks.single().observations.size)
-        assertEquals(listOf(0, 0, 1, 2), tracks.single().observations.map { it.frameIndex })
+        assertEquals(3, tracks.single().observations.size)
+        assertEquals(listOf(0, 1, 2), tracks.single().observations.map { it.frameIndex })
+        assertEquals(0.0, tracks.single().observations.first().x, 0.0)
     }
 
     @Test
@@ -85,7 +88,9 @@ class GlobalTrackGraphBuilderTest {
         })
     }
 
-    private fun joinedRepeatedFrameGraph() = GlobalTrackGraphBuilder().apply {
+    private fun joinedRepeatedFrameGraph(
+        builder: GlobalTrackGraphBuilder = GlobalTrackGraphBuilder()
+    ) = builder.apply {
         addVerifiedMatches(0, 1, listOf(0 to 0))
         addVerifiedMatches(1, 2, listOf(0 to 0))
         addVerifiedMatches(0, 2, listOf(1 to 0))
