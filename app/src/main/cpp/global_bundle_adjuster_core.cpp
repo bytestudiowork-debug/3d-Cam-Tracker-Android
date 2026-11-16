@@ -227,7 +227,7 @@ bool RunGlobalBundleAdjustment(const std::vector<double>& initial_camera_centers
             scale_anchor = frame;
         }
     }
-    if (scale_anchor < 0 || maximum_distance < 1e-8) return false;
+    if (scale_anchor < 0 || maximum_distance <= 0.0) return false;
     const double world_scale = maximum_distance;
     for (size_t i = 0; i < centers.size(); i += 3) {
         for (int axis = 0; axis < 3; ++axis) centers[i + axis] = (centers[i + axis] - origin[axis]) / world_scale;
