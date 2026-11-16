@@ -1,6 +1,7 @@
 #include "camera_pose_refiner_core.h"
 #include "global_bundle_adjuster_core.h"
 #include "least_absolute_deviations_core.h"
+#include "epnp_pose_estimator_core.h"
 #include "optimization_robust_policy.h"
 #include "global_positioning_core.h"
 #include "positioning_direction_residual.h"
@@ -936,6 +937,59 @@ void TestViewGraphFocalCalibrationRecoveryAndEdgeFiltering() {
             "view-graph focal calibration accepted an all-zero fundamental matrix");
 }
 
+void TestEpnpPoseRecoveryWithSkewedPinholeIntrinsics() {
+    const tracking::EpnpCameraIntrinsics intrinsics{
+            920.0, 1.7, 640.0, 880.0, 360.0};
+    const Eigen::Matrix3d rotation = Eigen::AngleAxisd(
+            0.23, Eigen::Vector3d(0.2, -0.4, 0.9).normalized()).toRotationMatrix();
+    const Eigen::Vector3d translation(0.18, -0.12, 5.2);
+    std::vector<Eigen::Vector3d> world_points;
+    std::vector<Eigen::Vector2d> image_points;
+    for (int i = 0; i < 48; ++i) {
+        const Eigen::Vector3d point(
+                static_cast<double>((i * 37) % 101) / 50.0 - 1.0,
+                static_cast<double>((i * 29 + 7) % 97) / 48.0 - 1.0,
+                static_cast<double>((i * 17 + 3) % 89) / 44.0 - 1.0);
+        const Eigen::Vector3d camera_point = rotation * point + translation;
+        Require(camera_point.z() > 0.0,
+                "EPnP synthetic scene unexpectedly placed a point behind the camera");
+        const double x = camera_point.x() / camera_point.z();
+        const double y = camera_point.y() / camera_point.z();
+        world_points.push_back(point);
+        image_points.emplace_back(intrinsics.fx * x + intrinsics.skew * y + intrinsics.cx,
+                                  intrinsics.fy * y + intrinsics.cy);
+    }
+
+    tracking::EpnpPoseEstimate estimate;
+    Require(tracking::EstimateEpnpPose(image_points, world_points, intrinsics, &estimate),
+            "EPnP rejected a well-conditioned exact synthetic pose");
+    Require(RotationError(rotation.data(), estimate.rotation.data()) < 1e-5,
+            "EPnP failed to recover the synthetic world-to-camera rotation");
+    Require((estimate.translation - translation).norm() < 1e-5,
+            "EPnP failed to recover the synthetic world-to-camera translation");
+    Require(estimate.reprojection_error < 1e-4,
+            "EPnP did not achieve near-zero reprojection error on exact observations");
+}
+
+void TestEpnpRejectsPlanarControlPointDegeneracy() {
+    const tracking::EpnpCameraIntrinsics intrinsics{
+            800.0, 0.0, 320.0, 800.0, 240.0};
+    std::vector<Eigen::Vector3d> world_points;
+    std::vector<Eigen::Vector2d> image_points;
+    for (int y = -2; y <= 2; ++y) {
+        for (int x = -2; x <= 2; ++x) {
+            const Eigen::Vector3d point(0.4 * x, 0.35 * y, 0.0);
+            world_points.push_back(point);
+            image_points.emplace_back(
+                    intrinsics.fx * point.x() / 4.0 + intrinsics.cx,
+                    intrinsics.fy * point.y() / 4.0 + intrinsics.cy);
+        }
+    }
+    tracking::EpnpPoseEstimate estimate;
+    Require(!tracking::EstimateEpnpPose(image_points, world_points, intrinsics, &estimate),
+            "EPnP accepted a planar scene with rank-deficient control points");
+}
+
 void TestMalformedRotationIsRejected() {
     double scaled_identity[9] = {2, 0, 0, 0, 2, 0, 0, 0, 2};
     Require(!tracking::IsValidRotationMatrix(scaled_identity),
@@ -963,6 +1017,8 @@ int main() {
         TestGlobalPositioningRejectsRepeatedFrameObservation();
         TestGlobalPositioningRejectsZeroDirection();
         TestViewGraphFocalCalibrationRecoveryAndEdgeFiltering();
+        TestEpnpPoseRecoveryWithSkewedPinholeIntrinsics();
+        TestEpnpRejectsPlanarControlPointDegeneracy();
         TestMalformedRotationIsRejected();
         std::cout << "Native numerical regression tests passed.\n";
         return 0;

@@ -208,9 +208,9 @@ internal object IncrementalCameraRegistrar {
                 minimumInliers = minimumCorrespondences,
                 threshold = ransacReprojectionErrorPx.toDouble(),
                 maximumRefitRounds = CameraRegistrationPolicy.LOCAL_OPTIMIZATION_ROUNDS,
-                fitCandidates = { currentPose, consensusIndices ->
+                fitCandidates = { _, consensusIndices ->
                     fitPoseModel(
-                        currentPose, consensusIndices, points3d, points2d, cameraMatrix
+                        consensusIndices, points3d, points2d, cameraMatrix
                     )?.let(::listOf).orEmpty()
                 },
                 residual = { pose, index ->
@@ -424,7 +424,6 @@ internal object IncrementalCameraRegistrar {
     }
 
     private fun fitPoseModel(
-        current: PoseModel,
         indices: List<Int>,
         points3d: List<Point3>,
         points2d: List<Point>,
@@ -433,28 +432,19 @@ internal object IncrementalCameraRegistrar {
         if (indices.size < 4) return null
         val objectArray = indices.map(points3d::get).toTypedArray()
         val imageArray = indices.map(points2d::get).toTypedArray()
-        val objectSubset = MatOfPoint3f()
-        val imageSubset = MatOfPoint2f()
-        val distortion = MatOfDouble()
-        val rotationVector = Mat(3, 1, CvType.CV_64F)
+        // COLMAP uses EPnP as the non-minimal local estimator after minimal
+        // P3P sampling. Android keeps its existing P3P sampler and Ceres
+        // polishing, but uses the pinned EPnP model for each consensus refit.
+        val estimate = EpnpPoseEstimator.estimate(objectArray, imageArray, cameraMatrix)
+            ?: return null
+        val rotationMatrix = Mat(3, 3, CvType.CV_64F)
+        val rotationVector = Mat()
         val translationVector = Mat(3, 1, CvType.CV_64F)
         return try {
-            objectSubset.fromArray(*objectArray)
-            imageSubset.fromArray(*imageArray)
-            if (rotationVector.put(0, 0, *current.rotationVector) != 3 ||
-                translationVector.put(0, 0, *current.translation) != 3
+            if (rotationMatrix.put(0, 0, *estimate.rotation) != 9 ||
+                translationVector.put(0, 0, *estimate.translation) != 3
             ) return null
-            val solved = Calib3d.solvePnP(
-                objectSubset,
-                imageSubset,
-                cameraMatrix,
-                distortion,
-                rotationVector,
-                translationVector,
-                true,
-                Calib3d.SOLVEPNP_ITERATIVE
-            )
-            if (!solved) return null
+            Calib3d.Rodrigues(rotationMatrix, rotationVector)
             val refinement = CameraPoseRefiner.refine(
                 objectArray, imageArray, cameraMatrix, rotationVector, translationVector
             ) ?: return null
@@ -462,9 +452,7 @@ internal object IncrementalCameraRegistrar {
         } catch (_: CvException) {
             null
         } finally {
-            objectSubset.release()
-            imageSubset.release()
-            distortion.release()
+            rotationMatrix.release()
             rotationVector.release()
             translationVector.release()
         }

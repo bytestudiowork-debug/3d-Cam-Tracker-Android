@@ -86,6 +86,8 @@ target_compile_options(trackstudio_reconstruction PRIVATE -O3 -fno-fast-math)
 add_library(trackstudio_camera SHARED
         camera_pose_refiner.cpp
         camera_pose_refiner_core.cpp
+        epnp_pose_estimator_jni.cpp
+        epnp_pose_estimator_core.cpp
         least_absolute_deviations_core.cpp
         native_l1_solver_jni.cpp
         native_sift_extractor_jni.cpp
