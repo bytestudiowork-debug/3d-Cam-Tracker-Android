@@ -238,10 +238,22 @@ internal object IncrementalCameraRegistrar {
             inlierImagePoints.fromArray(*inlierImageArray)
 
             Calib3d.Rodrigues(rotationVector, rotationMatrix)
-            val rotation = DoubleArray(9)
-            val translation = DoubleArray(3)
-            rotationMatrix.get(0, 0, rotation)
-            translationVector.get(0, 0, translation)
+            val rotation = OpenCvMatrixReadback.readCv64F(rotationMatrix, 3, 3)
+                ?: return CameraRegistrationResult.rejected(
+                    frameIndex,
+                    correspondenceCount,
+                    "Could not read the refined PnP rotation",
+                    inlierCount,
+                    inlierRatio
+                )
+            val translation = OpenCvMatrixReadback.readCv64F(translationVector, 3, 1)
+                ?: return CameraRegistrationResult.rejected(
+                    frameIndex,
+                    correspondenceCount,
+                    "Could not read the refined PnP translation",
+                    inlierCount,
+                    inlierRatio
+                )
             val positiveDepthCount = inlierIds.count { index ->
                 val point = points3d[index]
                 val depth = rotation[6] * point.x + rotation[7] * point.y +

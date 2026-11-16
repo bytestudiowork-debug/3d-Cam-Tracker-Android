@@ -248,6 +248,14 @@ internal object OpenCvInitialPairEvaluator {
                     return rejected(firstFrame, secondFrame, "Invalid cheirality inlier mask", matchCount)
                 }
                 val inlierCount = inlierIndices.size
+                val t = OpenCvMatrixReadback.readCv64F(translation, 3, 1)
+                    ?: return rejected(
+                        firstFrame, secondFrame, "Invalid relative translation readback", matchCount
+                    )
+                val relativeRotation = OpenCvMatrixReadback.readCv64F(rotation, 3, 3)
+                    ?: return rejected(
+                        firstFrame, secondFrame, "Invalid relative rotation readback", matchCount
+                    )
                 val essentialToFundamentalRatio = if (fundamentalInlierCount == 0) {
                     Double.MAX_VALUE
                 } else {
@@ -261,7 +269,7 @@ internal object OpenCvInitialPairEvaluator {
                 val parallax = inlierIndices.map { index ->
                     rayAngleDegrees(
                         matchedFirst[index], matchedSecond[index],
-                        rotation, cameraMatrix
+                        relativeRotation, cameraMatrix
                     )
                 }.filter { it.isFinite() }.sorted()
 
@@ -271,19 +279,12 @@ internal object OpenCvInitialPairEvaluator {
                 val medianParallax = percentile(parallax, 0.50)
                 val upperQuartileParallax = percentile(parallax, 0.75)
 
-                val t = DoubleArray(3)
-                translation.get(0, 0, t)
                 val translationNorm = sqrt(t.sumOf { it * it })
                 if (!translationNorm.isFinite() || translationNorm <= 1e-12 || t.any { !it.isFinite() }) {
                     return rejected(firstFrame, secondFrame, "Invalid relative translation", matchCount)
                 }
                 val forwardMotionRatio = (kotlin.math.abs(t[2]) / translationNorm).coerceIn(0.0, 1.0)
 
-                val relativeRotation = DoubleArray(9)
-                rotation.get(0, 0, relativeRotation)
-                if (relativeRotation.any { !it.isFinite() }) {
-                    return rejected(firstFrame, secondFrame, "Invalid relative rotation", matchCount)
-                }
                 val relativeTranslationDirection = DoubleArray(3) { t[it] / translationNorm }
                 val candidate = InitialPairCandidate(
                     firstFrame = firstFrame,
@@ -357,7 +358,7 @@ internal object OpenCvInitialPairEvaluator {
     private fun rayAngleDegrees(
         first: org.opencv.core.Point,
         second: org.opencv.core.Point,
-        rotation: Mat,
+        rotationValues: DoubleArray,
         cameraMatrix: Mat
     ): Double {
         val fx = cameraMatrix.get(0, 0)[0]
@@ -376,14 +377,18 @@ internal object OpenCvInitialPairEvaluator {
 
         val a = normalize(first)
         val bCamera = normalize(second)
-        val r = DoubleArray(9)
-        rotation.get(0, 0, r)
         // recoverPose returns X2 = R * X1 + t; rotate the second ray
         // back into camera-1 coordinates before comparing viewing rays.
         val b = doubleArrayOf(
-            r[0] * bCamera[0] + r[3] * bCamera[1] + r[6] * bCamera[2],
-            r[1] * bCamera[0] + r[4] * bCamera[1] + r[7] * bCamera[2],
-            r[2] * bCamera[0] + r[5] * bCamera[1] + r[8] * bCamera[2]
+            rotationValues[0] * bCamera[0] +
+                rotationValues[3] * bCamera[1] +
+                rotationValues[6] * bCamera[2],
+            rotationValues[1] * bCamera[0] +
+                rotationValues[4] * bCamera[1] +
+                rotationValues[7] * bCamera[2],
+            rotationValues[2] * bCamera[0] +
+                rotationValues[5] * bCamera[1] +
+                rotationValues[8] * bCamera[2]
         )
         val dot = (a[0] * b[0] + a[1] * b[1] + a[2] * b[2])
             .coerceIn(-1.0, 1.0)

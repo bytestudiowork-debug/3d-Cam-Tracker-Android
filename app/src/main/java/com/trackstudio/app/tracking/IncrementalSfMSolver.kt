@@ -1347,10 +1347,8 @@ internal class IncrementalSfMSolver(
                     }
                     val chosenR = bestR ?: return null
                     val chosenT = bestT ?: return null
-                    val rValues = DoubleArray(9)
-                    val tValues = DoubleArray(3)
-                    chosenR.get(0, 0, rValues)
-                    chosenT.get(0, 0, tValues)
+                    val rValues = OpenCvMatrixReadback.readCv64F(chosenR, 3, 3) ?: return null
+                    val tValues = OpenCvMatrixReadback.readCv64F(chosenT, 3, 1) ?: return null
                     return PairGeometry(inlierPairs, rValues, tValues, bestCount)
                 } finally {
                     bestMask?.release()

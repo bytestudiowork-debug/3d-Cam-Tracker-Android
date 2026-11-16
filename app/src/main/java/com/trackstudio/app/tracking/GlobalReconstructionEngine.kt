@@ -659,10 +659,8 @@ class GlobalReconstructionEngine(
                     }
                 }
                 if (bestInliers < 30 || bestRotation.empty() || bestTranslation.empty()) return null
-                val rotationValues = DoubleArray(9)
-                val translationValues = DoubleArray(3)
-                bestRotation.get(0, 0, rotationValues)
-                bestTranslation.get(0, 0, translationValues)
+                val rotationValues = OpenCvMatrixReadback.readCv64F(bestRotation, 3, 3) ?: return null
+                val translationValues = OpenCvMatrixReadback.readCv64F(bestTranslation, 3, 1) ?: return null
                 val translationNorm = sqrt(translationValues.sumOf { it * it })
                 if (!translationNorm.isFinite() || translationNorm < 1e-9) return null
                 for (i in translationValues.indices) translationValues[i] /= translationNorm
