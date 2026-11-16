@@ -568,6 +568,42 @@ void TestBundleAdjustmentRejectsRepeatedFrameObservation() {
             "bundle adjustment accepted duplicate measurements from one frame");
 }
 
+void TestBundleAdjustmentHandlesLargeFiniteWorldScale() {
+    const std::vector<double> centers = {
+            0.0, 0.0, 0.0, 1e200, 0.0, 0.0, 2e200, 0.0, 0.0};
+    const std::vector<double> identity = {
+            1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0};
+    std::vector<double> rotations;
+    for (int frame = 0; frame < 3; ++frame) {
+        rotations.insert(rotations.end(), identity.begin(), identity.end());
+    }
+    const std::vector<double> points = {1e200, 0.0, 5e200};
+    const std::vector<int> frame_indices = {0, 1, 2};
+    const std::vector<int> track_indices = {0, 0, 0};
+    const std::vector<double> image_points = {
+            780.0, 360.0, 640.0, 360.0, 500.0, 360.0};
+    const std::vector<double> intrinsics = {700.0, 0.0, 640.0, 700.0, 360.0};
+    tracking::GlobalBundleAdjustmentResult result;
+
+    Require(tracking::RunGlobalBundleAdjustment(
+                    centers, rotations, points, frame_indices, track_indices,
+                    image_points, intrinsics, 30, 1, &result),
+            "bundle adjustment rejected a valid finite large-world scene");
+    Require(result.positive_depth_ratio == 1.0,
+            "large-world bundle adjustment lost positive camera depth");
+    const auto all_finite = [](const std::vector<double>& values) {
+        return std::all_of(values.begin(), values.end(),
+                           [](double value) { return std::isfinite(value); });
+    };
+    Require(all_finite(result.camera_centers) && all_finite(result.rotations) &&
+                    all_finite(result.points) && all_finite(result.intrinsics),
+            "large-world bundle adjustment returned non-finite scene values");
+    Require(std::abs(result.camera_centers[3] / 1e200 - 1.0) < 1e-8 &&
+                    std::abs(result.camera_centers[6] / 1e200 - 2.0) < 1e-8 &&
+                    std::abs(result.points[2] / 1e200 - 5.0) < 1e-8,
+            "large-world normalization changed the recovered scene geometry");
+}
+
 void TestGlobalPositioningCeresRecovery() {
     const std::vector<double> truth_centers = {
             0.0, 0.0, 0.0,
@@ -756,6 +792,7 @@ int main() {
         TestObservablePrincipalPointRefinement();
         TestBundleAdjustmentRejectsDisconnectedGraph();
         TestBundleAdjustmentRejectsRepeatedFrameObservation();
+        TestBundleAdjustmentHandlesLargeFiniteWorldScale();
         TestGlobalPositioningCeresRecovery();
         TestGlobalPositioningRejectsDisconnectedTrackGraph();
         TestGlobalPositioningRejectsRepeatedFrameObservation();

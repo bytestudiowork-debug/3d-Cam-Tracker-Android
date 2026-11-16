@@ -215,25 +215,27 @@ bool RunGlobalBundleAdjustment(const std::vector<double>& initial_camera_centers
     std::vector<double> points = initial_points;
     const double origin[3] = {centers[0], centers[1], centers[2]};
     int scale_anchor = -1;
-    double maximum_distance_squared = 0.0;
+    double maximum_distance = 0.0;
     for (int frame = 1; frame < frame_count; ++frame) {
         const double dx = centers[frame * 3] - origin[0];
         const double dy = centers[frame * 3 + 1] - origin[1];
         const double dz = centers[frame * 3 + 2] - origin[2];
-        const double distance_squared = dx * dx + dy * dy + dz * dz;
-        if (distance_squared > maximum_distance_squared) {
-            maximum_distance_squared = distance_squared;
+        const double distance = std::hypot(dx, dy, dz);
+        if (!std::isfinite(distance)) return false;
+        if (distance > maximum_distance) {
+            maximum_distance = distance;
             scale_anchor = frame;
         }
     }
-    if (scale_anchor < 0 || maximum_distance_squared < 1e-16) return false;
-    const double world_scale = std::sqrt(maximum_distance_squared);
+    if (scale_anchor < 0 || maximum_distance < 1e-8) return false;
+    const double world_scale = maximum_distance;
     for (size_t i = 0; i < centers.size(); i += 3) {
         for (int axis = 0; axis < 3; ++axis) centers[i + axis] = (centers[i + axis] - origin[axis]) / world_scale;
     }
     for (size_t i = 0; i < points.size(); i += 3) {
         for (int axis = 0; axis < 3; ++axis) points[i + axis] = (points[i + axis] - origin[axis]) / world_scale;
     }
+    if (!AllFinite(centers) || !AllFinite(points)) return false;
 
     std::vector<double> angle_axes(static_cast<size_t>(frame_count) * 3);
     for (int frame = 0; frame < frame_count; ++frame) {
