@@ -4,6 +4,7 @@ import com.trackstudio.app.tracking.glomap.GlomapGlobalPositioningInitializer
 import com.trackstudio.app.tracking.glomap.GlomapGlobalPositioningProblemBuilder
 import com.trackstudio.app.tracking.glomap.GlomapGlobalBundleAdjuster
 import com.trackstudio.app.tracking.glomap.GlomapNativeSolver
+import com.trackstudio.app.tracking.glomap.GlomapTrackFilter
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.async
 import kotlinx.coroutines.awaitAll
@@ -284,6 +285,9 @@ class GlobalReconstructionEngine(
             require(fx.isFinite() && fy.isFinite() && fx > 0.0 && fy > 0.0) {
                 "Camera intrinsics contain invalid focal lengths."
             }
+            val initialIntrinsics = CameraIntrinsics(
+                fx = fx, skew = skew, cx = cx, fy = fy, cy = cy
+            )
 
             val positionTracks = tracks.map { track ->
                 val observations = track.observations.mapNotNull { observation ->
@@ -338,6 +342,14 @@ class GlobalReconstructionEngine(
             if (!SolverObjective.didNotIncrease(positionResult.initialCost, positionResult.finalCost)) {
                 throw IllegalStateException("The global camera-position solve increased its objective; no result was published.")
             }
+            var reconstructionTracks = GlomapTrackFilter.filterAfterPositioning(
+                tracks = tracks,
+                cameraCentersByFrame = positionResult.frameCentersById,
+                rotationsByFrame = rotations,
+                pointsByTrackId = positionResult.pointsByTrackId,
+                intrinsics = initialIntrinsics,
+                hasPriorFocalLength = true
+            )
 
             onProgress(
                 CameraTrackingProgress(
@@ -354,7 +366,7 @@ class GlobalReconstructionEngine(
                     frameCentersById = positionResult.frameCentersById,
                     rotationsByFrame = rotations,
                     pointsByTrackId = positionResult.pointsByTrackId,
-                    tracks = tracks,
+                    tracks = reconstructionTracks,
                     cameraMatrix = cameraMatrix,
                     imageWidth = frameSizes.single().first,
                     imageHeight = frameSizes.single().second,
@@ -377,6 +389,15 @@ class GlobalReconstructionEngine(
             val finalRotations = bundleResult?.rotationsByFrame ?: rotations
             val finalPoints = bundleResult?.pointsByTrackId ?: positionResult.pointsByTrackId
             val refinedIntrinsics = bundleResult?.intrinsics
+            if (bundleResult != null) {
+                reconstructionTracks = GlomapTrackFilter.filterAfterBundleAdjustment(
+                    tracks = reconstructionTracks,
+                    cameraCentersByFrame = finalCenters,
+                    rotationsByFrame = finalRotations,
+                    pointsByTrackId = finalPoints,
+                    intrinsics = refinedIntrinsics ?: initialIntrinsics
+                )
+            }
             val resultCameraMatrix = if (refinedIntrinsics != null) {
                 Mat(3, 3, CvType.CV_64F).also { matrix ->
                     refinedCameraMatrix = matrix
@@ -406,7 +427,7 @@ class GlobalReconstructionEngine(
                 )
             )
             val triangulated = SfMTriangulator.triangulate(
-                tracks, poses, resultCameraMatrix,
+                reconstructionTracks, poses, resultCameraMatrix,
                 onProgress = { completed, total ->
                     publishProgress("Triangulating landmarks " + completed + "/" + total, 0.94f + 0.02f * completed.toFloat() / total.coerceAtLeast(1))
                 }
@@ -421,7 +442,7 @@ class GlobalReconstructionEngine(
                 cx = resultCameraMatrix.get(0, 2)[0],
                 cy = resultCameraMatrix.get(1, 2)[0]
             )
-            val bundleLandmarks = tracks.mapNotNull trackLoop@ { track ->
+            val bundleLandmarks = reconstructionTracks.mapNotNull trackLoop@ { track ->
                 val point = finalPoints[track.id] ?: return@trackLoop null
                 val errors = track.observations.mapNotNull observationLoop@ { observation ->
                     val pose = poseByFrame[observation.frameIndex] ?: return@observationLoop null
@@ -444,7 +465,7 @@ class GlobalReconstructionEngine(
                 ) mergedLandmarks[candidate.trackId] = candidate
             }
             val refinedLandmarks = MobileBundleAdjuster.optimizeLandmarks(
-                featureTracks = tracks,
+                featureTracks = reconstructionTracks,
                 landmarks = mergedLandmarks.values.toList(),
                 poses = poses,
                 cameraMatrix = resultCameraMatrix,
@@ -457,11 +478,11 @@ class GlobalReconstructionEngine(
             // was O(frames × tracks × observations), which became a long silent
             // tail on dense 99-frame reconstructions.
             val frameTrackCounts = IntArray(frameCount)
-            tracks.forEachIndexed { trackIndex, track ->
+            reconstructionTracks.forEachIndexed { trackIndex, track ->
                 if (trackIndex % 512 == 0) {
                     publishProgress(
-                        "Finalizing camera diagnostics " + trackIndex + "/" + tracks.size,
-                        0.995f + 0.004f * trackIndex.toFloat() / tracks.size.coerceAtLeast(1)
+                        "Finalizing camera diagnostics " + trackIndex + "/" + reconstructionTracks.size,
+                        0.995f + 0.004f * trackIndex.toFloat() / reconstructionTracks.size.coerceAtLeast(1)
                     )
                 }
                 track.observations.asSequence().map { it.frameIndex }.distinct().forEach { frame ->
@@ -508,7 +529,7 @@ class GlobalReconstructionEngine(
                 totalInliers = totalInliers,
                 inlierRatio = averageInlierRatio,
                 isCameraMotionEstimated = poses.size >= 3,
-                featureTracks = tracks,
+                featureTracks = reconstructionTracks,
                 landmarks = refinedLandmarks,
                 triangulationStats = triangulated.stats,
                 initialPairFrames = activePairs.maxByOrNull { it.inlierMatches.size }
