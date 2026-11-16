@@ -169,14 +169,14 @@ class FeatureTrackBuilderTest {
         )
         builder.breakContinuity()
         builder.addInlierMatches(
-            frameIndex = 2,
+            frameIndex = 3,
             previousKeypoints = arrayOf(adjacentPrevious),
             currentKeypoints = arrayOf(recovered),
             matches = listOf(0 to 0)
         )
         builder.addInlierMatchesFromFrame(
             sourceFrame = 1,
-            frameIndex = 2,
+            frameIndex = 3,
             sourceKeypoints = arrayOf(anchor),
             currentKeypoints = arrayOf(recovered),
             matches = listOf(0 to 0)
@@ -184,7 +184,7 @@ class FeatureTrackBuilderTest {
 
         val tracks = builder.build()
         assertEquals(1, tracks.size)
-        assertEquals(listOf(0, 1, 2), tracks.single().observations.map { it.frameIndex })
+        assertEquals(listOf(0, 1, 3), tracks.single().observations.map { it.frameIndex })
         assertEquals(14.0, tracks.single().observations.last().x, 0.0)
         assertEquals(11.0, tracks.single().observations.last().y, 0.0)
     }
