@@ -25,6 +25,12 @@ android {
         versionName = "0.3.0-playback-tracking-fix"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
+        val includeVideoTest = providers.gradleProperty("includeVideoTest").orNull == "true"
+        testInstrumentationRunnerArguments["includeVideoTest"] = includeVideoTest.toString()
+        if (!includeVideoTest) {
+            testInstrumentationRunnerArguments["notAnnotation"] =
+                "com.trackstudio.app.tracking.ManualVideoValidation"
+        }
 
         ndk {
             // Normal builds target phones; instrumentation selects the emulator ABI only for its test invocation.

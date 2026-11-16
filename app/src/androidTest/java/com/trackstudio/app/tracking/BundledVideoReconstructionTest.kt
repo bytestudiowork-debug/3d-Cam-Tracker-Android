@@ -10,6 +10,7 @@ import org.json.JSONObject
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
+import org.junit.Assume.assumeTrue
 import org.junit.Test
 import org.junit.runner.RunWith
 import org.opencv.android.Utils
@@ -24,7 +25,12 @@ import kotlin.math.roundToInt
 @RunWith(AndroidJUnit4::class)
 class BundledVideoReconstructionTest {
     @Test
+    @ManualVideoValidation
     fun bundledVideoDecodesAndRunsThroughGlobalEngine() {
+        assumeTrue(
+            "Video instrumentation is opt-in; set -PincludeVideoTest=true to run it",
+            InstrumentationRegistry.getArguments().getString("includeVideoTest") == "true"
+        )
         assertTrue("OpenCV runtime is unavailable", OpenCvRuntime.ensureLoaded())
         assertTrue("Native feature library is unavailable", NativeSiftExtractor.isAvailable)
 

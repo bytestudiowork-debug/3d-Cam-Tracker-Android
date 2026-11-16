@@ -18,12 +18,52 @@ jdoubleArray EmptyResult(JNIEnv* env) {
     return env->NewDoubleArray(0);
 }
 
+jdoubleArray JointCameraBundleAdjusterSolve(
+        JNIEnv* env,
+        jdoubleArray camera_centers_array,
+        jdoubleArray rotations_array,
+        jdoubleArray points_array,
+        jintArray frame_indices_array,
+        jintArray track_indices_array,
+        jdoubleArray image_points_array,
+        jdoubleArray intrinsics_array,
+        jboolean refine_principal_point,
+        jint image_width,
+        jint image_height,
+        jint max_iterations,
+        jint num_threads,
+        jobject progress_listener);
+
 }  // namespace
 
 extern "C" JNIEXPORT jdoubleArray JNICALL
 Java_com_trackstudio_app_tracking_glomap_GlomapGlobalBundleAdjuster_nativeSolve(
         JNIEnv* env,
         jobject,
+        jdoubleArray camera_centers_array,
+        jdoubleArray rotations_array,
+        jdoubleArray points_array,
+        jintArray frame_indices_array,
+        jintArray track_indices_array,
+        jdoubleArray image_points_array,
+        jdoubleArray intrinsics_array,
+        jboolean refine_principal_point,
+        jint image_width,
+        jint image_height,
+        jint max_iterations,
+        jint num_threads,
+        jobject progress_listener) {
+    return JointCameraBundleAdjusterSolve(
+            env, camera_centers_array, rotations_array, points_array,
+            frame_indices_array, track_indices_array, image_points_array,
+            intrinsics_array, refine_principal_point, image_width, image_height,
+            max_iterations, num_threads, progress_listener);
+}
+
+namespace {
+
+jdoubleArray JointCameraBundleAdjusterSolve(
+        JNIEnv* env,
         jdoubleArray camera_centers_array,
         jdoubleArray rotations_array,
         jdoubleArray points_array,
@@ -136,4 +176,30 @@ Java_com_trackstudio_app_tracking_glomap_GlomapGlobalBundleAdjuster_nativeSolve(
                             "Unknown native solve exception.");
         return EmptyResult(env);
     }
+}
+
+}  // namespace
+
+extern "C" JNIEXPORT jdoubleArray JNICALL
+Java_com_trackstudio_app_tracking_JointCameraBundleAdjuster_nativeSolve(
+        JNIEnv* env,
+        jobject,
+        jdoubleArray camera_centers_array,
+        jdoubleArray rotations_array,
+        jdoubleArray points_array,
+        jintArray frame_indices_array,
+        jintArray track_indices_array,
+        jdoubleArray image_points_array,
+        jdoubleArray intrinsics_array,
+        jboolean refine_principal_point,
+        jint image_width,
+        jint image_height,
+        jint max_iterations,
+        jint num_threads,
+        jobject progress_listener) {
+    return JointCameraBundleAdjusterSolve(
+            env, camera_centers_array, rotations_array, points_array,
+            frame_indices_array, track_indices_array, image_points_array,
+            intrinsics_array, refine_principal_point, image_width, image_height,
+            max_iterations, num_threads, progress_listener);
 }

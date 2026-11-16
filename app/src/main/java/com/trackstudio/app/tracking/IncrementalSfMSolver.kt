@@ -14,6 +14,7 @@ import org.opencv.imgproc.Imgproc
 import org.opencv.core.Point3
 import com.trackstudio.app.tracking.glomap.GlomapGlobalPositioningProblemBuilder
 import com.trackstudio.app.tracking.glomap.GlomapNativeSolver
+import kotlin.math.hypot
 import kotlin.math.max
 
 /**
@@ -855,9 +856,150 @@ internal class IncrementalSfMSolver(
                 globalPositioningStatus = "Skipped: fewer than 10 tracks with 3 registered views"
             }
 
+            var jointBundleAdjustmentApplied = false
+            var jointBundleAdjustmentInitialCost = Double.NaN
+            var jointBundleAdjustmentFinalCost = Double.NaN
+            var jointBundleAdjustmentIterations = 0
+            var jointBundleAdjustmentStatus = "Skipped: insufficient registered observations"
+            var jointBundleAdjustmentPositiveDepthRatio = Double.NaN
+            var jointBundleAdjustmentPrincipalPointRefinementEnabled = false
+            var refinedCameraIntrinsics: CameraIntrinsics? = null
+
+            val jointTracks = trackBuilder.build(trackIds = landmarksByTrack.keys)
+            val jointPoseByFrame = poseByFrame.filterNotNull().filter { pose ->
+                pose.status != CameraPoseStatus.HELD_LAST_VALID &&
+                    pose.status != CameraPoseStatus.UNREGISTERED
+            }.associateBy { it.frameIndex }
+            val jointCenters = jointPoseByFrame.mapValues { (_, pose) -> cameraCenter(pose) }
+            val jointRotations = jointPoseByFrame.mapValues { (_, pose) -> pose.rotation }
+            val jointPoints = landmarksByTrack.mapValues { (_, landmark) ->
+                doubleArrayOf(landmark.position.x, landmark.position.y, landmark.position.z)
+            }
+
+            when {
+                jointPoseByFrame.size < 3 || jointTracks.count { track ->
+                    track.observations.count { it.frameIndex in jointPoseByFrame } >= 3
+                } < 20 -> {
+                    jointBundleAdjustmentStatus = "Skipped: fewer than 20 tracks with three registered views"
+                }
+                else -> {
+                    onProgress(
+                        CameraTrackingProgress(
+                            frameCount, frameCount, "Joint camera/point refinement · Ceres",
+                            overallFraction = 0.99f,
+                            completedFrames = frameCount,
+                            totalFrames = frameCount
+                        )
+                    )
+                    try {
+                        val candidate = JointCameraBundleAdjuster().solve(
+                            frameCentersById = jointCenters,
+                            rotationsByFrame = jointRotations,
+                            pointsByTrackId = jointPoints,
+                            tracks = jointTracks,
+                            cameraMatrix = cameraMatrix,
+                            imageWidth = firstFrame.cols(),
+                            imageHeight = firstFrame.rows(),
+                            maxIterations = 45,
+                            numThreads = Runtime.getRuntime().availableProcessors().coerceIn(1, 4)
+                        )
+                        if (candidate == null) {
+                            jointBundleAdjustmentStatus = "Skipped: insufficient connected observations"
+                        } else {
+                            jointBundleAdjustmentInitialCost = candidate.initialCost
+                            jointBundleAdjustmentFinalCost = candidate.finalCost
+                            jointBundleAdjustmentIterations = candidate.iterations
+                            jointBundleAdjustmentPositiveDepthRatio = candidate.positiveDepthRatio
+                            jointBundleAdjustmentPrincipalPointRefinementEnabled =
+                                candidate.principalPointRefinementEnabled
+
+                            if (SolverObjective.didNotIncrease(
+                                    candidate.initialCost,
+                                    candidate.finalCost
+                                )
+                            ) {
+                                for ((frameId, center) in candidate.frameCentersById) {
+                                    val oldPose = poseByFrame.getOrNull(frameId) ?: continue
+                                    val rotation = candidate.rotationsByFrame[frameId] ?: continue
+                                    val translation = doubleArrayOf(
+                                        -(rotation[0] * center[0] + rotation[1] * center[1] + rotation[2] * center[2]),
+                                        -(rotation[3] * center[0] + rotation[4] * center[1] + rotation[5] * center[2]),
+                                        -(rotation[6] * center[0] + rotation[7] * center[1] + rotation[8] * center[2])
+                                    )
+                                    poseByFrame[frameId] = oldPose.copy(
+                                        rotation = rotation.copyOf(),
+                                        translation = translation
+                                    )
+                                }
+                                for ((trackId, point) in candidate.pointsByTrackId) {
+                                    val old = landmarksByTrack[trackId] ?: continue
+                                    landmarksByTrack[trackId] = old.copy(
+                                        position = Point3(point[0], point[1], point[2])
+                                    )
+                                }
+
+                                val intrinsics = PinholeIntrinsics(
+                                    fx = candidate.intrinsics.fx,
+                                    fy = candidate.intrinsics.fy,
+                                    skew = candidate.intrinsics.skew,
+                                    cx = candidate.intrinsics.cx,
+                                    cy = candidate.intrinsics.cy
+                                )
+                                for (track in jointTracks) {
+                                    val landmark = landmarksByTrack[track.id] ?: continue
+                                    val point = doubleArrayOf(
+                                        landmark.position.x,
+                                        landmark.position.y,
+                                        landmark.position.z
+                                    )
+                                    val errors = track.observations.mapNotNull { observation ->
+                                        val pose = poseByFrame.getOrNull(observation.frameIndex)
+                                            ?: return@mapNotNull null
+                                        val r = pose.rotation
+                                        val t = pose.translation
+                                        val cameraPoint = doubleArrayOf(
+                                            r[0] * point[0] + r[1] * point[1] + r[2] * point[2] + t[0],
+                                            r[3] * point[0] + r[4] * point[1] + r[5] * point[2] + t[1],
+                                            r[6] * point[0] + r[7] * point[1] + r[8] * point[2] + t[2]
+                                        )
+                                        if (cameraPoint.any { !it.isFinite() } || cameraPoint[2] <= 1e-5) {
+                                            return@mapNotNull null
+                                        }
+                                        val pixel = CameraProjectionMath.project(cameraPoint, intrinsics)
+                                        hypot(pixel[0] - observation.x, pixel[1] - observation.y)
+                                            .takeIf {
+                                                it.isFinite() &&
+                                                    it <= MobileBundleAdjuster.MAX_OBSERVATION_ERROR_PX
+                                            }
+                                    }
+                                    if (errors.size >= 2) {
+                                        landmarksByTrack[track.id] = landmark.copy(
+                                            observationCount = errors.size,
+                                            meanReprojectionErrorPx = errors.average()
+                                        )
+                                    }
+                                }
+                                refinedCameraIntrinsics = candidate.intrinsics
+                                jointBundleAdjustmentApplied = true
+                                jointBundleAdjustmentStatus = "Applied"
+                            } else {
+                                jointBundleAdjustmentStatus =
+                                    "No cost improvement; kept incremental solution"
+                            }
+                        }
+                    } catch (failure: LinkageError) {
+                        jointBundleAdjustmentStatus =
+                            "Native solver unavailable: ${failure.message ?: "library load failed"}"
+                    } catch (failure: RuntimeException) {
+                        jointBundleAdjustmentStatus =
+                            "Ceres solve skipped: ${failure.message ?: "runtime error"}"
+                    }
+                }
+            }
+
             onProgress(
                 CameraTrackingProgress(
-                    frameCount, frameCount, "Global positioning complete",
+                    frameCount, frameCount, "Joint refinement complete",
                     overallFraction = 0.99f,
                     completedFrames = frameCount,
                     totalFrames = frameCount
@@ -886,9 +1028,18 @@ internal class IncrementalSfMSolver(
             }
 
             val allCorrespondences = max(1, totalCorrespondences)
-            val finalStats = SfMTriangulator.triangulate(
-                tracks, poseByFrame.filterNotNull(), cameraMatrix
-            ).stats
+            val finalCameraMatrix = refinedCameraIntrinsics?.let { intrinsics ->
+                Mat(3, 3, CvType.CV_64F).also { matrix ->
+                    matrix.put(0, 0, *intrinsics.toRowMajorMatrix())
+                }
+            } ?: cameraMatrix
+            val finalStats = try {
+                SfMTriangulator.triangulate(
+                    tracks, poseByFrame.filterNotNull(), finalCameraMatrix
+                ).stats
+            } finally {
+                if (finalCameraMatrix !== cameraMatrix) finalCameraMatrix.release()
+            }
             onProgress(CameraTrackingProgress(
                 frameCount, frameCount, "Camera solve complete",
                 overallFraction = 1f,
@@ -917,7 +1068,16 @@ internal class IncrementalSfMSolver(
                 globalPositioningInitialCost = globalPositioningInitialCost,
                 globalPositioningFinalCost = globalPositioningFinalCost,
                 globalPositioningIterations = globalPositioningIterations,
-                globalPositioningStatus = globalPositioningStatus
+                globalPositioningStatus = globalPositioningStatus,
+                jointBundleAdjustmentApplied = jointBundleAdjustmentApplied,
+                jointBundleAdjustmentInitialCost = jointBundleAdjustmentInitialCost,
+                jointBundleAdjustmentFinalCost = jointBundleAdjustmentFinalCost,
+                jointBundleAdjustmentIterations = jointBundleAdjustmentIterations,
+                jointBundleAdjustmentStatus = jointBundleAdjustmentStatus,
+                jointBundleAdjustmentPositiveDepthRatio = jointBundleAdjustmentPositiveDepthRatio,
+                jointBundleAdjustmentPrincipalPointRefinementEnabled =
+                    jointBundleAdjustmentPrincipalPointRefinementEnabled,
+                refinedCameraIntrinsics = refinedCameraIntrinsics
             )
         } finally {
             cache.values.forEach { it.descriptors.release() }

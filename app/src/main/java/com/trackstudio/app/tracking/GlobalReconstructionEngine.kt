@@ -523,6 +523,15 @@ class GlobalReconstructionEngine(
                     bundleResult?.positiveDepthRatio ?: Double.NaN,
                 globalBundleAdjustmentPrincipalPointRefinementEnabled =
                     bundleResult?.principalPointRefinementEnabled ?: false,
+                jointBundleAdjustmentApplied = bundleResult != null,
+                jointBundleAdjustmentInitialCost = bundleResult?.initialCost ?: Double.NaN,
+                jointBundleAdjustmentFinalCost = bundleResult?.finalCost ?: Double.NaN,
+                jointBundleAdjustmentIterations = bundleResult?.iterations ?: 0,
+                jointBundleAdjustmentStatus = bundleStatus,
+                jointBundleAdjustmentPositiveDepthRatio =
+                    bundleResult?.positiveDepthRatio ?: Double.NaN,
+                jointBundleAdjustmentPrincipalPointRefinementEnabled =
+                    bundleResult?.principalPointRefinementEnabled ?: false,
                 refinedCameraIntrinsics = refinedIntrinsics
             )
         } finally {

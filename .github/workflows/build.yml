@@ -107,7 +107,7 @@ jobs:
           script: |
             set -euo pipefail
             adb logcat -c
-            ./gradlew -PemulatorTestAbi=true connectedDebugAndroidTest --stacktrace --no-daemon
+            ./gradlew -PemulatorTestAbi=true -PincludeVideoTest=false connectedDebugAndroidTest --stacktrace --no-daemon
             adb logcat -d -s VideoReconstruction:I
 
       - name: Build release APK

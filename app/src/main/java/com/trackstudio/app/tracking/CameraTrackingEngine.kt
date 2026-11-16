@@ -122,6 +122,13 @@ data class CameraTrackingResult(
     val globalBundleAdjustmentStatus: String = "Not run",
     val globalBundleAdjustmentPositiveDepthRatio: Double = Double.NaN,
     val globalBundleAdjustmentPrincipalPointRefinementEnabled: Boolean = false,
+    val jointBundleAdjustmentApplied: Boolean = false,
+    val jointBundleAdjustmentInitialCost: Double = Double.NaN,
+    val jointBundleAdjustmentFinalCost: Double = Double.NaN,
+    val jointBundleAdjustmentIterations: Int = 0,
+    val jointBundleAdjustmentStatus: String = "Not run",
+    val jointBundleAdjustmentPositiveDepthRatio: Double = Double.NaN,
+    val jointBundleAdjustmentPrincipalPointRefinementEnabled: Boolean = false,
     val inputCameraCalibration: CameraCalibration? = null,
     val observationCoordinateModel: CameraObservationCoordinateModel =
         CameraObservationCoordinateModel.PINHOLE_PIXELS_ASSUMED,

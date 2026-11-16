@@ -92,6 +92,48 @@ class CameraTrackingEngineEndToEndTest {
     }
 
     @Test
+    fun incrementalSyntheticSequenceRunsJointCameraPointRefinementAndExportsIt() {
+        val frames = SyntheticSequence.render()
+        val cameraMatrix = SyntheticSequence.cameraMatrix()
+        val result = try {
+            runBlocking {
+                CameraReconstructionEngine(
+                    mode = ReconstructionMode.CUSTOM,
+                    options = CameraReconstructionOptions(
+                        customMaxFeatures = 1200,
+                        ratioThreshold = 0.8f
+                    )
+                ).solve(
+                    frameCount = frames.size,
+                    cameraMatrix = cameraMatrix,
+                    frameProvider = { index -> frames[index].clone() }
+                )
+            }
+        } finally {
+            frames.forEach(Mat::release)
+            cameraMatrix.release()
+        }
+
+        assertTrue("Incremental solve registered too few cameras", result.registeredCameraCount >= 3)
+        assertTrue("Incremental joint refinement was not applied: ${result.jointBundleAdjustmentStatus}", result.jointBundleAdjustmentApplied)
+        assertTrue(result.jointBundleAdjustmentInitialCost.isFinite())
+        assertTrue(result.jointBundleAdjustmentFinalCost.isFinite())
+        assertTrue(
+            SolverObjective.didNotIncrease(
+                result.jointBundleAdjustmentInitialCost,
+                result.jointBundleAdjustmentFinalCost
+            )
+        )
+        assertTrue(result.jointBundleAdjustmentPositiveDepthRatio >= 0.9)
+        assertNotNull(result.refinedCameraIntrinsics)
+
+        val summary = JSONObject(CameraSolveExporter.toJson(result)).getJSONObject("summary")
+        assertTrue(summary.getBoolean("jointBundleAdjustmentApplied"))
+        assertEquals("Applied", summary.getString("jointBundleAdjustmentStatus"))
+        assertEquals(result.jointBundleAdjustmentIterations, summary.getInt("jointBundleAdjustmentIterations"))
+    }
+
+    @Test
     fun insufficientFrameCountFailsBeforeCallingTheProvider() {
         val cameraMatrix = SyntheticSequence.cameraMatrix()
         try {

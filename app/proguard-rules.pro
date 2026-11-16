@@ -8,6 +8,7 @@
 -keep interface com.trackstudio.app.tracking.glomap.GlomapSolverProgressListener {
     void onIteration(int, int);
 }
+-keep class com.trackstudio.app.tracking.JointCameraBundleAdjuster { *; }
 -keep class com.trackstudio.app.tracking.glomap.GlomapNativeSolver { *; }
 -keep class com.trackstudio.app.tracking.CameraPoseRefiner { *; }
 -keep class com.trackstudio.app.tracking.NativeSiftOutput { *; }

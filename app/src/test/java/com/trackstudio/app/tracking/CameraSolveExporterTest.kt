@@ -40,6 +40,13 @@ class CameraSolveExporterTest {
             globalBundleAdjustmentStatus = "Applied",
             globalBundleAdjustmentPositiveDepthRatio = 0.97,
             globalBundleAdjustmentPrincipalPointRefinementEnabled = true,
+            jointBundleAdjustmentApplied = true,
+            jointBundleAdjustmentInitialCost = 2.5,
+            jointBundleAdjustmentFinalCost = 0.8,
+            jointBundleAdjustmentIterations = 5,
+            jointBundleAdjustmentStatus = "Applied",
+            jointBundleAdjustmentPositiveDepthRatio = 0.97,
+            jointBundleAdjustmentPrincipalPointRefinementEnabled = true,
             inputCameraCalibration = CameraCalibration(
                 imageWidth = 1280,
                 imageHeight = 720,
@@ -69,6 +76,10 @@ class CameraSolveExporterTest {
         assertTrue(json.contains("\"globalBundleAdjustmentInitialCost\": 2.5"))
         assertTrue(json.contains("\"globalBundleAdjustmentPositiveDepthRatio\": 0.97"))
         assertTrue(json.contains("\"globalBundleAdjustmentPrincipalPointRefinementEnabled\": true"))
+        assertTrue(json.contains("\"jointBundleAdjustmentApplied\": true"))
+        assertTrue(json.contains("\"jointBundleAdjustmentInitialCost\": 2.5"))
+        assertTrue(json.contains("\"jointBundleAdjustmentIterations\": 5"))
+        assertTrue(json.contains("\"jointBundleAdjustmentPositiveDepthRatio\": 0.97"))
         assertTrue(json.contains("\"observationCoordinateModel\": \"CALIBRATED_PINHOLE_PIXELS\""))
         assertTrue(json.contains("\"distortionCoefficients\": [0.1, -0.02, 0.001, -0.001, 0.003]"))
         assertTrue(json.contains("\"refinedCameraIntrinsics\": {\"fx\": 700.0, \"skew\": 0.0"))
@@ -137,6 +148,10 @@ class CameraSolveExporterTest {
         assertTrue(json.contains("\"globalBundleAdjustmentFinalCost\": null"))
         assertTrue(json.contains("\"globalBundleAdjustmentPositiveDepthRatio\": null"))
         assertTrue(json.contains("\"globalBundleAdjustmentPrincipalPointRefinementEnabled\": false"))
+        assertTrue(json.contains("\"jointBundleAdjustmentInitialCost\": null"))
+        assertTrue(json.contains("\"jointBundleAdjustmentFinalCost\": null"))
+        assertTrue(json.contains("\"jointBundleAdjustmentPositiveDepthRatio\": null"))
+        assertTrue(json.contains("\"jointBundleAdjustmentPrincipalPointRefinementEnabled\": false"))
         assertTrue(json.contains("\"inputCameraCalibration\": null"))
         assertTrue(json.contains("\"refinedCameraIntrinsics\": null"))
         assertTrue(json.contains("\"effectiveCameraIntrinsics\": null"))
