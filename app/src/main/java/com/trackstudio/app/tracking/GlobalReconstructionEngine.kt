@@ -6,6 +6,7 @@ import com.trackstudio.app.tracking.colmap.ColmapTrackRetriangulator
 import com.trackstudio.app.tracking.glomap.GlomapGlobalPositioningInitializer
 import com.trackstudio.app.tracking.glomap.GlomapGlobalPositioningProblemBuilder
 import com.trackstudio.app.tracking.glomap.GlomapGlobalBundleAdjuster
+import com.trackstudio.app.tracking.glomap.GlomapBundleAdjustmentSchedule
 import com.trackstudio.app.tracking.glomap.GlomapNativeSolver
 import com.trackstudio.app.tracking.glomap.GlomapTrackFilter
 import kotlinx.coroutines.Dispatchers
@@ -358,29 +359,59 @@ class GlobalReconstructionEngine(
                 CameraTrackingProgress(
                     frameIndex = frameCount,
                     frameCount = frameCount,
-                    phase = "Joint global bundle adjustment",
+                    phase = "Staged global bundle adjustment",
                     overallFraction = 0.88f,
                     completedFrames = decodedFrames,
                     totalFrames = frameCount
                 )
             )
             val bundleCandidate = try {
-                GlomapGlobalBundleAdjuster().solve(
-                    frameCentersById = positionResult.frameCentersById,
-                    rotationsByFrame = rotations,
-                    pointsByTrackId = positionResult.pointsByTrackId,
-                    tracks = reconstructionTracks,
-                    cameraMatrix = cameraMatrix,
-                    imageWidth = frameSizes.single().first,
-                    imageHeight = frameSizes.single().second,
-                    maxIterations = 45,
-                    numThreads = if (activeFrames.size >= 300) 2 else Runtime.getRuntime().availableProcessors().coerceIn(1, 4),
-                    onIteration = { iteration, total -> publishProgress("Global bundle adjustment " + iteration + "/" + total, 0.88f + 0.05f * iteration.toFloat() / total.coerceAtLeast(1)) }
+                val bundleAdjuster = GlomapGlobalBundleAdjuster()
+                GlomapBundleAdjustmentSchedule.solve(
+                    initialState = GlomapBundleAdjustmentSchedule.State(
+                        frameCentersById = positionResult.frameCentersById,
+                        rotationsByFrame = rotations,
+                        pointsByTrackId = positionResult.pointsByTrackId,
+                        tracks = reconstructionTracks,
+                        intrinsics = initialIntrinsics
+                    ),
+                    stageSolver = { state, optimizeRotations, stageIndex ->
+                        val stageCameraMatrix = Mat(3, 3, CvType.CV_64F)
+                        try {
+                            stageCameraMatrix.put(0, 0, *state.intrinsics.toRowMajorMatrix())
+                            bundleAdjuster.solve(
+                                frameCentersById = state.frameCentersById,
+                                rotationsByFrame = state.rotationsByFrame,
+                                pointsByTrackId = state.pointsByTrackId,
+                                tracks = state.tracks,
+                                cameraMatrix = stageCameraMatrix,
+                                imageWidth = frameSizes.single().first,
+                                imageHeight = frameSizes.single().second,
+                                optimizeRotations = optimizeRotations,
+                                optimizeTranslation = true,
+                                maxIterations = 45,
+                                numThreads = if (activeFrames.size >= 300) 2 else Runtime.getRuntime().availableProcessors().coerceIn(1, 4),
+                                onIteration = { iteration, total ->
+                                    val stageFraction =
+                                        (stageIndex.toFloat() + iteration.toFloat() / total.coerceAtLeast(1)) /
+                                            GlomapBundleAdjustmentSchedule.MAX_STAGE_COUNT
+                                    val stageName = if (optimizeRotations) "rotation" else "position"
+                                    publishProgress(
+                                        "Global bundle adjustment " + stageName + " stage " +
+                                            (stageIndex + 1) + "/" + GlomapBundleAdjustmentSchedule.MAX_STAGE_COUNT,
+                                        0.88f + 0.05f * stageFraction.coerceIn(0f, 1f)
+                                    )
+                                }
+                            )
+                        } finally {
+                            stageCameraMatrix.release()
+                        }
+                    }
                 )
             } catch (_: LinkageError) {
                 null
             }
-            val bundleResult = bundleCandidate?.takeIf {
+            val bundleResult = bundleCandidate?.bundleResult?.takeIf {
                 SolverObjective.didNotIncrease(it.initialCost, it.finalCost)
             }
             val bundleStatus = when {
@@ -394,13 +425,7 @@ class GlobalReconstructionEngine(
             var finalPointsForLandmarks = finalPoints
             val refinedIntrinsics = bundleResult?.intrinsics
             if (bundleResult != null) {
-                reconstructionTracks = GlomapTrackFilter.filterAfterBundleAdjustment(
-                    tracks = reconstructionTracks,
-                    cameraCentersByFrame = finalCenters,
-                    rotationsByFrame = finalRotations,
-                    pointsByTrackId = finalPoints,
-                    intrinsics = refinedIntrinsics ?: initialIntrinsics
-                )
+                reconstructionTracks = bundleCandidate?.tracks ?: reconstructionTracks
             }
             val resultCameraMatrix = if (refinedIntrinsics != null) {
                 Mat(3, 3, CvType.CV_64F).also { matrix ->

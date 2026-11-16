@@ -33,6 +33,8 @@ internal class GlomapGlobalBundleAdjuster {
         cameraMatrix: Mat,
         imageWidth: Int = 0,
         imageHeight: Int = 0,
+        optimizeRotations: Boolean = true,
+        optimizeTranslation: Boolean = true,
         maxIterations: Int = 60,
         numThreads: Int = Runtime.getRuntime().availableProcessors().coerceIn(1, 4),
         onIteration: (Int, Int) -> Unit = { _, _ -> }
@@ -106,7 +108,7 @@ internal class GlomapGlobalBundleAdjuster {
         val packed = nativeSolve(
             centers, rotations, points, frameIndices, trackIndices,
             imagePoints, intrinsics, refinePrincipalPoint, imageWidth, imageHeight,
-            maxIterations, numThreads,
+            optimizeRotations, optimizeTranslation, maxIterations, numThreads,
             GlomapSolverProgressListener(onIteration)
         ) ?: return null
         val expected = 10L + centers.size + rotations.size + points.size
@@ -181,6 +183,8 @@ internal class GlomapGlobalBundleAdjuster {
         refinePrincipalPoint: Boolean,
         imageWidth: Int,
         imageHeight: Int,
+        optimizeRotations: Boolean,
+        optimizeTranslation: Boolean,
         maxIterations: Int,
         numThreads: Int,
         progressListener: GlomapSolverProgressListener

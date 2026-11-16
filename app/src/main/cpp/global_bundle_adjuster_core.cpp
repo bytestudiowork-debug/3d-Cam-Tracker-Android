@@ -167,7 +167,9 @@ bool RunGlobalBundleAdjustment(const std::vector<double>& initial_camera_centers
                                const std::function<bool(int, int)>& progress_callback,
                                bool refine_principal_point,
                                int image_width,
-                               int image_height) {
+                               int image_height,
+                               bool optimize_rotations,
+                               bool optimize_translation) {
     if (result == nullptr) return false;
     *result = GlobalBundleAdjustmentResult{};
     if (initial_camera_centers.empty() ||
@@ -269,9 +271,18 @@ bool RunGlobalBundleAdjustment(const std::vector<double>& initial_camera_centers
     ordering->AddElementToGroup(focal_lengths.data(), 1);
     ordering->AddElementToGroup(principal_point.data(), 1);
 
-    problem.SetParameterBlockConstant(angle_axes.data());
-    problem.SetParameterBlockConstant(centers.data());
-    problem.SetManifold(centers.data() + scale_anchor * 3, new ceres::SphereManifold<3>());
+    for (int frame = 0; frame < frame_count; ++frame) {
+        if (!optimize_rotations || frame == 0) {
+            problem.SetParameterBlockConstant(angle_axes.data() + frame * 3);
+        }
+        if (!optimize_translation || frame == 0) {
+            problem.SetParameterBlockConstant(centers.data() + frame * 3);
+        }
+    }
+    if (optimize_translation) {
+        problem.SetManifold(centers.data() + scale_anchor * 3,
+                            new ceres::SphereManifold<3>());
+    }
     for (int focal = 0; focal < 2; ++focal) {
         const double initial_focal = focal_lengths[focal];
         problem.SetParameterLowerBound(focal_lengths.data(), focal,

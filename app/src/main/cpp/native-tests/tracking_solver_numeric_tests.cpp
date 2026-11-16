@@ -311,6 +311,37 @@ void TestBundleAdjustmentJointRecoveryOutliersAndGauge() {
         initial_points[i * 3 + 2] += 0.055 * std::sin(0.3 * i);
     }
 
+    tracking::GlobalBundleAdjustmentResult position_stage;
+    Require(tracking::RunGlobalBundleAdjustment(
+                    initial_centers, initial_rotations, initial_points, frame_indices,
+                    track_indices, image_points, initial_intrinsics, 60, 1, &position_stage,
+                    {}, false, 0, 0, false, true),
+            "translation-only bundle-adjustment stage did not produce a usable result");
+    Require(position_stage.final_cost < position_stage.initial_cost &&
+                    RotationError(position_stage.rotations.data(), initial_rotations.data()) < 1e-10,
+            "translation-only bundle adjustment changed rotations or failed to reduce its objective");
+
+    tracking::GlobalBundleAdjustmentResult rotation_only_stage;
+    Require(tracking::RunGlobalBundleAdjustment(
+                    initial_centers, initial_rotations, initial_points, frame_indices,
+                    track_indices, image_points, initial_intrinsics, 60, 1, &rotation_only_stage,
+                    {}, false, 0, 0, true, false),
+            "rotation-only bundle-adjustment stage did not produce a usable result");
+    for (int frame = 0; frame < 4; ++frame) {
+        Require(Distance3(rotation_only_stage.camera_centers.data() + frame * 3,
+                          initial_centers.data() + frame * 3) < 1e-12,
+                "rotation-only bundle adjustment changed camera centers");
+    }
+
+    tracking::GlobalBundleAdjustmentResult staged_result;
+    Require(tracking::RunGlobalBundleAdjustment(
+                    position_stage.camera_centers, position_stage.rotations,
+                    position_stage.points, frame_indices, track_indices, image_points,
+                    position_stage.intrinsics, 60, 1, &staged_result, {}, false, 0, 0, true, true),
+            "rotation refinement after the translation-only stage did not produce a usable result");
+    Require(staged_result.final_cost < position_stage.final_cost,
+            "rotation refinement after the translation-only stage did not reduce its objective");
+
     tracking::GlobalBundleAdjustmentResult result;
     Require(tracking::RunGlobalBundleAdjustment(
                     initial_centers, initial_rotations, initial_points, frame_indices,

@@ -31,6 +31,8 @@ bool RunGlobalBundleAdjustment(const std::vector<double>& initial_camera_centers
                                const std::function<bool(int, int)>& progress_callback = {},
                                bool refine_principal_point = false,
                                int image_width = 0,
-                               int image_height = 0);
+                               int image_height = 0,
+                               bool optimize_rotations = true,
+                               bool optimize_translation = true);
 
 }  // namespace tracking

@@ -30,6 +30,8 @@ jdoubleArray JointCameraBundleAdjusterSolve(
         jboolean refine_principal_point,
         jint image_width,
         jint image_height,
+        jboolean optimize_rotations,
+        jboolean optimize_translation,
         jint max_iterations,
         jint num_threads,
         jobject progress_listener);
@@ -50,6 +52,8 @@ Java_com_trackstudio_app_tracking_glomap_GlomapGlobalBundleAdjuster_nativeSolve(
         jboolean refine_principal_point,
         jint image_width,
         jint image_height,
+        jboolean optimize_rotations,
+        jboolean optimize_translation,
         jint max_iterations,
         jint num_threads,
         jobject progress_listener) {
@@ -57,7 +61,8 @@ Java_com_trackstudio_app_tracking_glomap_GlomapGlobalBundleAdjuster_nativeSolve(
             env, camera_centers_array, rotations_array, points_array,
             frame_indices_array, track_indices_array, image_points_array,
             intrinsics_array, refine_principal_point, image_width, image_height,
-            max_iterations, num_threads, progress_listener);
+            optimize_rotations, optimize_translation, max_iterations, num_threads,
+            progress_listener);
 }
 
 namespace {
@@ -74,6 +79,8 @@ jdoubleArray JointCameraBundleAdjusterSolve(
         jboolean refine_principal_point,
         jint image_width,
         jint image_height,
+        jboolean optimize_rotations,
+        jboolean optimize_translation,
         jint max_iterations,
         jint num_threads,
         jobject progress_listener) {
@@ -136,7 +143,9 @@ jdoubleArray JointCameraBundleAdjusterSolve(
                     image_points, intrinsics, max_iterations, num_threads,
                     &solution, notify_progress,
                     refine_principal_point != JNI_FALSE,
-                    image_width, image_height)) {
+                    image_width, image_height,
+                    optimize_rotations != JNI_FALSE,
+                    optimize_translation != JNI_FALSE)) {
             if (env->ExceptionCheck()) return nullptr;
             return EmptyResult(env);
         }
@@ -201,5 +210,5 @@ Java_com_trackstudio_app_tracking_JointCameraBundleAdjuster_nativeSolve(
             env, camera_centers_array, rotations_array, points_array,
             frame_indices_array, track_indices_array, image_points_array,
             intrinsics_array, refine_principal_point, image_width, image_height,
-            max_iterations, num_threads, progress_listener);
+            JNI_TRUE, JNI_TRUE, max_iterations, num_threads, progress_listener);
 }
