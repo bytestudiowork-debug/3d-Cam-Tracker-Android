@@ -546,14 +546,29 @@ class GlobalReconstructionEngine(
         val pairs = linkedSetOf<Pair<Int, Int>>()
         for (first in 0 until frameCount - 1) pairs += first to first + 1
         val pairBudget = maxOf(frameCount - 1, minOf(maximumPairs, frameCount * 2))
-        var offset = 1
-        repeat(10) {
-            if (offset >= frameCount) return pairs.toList()
-            for (first in 0 until frameCount - offset) {
-                pairs += first to first + offset
-                if (pairs.size >= pairBudget) return pairs.toList()
-            }
+        val offsets = ArrayList<Int>()
+        var offset = 2
+        while (offset < frameCount) {
+            offsets += offset
+            if (offset > Int.MAX_VALUE / 2) break
             offset *= 2
+        }
+
+        var remaining = pairBudget - pairs.size
+        for ((offsetIndex, baseline) in offsets.withIndex()) {
+            if (remaining <= 0) break
+            val offsetsLeft = offsets.size - offsetIndex
+            val candidates = frameCount - baseline
+            val requested = (remaining + offsetsLeft - 1) / offsetsLeft
+            val sampleCount = minOf(candidates, requested)
+            for (sample in 0 until sampleCount) {
+                // Midpoint sampling spreads each baseline across the full clip
+                // rather than consuming the budget from the opening frames.
+                val first = (((2L * sample + 1L) * candidates) /
+                    (2L * sampleCount)).toInt()
+                pairs += first to first + baseline
+            }
+            remaining -= sampleCount
         }
         return pairs.toList()
     }

@@ -1,6 +1,7 @@
 package com.trackstudio.app.tracking
 
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertTrue
 import org.junit.Test
 
 class GlobalPairScheduleTest {
@@ -26,6 +27,26 @@ class GlobalPairScheduleTest {
 
         assertEquals(expectedReferencePairs, actual.toSet())
         assertEquals(actual.size, actual.distinct().size)
+    }
+
+    @Test
+    fun longSequenceScheduleSpreadsLongBaselinePairsAcrossTimeline() {
+        val frameCount = 588
+        val actual = GlobalReconstructionEngine().buildPairSchedule(
+            frameCount = frameCount,
+            maximumPairs = frameCount * 2
+        )
+
+        assertEquals(frameCount * 2, actual.size)
+        assertEquals(actual.size, actual.distinct().size)
+        assertEquals(
+            (0 until frameCount - 1).map { it to it + 1 }.toSet(),
+            actual.filter { it.second == it.first + 1 }.toSet()
+        )
+        assertTrue(actual.any { it.second - it.first >= 128 })
+        assertTrue(actual.any {
+            it.first >= frameCount * 3 / 4 && it.second - it.first >= 16
+        })
     }
 
     @Test
