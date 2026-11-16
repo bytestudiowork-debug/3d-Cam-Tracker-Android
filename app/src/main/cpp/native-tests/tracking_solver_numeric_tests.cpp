@@ -1,7 +1,9 @@
 #include "camera_pose_refiner_core.h"
 #include "global_bundle_adjuster_core.h"
 #include "least_absolute_deviations_core.h"
+#include "absolute_pose_loransac_core.h"
 #include "epnp_pose_estimator_core.h"
+#include "p3p_pose_estimator_core.h"
 #include "optimization_robust_policy.h"
 #include "global_positioning_core.h"
 #include "positioning_direction_residual.h"
@@ -13,6 +15,7 @@
 #include <Eigen/Geometry>
 
 #include <algorithm>
+#include <array>
 #include <cmath>
 #include <iostream>
 #include <memory>
@@ -990,6 +993,171 @@ void TestEpnpRejectsPlanarControlPointDegeneracy() {
             "EPnP accepted a planar scene with rank-deficient control points");
 }
 
+void TestP3PCandidateRecoveryAcrossInputPermutations() {
+    const tracking::EpnpCameraIntrinsics intrinsics{
+            790.0, 2.0, 640.0, 805.0, 360.0};
+    const Eigen::Vector3d axis(0.3, -0.5, 0.8);
+    const Eigen::Matrix3d truth_rotation =
+            Eigen::AngleAxisd(0.12, axis.normalized()).toRotationMatrix();
+    const Eigen::Vector3d truth_translation(0.16, -0.09, 5.4);
+    const std::array<Eigen::Vector3d, 3> truth_points = {
+            Eigen::Vector3d(-0.8, -0.4, 0.2),
+            Eigen::Vector3d(0.9, -0.3, -0.1),
+            Eigen::Vector3d(0.2, 0.95, 0.8)};
+    std::array<Eigen::Vector2d, 3> observations;
+    std::array<Eigen::Vector3d, 3> rays;
+    for (size_t i = 0; i < truth_points.size(); ++i) {
+        const Eigen::Vector3d camera = truth_rotation * truth_points[i] + truth_translation;
+        const double x = camera.x() / camera.z();
+        const double y = camera.y() / camera.z();
+        observations[i] = Eigen::Vector2d(intrinsics.fx * x + intrinsics.skew * y + intrinsics.cx,
+                                          intrinsics.fy * y + intrinsics.cy);
+        rays[i] = Eigen::Vector3d(
+                (observations[i].x() - intrinsics.cx - intrinsics.skew *
+                        ((observations[i].y() - intrinsics.cy) / intrinsics.fy)) / intrinsics.fx,
+                (observations[i].y() - intrinsics.cy) / intrinsics.fy,
+                1.0).normalized();
+    }
+
+    std::array<int, 3> permutation = {0, 1, 2};
+    do {
+        std::vector<Eigen::Vector3d> sample_rays;
+        std::vector<Eigen::Vector3d> sample_points;
+        for (int index : permutation) {
+            sample_rays.push_back(rays[static_cast<size_t>(index)]);
+            sample_points.push_back(truth_points[static_cast<size_t>(index)]);
+        }
+        std::vector<tracking::P3PPoseEstimate> candidates;
+        Require(tracking::EstimateP3PPoseCandidates(sample_rays, sample_points, &candidates),
+                "P3P rejected a valid non-collinear three-point sample");
+        Require(!candidates.empty() && candidates.size() <= 4,
+                "P3P candidate count fell outside its real-solution bound");
+
+        bool recovered_truth = false;
+        for (const auto& candidate : candidates) {
+            Require(candidate.rotation.allFinite() && candidate.translation.allFinite() &&
+                            candidate.rotation.determinant() > 0.0,
+                    "P3P returned a non-finite or improper candidate pose");
+            double maximum_error = 0.0;
+            bool positive_depth = true;
+            for (size_t i = 0; i < truth_points.size(); ++i) {
+                const Eigen::Vector3d camera = candidate.rotation * truth_points[i] +
+                                               candidate.translation;
+                if (!(camera.z() > 0.0)) {
+                    positive_depth = false;
+                    break;
+                }
+                const double x = camera.x() / camera.z();
+                const double y = camera.y() / camera.z();
+                const Eigen::Vector2d projected(
+                        intrinsics.fx * x + intrinsics.skew * y + intrinsics.cx,
+                        intrinsics.fy * y + intrinsics.cy);
+                maximum_error = std::max(maximum_error,
+                                         (projected - observations[i]).norm());
+            }
+            if (positive_depth && maximum_error < 1e-5) recovered_truth = true;
+        }
+        Require(recovered_truth,
+                "P3P did not return the exact world-to-camera solution after permuting its triplet");
+    } while (std::next_permutation(permutation.begin(), permutation.end()));
+}
+
+void TestP3PRejectsDegenerateTriples() {
+    const std::vector<Eigen::Vector3d> rays = {
+            Eigen::Vector3d(0.0, 0.0, 1.0),
+            Eigen::Vector3d(0.1, 0.0, 1.0).normalized(),
+            Eigen::Vector3d(0.0, 0.1, 1.0).normalized()};
+    std::vector<tracking::P3PPoseEstimate> candidates;
+    const std::vector<Eigen::Vector3d> collinear = {
+            Eigen::Vector3d(-1.0, 0.0, 0.0), Eigen::Vector3d(0.0, 0.0, 0.0),
+            Eigen::Vector3d(1.0, 0.0, 0.0)};
+    Require(!tracking::EstimateP3PPoseCandidates(rays, collinear, &candidates),
+            "P3P accepted collinear world points");
+    const std::vector<Eigen::Vector3d> duplicate = {
+            Eigen::Vector3d(1.0, 2.0, 3.0), Eigen::Vector3d(1.0, 2.0, 3.0),
+            Eigen::Vector3d(1.0, 2.0, 3.0)};
+    Require(!tracking::EstimateP3PPoseCandidates(rays, duplicate, &candidates),
+            "P3P accepted duplicate world points");
+    std::vector<Eigen::Vector3d> zero_ray = rays;
+    zero_ray[1].setZero();
+    const std::vector<Eigen::Vector3d> valid_points = {
+            Eigen::Vector3d(-0.8, -0.4, 0.2), Eigen::Vector3d(0.9, -0.3, -0.1),
+            Eigen::Vector3d(0.2, 0.95, 0.8)};
+    Require(!tracking::EstimateP3PPoseCandidates(zero_ray, valid_points, &candidates),
+            "P3P accepted a zero camera ray");
+}
+
+void TestAbsolutePoseLORansacFinitePopulationAndOutlierRecovery() {
+    const tracking::EpnpCameraIntrinsics intrinsics{
+            780.0, 1.5, 640.0, 805.0, 360.0};
+    const Eigen::Vector3d axis(-0.4, 0.7, 0.2);
+    const Eigen::Matrix3d truth_rotation =
+            Eigen::AngleAxisd(0.055, axis.normalized()).toRotationMatrix();
+    const Eigen::Vector3d truth_translation(0.12, -0.07, 0.28);
+    std::vector<Eigen::Vector3d> world_points;
+    std::vector<Eigen::Vector2d> image_points;
+    for (int i = 0; i < 36; ++i) {
+        const Eigen::Vector3d world((i % 6 - 2.5) * 0.31,
+                                    (i / 6 - 2.5) * 0.27,
+                                    4.2 + 0.11 * (i % 7));
+        const Eigen::Vector3d camera = truth_rotation * world + truth_translation;
+        const double x = camera.x() / camera.z();
+        const double y = camera.y() / camera.z();
+        Eigen::Vector2d image(intrinsics.fx * x + intrinsics.skew * y + intrinsics.cx,
+                              intrinsics.fy * y + intrinsics.cy);
+        if (i < 28) {
+            image.x() += 0.08 * std::sin(0.4 * i);
+            image.y() += 0.08 * std::cos(0.3 * i);
+        } else {
+            image.x() += 90.0 + 2.0 * i;
+            image.y() -= 75.0 + 1.5 * i;
+        }
+        world_points.push_back(world);
+        image_points.push_back(image);
+    }
+
+    const size_t observed_trials = tracking::ComputeAbsolutePoseRansacNumTrials(
+            12, 24, 0.999, 3.0);
+    const double inlier_probability = (12.0 / 24.0) * (11.0 / 23.0) * (10.0 / 22.0);
+    const size_t expected_trials = static_cast<size_t>(std::ceil(
+            std::log(1.0 - 0.999) / std::log(1.0 - inlier_probability) * 3.0));
+    Require(observed_trials == expected_trials,
+            "RANSAC trial adaptation changed from the finite-population probability");
+
+    tracking::AbsolutePoseLORansacOptions options;
+    options.random_seed = 771;
+    tracking::AbsolutePoseLORansacResult result;
+    Require(tracking::EstimateAbsolutePoseLORansac(
+                    image_points, world_points, intrinsics, options, &result),
+            "P3P/EPnP LO-RANSAC failed a solvable outlier-contaminated pose scene");
+    Require(result.inlier_indices.size() == 28 && result.num_local_trials > 0,
+            "LO-RANSAC did not recover the full consensus or run its EPnP local estimator");
+    Require(result.num_trials >= options.min_num_trials &&
+                    result.num_trials <= options.max_num_trials,
+            "LO-RANSAC violated its minimum-trial floor or Android maximum-trial bound");
+    for (int i = 0; i < 28; ++i) {
+        Require(result.inlier_indices[static_cast<size_t>(i)] == i,
+                "LO-RANSAC did not return inliers in original observation order");
+    }
+    const Eigen::Matrix3d relative_rotation = result.rotation * truth_rotation.transpose();
+    const double angle_error = std::acos(std::clamp(
+            (relative_rotation.trace() - 1.0) * 0.5, -1.0, 1.0));
+    Require(angle_error < 0.003 &&
+                    (result.translation - truth_translation).norm() < 0.025,
+            "LO-RANSAC pose did not recover the synthetic world-to-camera transform");
+
+    tracking::AbsolutePoseLORansacResult repeated;
+    Require(tracking::EstimateAbsolutePoseLORansac(
+                    image_points, world_points, intrinsics, options, &repeated),
+            "fixed-seed LO-RANSAC repeat failed");
+    Require(result.inlier_indices == repeated.inlier_indices &&
+                    result.num_trials == repeated.num_trials &&
+                    result.num_local_trials == repeated.num_local_trials &&
+                    (result.rotation - repeated.rotation).norm() < 1e-12 &&
+                    (result.translation - repeated.translation).norm() < 1e-12,
+            "fixed-seed LO-RANSAC changed its result across repeated runs");
+}
+
 void TestMalformedRotationIsRejected() {
     double scaled_identity[9] = {2, 0, 0, 0, 2, 0, 0, 0, 2};
     Require(!tracking::IsValidRotationMatrix(scaled_identity),
@@ -1019,6 +1187,9 @@ int main() {
         TestViewGraphFocalCalibrationRecoveryAndEdgeFiltering();
         TestEpnpPoseRecoveryWithSkewedPinholeIntrinsics();
         TestEpnpRejectsPlanarControlPointDegeneracy();
+        TestP3PCandidateRecoveryAcrossInputPermutations();
+        TestP3PRejectsDegenerateTriples();
+        TestAbsolutePoseLORansacFinitePopulationAndOutlierRecovery();
         TestMalformedRotationIsRejected();
         std::cout << "Native numerical regression tests passed.\n";
         return 0;

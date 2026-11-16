@@ -83,62 +83,36 @@ internal object IncrementalCameraRegistrar {
             )
         }
 
-        val objectPoints = MatOfPoint3f()
-        val imagePoints = MatOfPoint2f()
         val distortion = MatOfDouble()
-        var rotationVector = Mat()
-        var translationVector = Mat()
-        val inlierIndices = Mat()
+        val rotationVector = Mat()
+        val translationVector = Mat(3, 1, CvType.CV_64F)
         val inlierObjectPoints = MatOfPoint3f()
         val inlierImagePoints = MatOfPoint2f()
         val projectedPoints = MatOfPoint2f()
-        val rotationMatrix = Mat()
+        val rotationMatrix = Mat(3, 3, CvType.CV_64F)
 
         return try {
-            objectPoints.fromArray(*points3d.toTypedArray())
-            imagePoints.fromArray(*points2d.toTypedArray())
-
-            val solved = Calib3d.solvePnPRansac(
-                objectPoints,
-                imagePoints,
+            val estimate = AbsolutePoseLORansacEstimator.estimate(
+                points3d.toTypedArray(),
+                points2d.toTypedArray(),
                 cameraMatrix,
-                distortion,
-                rotationVector,
-                translationVector,
-                false,
-                CameraRegistrationPolicy.RANSAC_MAX_ITERATIONS,
-                ransacReprojectionErrorPx,
-                CameraRegistrationPolicy.RANSAC_CONFIDENCE,
-                inlierIndices,
-                Calib3d.SOLVEPNP_P3P
+                ransacReprojectionErrorPx
             )
-            if (!solved || inlierIndices.empty()) {
+            if (estimate == null) {
                 return CameraRegistrationResult.rejected(
-                    frameIndex, correspondenceCount, "PnP-RANSAC could not estimate a stable pose"
+                    frameIndex, correspondenceCount, "PnP LO-RANSAC could not estimate a stable pose"
                 )
             }
-
-            val normalizedRotationVector = toDoubleVector(rotationVector)
-            val normalizedTranslationVector = toDoubleVector(translationVector)
-            if (normalizedRotationVector == null || normalizedTranslationVector == null) {
-                normalizedRotationVector?.release()
-                normalizedTranslationVector?.release()
+            if (rotationMatrix.put(0, 0, *estimate.rotation) != 9 ||
+                translationVector.put(0, 0, *estimate.translation) != 3
+            ) {
                 return CameraRegistrationResult.rejected(
-                    frameIndex, correspondenceCount, "Invalid PnP rotation/translation vector output"
+                    frameIndex, correspondenceCount, "Invalid PnP LO-RANSAC pose output"
                 )
             }
-            rotationVector.release()
-            translationVector.release()
-            rotationVector = normalizedRotationVector
-            translationVector = normalizedTranslationVector
+            Calib3d.Rodrigues(rotationMatrix, rotationVector)
 
-            val rawInlierCount = inlierIndices.total().toInt()
-            var inlierIds = (0 until rawInlierCount).mapNotNull { index ->
-                val coordinate = OpenCvMaskLayout.coordinates(
-                    inlierIndices.rows(), inlierIndices.cols(), index, rawInlierCount
-                ) ?: return@mapNotNull null
-                inlierIndices.get(coordinate.first, coordinate.second)?.firstOrNull()?.toInt()
-            }.filter { it in points3d.indices }.distinct()
+            var inlierIds = estimate.inlierIndices
 
             var inlierCount = inlierIds.size
             var inlierRatio = inlierCount.toDouble() / correspondenceCount
@@ -349,18 +323,15 @@ internal object IncrementalCameraRegistrar {
                 medianReprojectionErrorPx = median,
                 rmsReprojectionErrorPx = rms,
                 reason = if (refinement == null) {
-                    "Registered against existing 3D map; used RANSAC PnP seed because robust refinement returned no candidate"
+                    "Registered against existing 3D map; used the LO-RANSAC pose because robust refinement returned no candidate"
                 } else {
                     "Registered against existing 3D map"
                 }
             )
         } finally {
-            objectPoints.release()
-            imagePoints.release()
             distortion.release()
             rotationVector.release()
             translationVector.release()
-            inlierIndices.release()
             inlierObjectPoints.release()
             inlierImagePoints.release()
             projectedPoints.release()
@@ -372,25 +343,6 @@ internal object IncrementalCameraRegistrar {
         "${matrix.rows()}x${matrix.cols()}, type=${matrix.type()}, depth=${matrix.depth()}, " +
             "channels=${matrix.channels()}, total=${matrix.total()}, " +
             "continuous=${matrix.isContinuous()}, read=$readBytes/$expectedBytes bytes"
-
-    private fun toDoubleVector(source: Mat): Mat? {
-        if (source.empty() || source.total() != 3L || source.channels() != 1) return null
-        val converted = Mat()
-        return try {
-            source.convertTo(converted, CvType.CV_64F)
-            if (converted.empty() || converted.total() != 3L ||
-                converted.channels() != 1 || converted.type() != CvType.CV_64F
-            ) {
-                converted.release()
-                null
-            } else {
-                converted
-            }
-        } catch (_: CvException) {
-            converted.release()
-            null
-        }
-    }
 
     private data class PoseModel(
         val rotationVector: DoubleArray,
@@ -433,8 +385,7 @@ internal object IncrementalCameraRegistrar {
         val objectArray = indices.map(points3d::get).toTypedArray()
         val imageArray = indices.map(points2d::get).toTypedArray()
         // COLMAP uses EPnP as the non-minimal local estimator after minimal
-        // P3P sampling. Android keeps its existing P3P sampler and Ceres
-        // polishing, but uses the pinned EPnP model for each consensus refit.
+        // P3P sampling. Android retains a bounded Ceres polish after this fit.
         val estimate = EpnpPoseEstimator.estimate(objectArray, imageArray, cameraMatrix)
             ?: return null
         val rotationMatrix = Mat(3, 3, CvType.CV_64F)
@@ -499,6 +450,10 @@ internal object CameraRegistrationPolicy {
     const val RANSAC_REPROJECTION_ERROR_PX = 12.0f
     const val RANSAC_MAX_ITERATIONS = 10000
     const val RANSAC_CONFIDENCE = 0.99999
+    const val RANSAC_MIN_INLIER_RATIO = 0.1
+    const val RANSAC_DYNAMIC_TRIAL_MULTIPLIER = 3.0
+    const val RANSAC_MIN_NUM_TRIALS = 100
+    const val RANSAC_MAX_LOCAL_TRIALS = 10
     const val LOCAL_OPTIMIZATION_ROUNDS = 2
     const val FINAL_REPROJECTION_ERROR_PX = 4.0f
     const val MINIMUM_CHEIRALITY_RATIO = 0.90

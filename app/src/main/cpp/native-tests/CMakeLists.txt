@@ -13,8 +13,10 @@ enable_testing()
 
 add_executable(tracking_solver_numeric_tests
         tracking_solver_numeric_tests.cpp
+        ../absolute_pose_loransac_core.cpp
         ../camera_pose_refiner_core.cpp
         ../epnp_pose_estimator_core.cpp
+        ../p3p_pose_estimator_core.cpp
         ../global_positioning_core.cpp
         ../global_bundle_adjuster_core.cpp
         ../view_graph_calibration_core.cpp
