@@ -265,6 +265,67 @@ class CameraTrackingEngineEndToEndTest {
     }
 
     @Test
+    fun incrementalEngineRegistersSyntheticWideBaselineSequence() {
+        val frames = SyntheticSequence.render(
+            cameraStepWorld = 0.6,
+            pixelStartX = 700.0,
+            imageWidth = 1280,
+            principalX = 640.0
+        )
+        val cameraMatrix = SyntheticSequence.cameraMatrix(principalX = 640.0)
+        try {
+            val result = runBlocking {
+                CameraReconstructionEngine(
+                    mode = ReconstructionMode.CUSTOM,
+                    options = CameraReconstructionOptions(
+                        customMaxFeatures = 1200,
+                        globalMaxFeatures = 1200,
+                        ratioThreshold = 0.8f,
+                        maximumPairCount = 10
+                    )
+                ).solve(
+                    frameCount = frames.size,
+                    cameraMatrix = cameraMatrix,
+                    frameProvider = { index -> frames[index].clone() }
+                )
+            }
+
+            assertEquals(frames.size, result.processedFrames)
+            assertTrue("Registered cameras=${result.registeredCameraCount}", result.registeredCameraCount >= 3)
+            assertTrue("Initial pair was not reported", result.initialPairFrames != null)
+            assertTrue("Only ${result.totalInliers} inliers were accumulated", result.totalInliers >= 100)
+            assertTrue("Only ${result.featureTracks.size} final tracks", result.featureTracks.size >= 30)
+            assertTrue("Only ${result.landmarks.size} final landmarks", result.landmarks.size >= 30)
+            assertEquals(frames.size, result.poses.size)
+            assertTrue(
+                "Incremental joint solve did not return a candidate: ${result.jointBundleAdjustmentStatus}",
+                result.jointBundleAdjustmentStatus == "Applied" ||
+                    result.jointBundleAdjustmentStatus == "No cost improvement; kept incremental solution"
+            )
+            assertTrue(result.jointBundleAdjustmentInitialCost.isFinite())
+            assertTrue(result.jointBundleAdjustmentFinalCost.isFinite())
+            if (result.jointBundleAdjustmentApplied) {
+                assertTrue(
+                    SolverObjective.didNotIncrease(
+                        result.jointBundleAdjustmentInitialCost,
+                        result.jointBundleAdjustmentFinalCost
+                    )
+                )
+            }
+
+            val exported = JSONObject(CameraSolveExporter.toJson(result))
+            assertEquals(frames.size, exported.getJSONObject("summary").getInt("processedFrames"))
+            assertEquals(result.poses.size, exported.getJSONArray("cameraPoses").length())
+            assertEquals(result.landmarks.size, exported.getJSONArray("landmarks").length())
+            assertFalse(exported.toString().contains("NaN"))
+            assertFalse(exported.toString().contains("Infinity"))
+        } finally {
+            frames.forEach(Mat::release)
+            cameraMatrix.release()
+        }
+    }
+
+    @Test
     fun jointCameraPointAdapterSolvesNoisySyntheticMapAndReportsDiagnostics() {
         val cameraMatrix = SyntheticSequence.cameraMatrix()
         val fx = cameraMatrix.get(0, 0)[0]
@@ -534,11 +595,11 @@ private object SyntheticSequence {
         val box: PixelBox
     )
 
-    fun cameraMatrix(): Mat {
+    fun cameraMatrix(principalX: Double = CX): Mat {
         check(OpenCvRuntime.ensureLoaded()) { "OpenCV could not be loaded in the emulator" }
         return Mat(3, 3, CvType.CV_64F).also { matrix ->
             val values = doubleArrayOf(
-                FX, 0.0, CX,
+                FX, 0.0, principalX,
                 0.0, FY, CY,
                 0.0, 0.0, 1.0
             )
@@ -546,24 +607,33 @@ private object SyntheticSequence {
         }
     }
 
-    fun render(displacedOutliers: Boolean = false): List<Mat> {
+    fun render(
+        displacedOutliers: Boolean = false,
+        cameraStepWorld: Double = CAMERA_STEP_WORLD,
+        pixelStartX: Double = 180.0,
+        imageWidth: Int = WIDTH,
+        principalX: Double = CX
+    ): List<Mat> {
         check(OpenCvRuntime.ensureLoaded()) { "OpenCV could not be loaded in the emulator" }
-        val patches = buildPatches()
+        require(imageWidth > 0)
+        val patches = buildPatches(pixelStartX, principalX)
         return (0 until FRAME_COUNT).map { frameIndex ->
-            val image = ByteArray(WIDTH * HEIGHT) { 127.toByte() }
-            val depthBuffer = IntArray(WIDTH * HEIGHT) { Int.MAX_VALUE }
+            val image = ByteArray(imageWidth * HEIGHT) { 127.toByte() }
+            val depthBuffer = IntArray(imageWidth * HEIGHT) { Int.MAX_VALUE }
             val boxes = ArrayList<PixelBox>(patches.size)
             patches.forEach { patch ->
-                val projection = project(patch, frameIndex, displacedOutliers)
+                val projection = project(
+                    patch, frameIndex, displacedOutliers, cameraStepWorld, principalX
+                )
                 val box = projection.box
-                check(box.left >= 0 && box.top >= 0 && box.right <= WIDTH && box.bottom <= HEIGHT) {
+                check(box.left >= 0 && box.top >= 0 && box.right <= imageWidth && box.bottom <= HEIGHT) {
                     "Synthetic patch is clipped in frame $frameIndex"
                 }
                 check(boxes.none(box::overlaps)) { "Synthetic patches overlap in frame $frameIndex" }
                 boxes += box
-                paste(image, depthBuffer, patch.pixels, patch.pixelSize, box.left, box.top, patch.depth)
+                paste(image, depthBuffer, patch.pixels, patch.pixelSize, box.left, box.top, patch.depth, imageWidth)
             }
-            Mat(HEIGHT, WIDTH, CvType.CV_8UC1).also { mat ->
+            Mat(HEIGHT, imageWidth, CvType.CV_8UC1).also { mat ->
                 val bytesWritten = mat.put(0, 0, image)
                 if (bytesWritten != image.size) {
                     mat.release()
@@ -587,16 +657,16 @@ private object SyntheticSequence {
         }
     }
 
-    private fun buildPatches(): List<Patch> {
+    private fun buildPatches(pixelStartX: Double, principalX: Double): List<Patch> {
         val depths = intArrayOf(4, 5, 7, 10)
         return buildList {
             for (row in 0 until ROWS) {
                 for (column in 0 until COLUMNS) {
                     val id = row * COLUMNS + column
                     val depth = depths[row % depths.size]
-                    val pixelX = 180.0 + column * 50.0
+                    val pixelX = pixelStartX + column * 50.0
                     val pixelY = 60.0 + row * 55.0
-                    val worldX = (pixelX - CX) * depth / FX
+                    val worldX = (pixelX - principalX) * depth / FX
                     val worldY = (pixelY - CY) * depth / FY
                     val pixelSize = (FX * PATCH_WORLD_SIZE / depth).roundToInt()
                     add(
@@ -615,9 +685,15 @@ private object SyntheticSequence {
         }
     }
 
-    private fun project(patch: Patch, frameIndex: Int, displacedOutliers: Boolean): Projection {
-        val cameraCenterX = frameIndex * CAMERA_STEP_WORLD
-        var centerX = (CX + FX * (patch.worldX - cameraCenterX) / patch.depth).roundToInt()
+    private fun project(
+        patch: Patch,
+        frameIndex: Int,
+        displacedOutliers: Boolean,
+        cameraStepWorld: Double,
+        principalX: Double
+    ): Projection {
+        val cameraCenterX = frameIndex * cameraStepWorld
+        var centerX = (principalX + FX * (patch.worldX - cameraCenterX) / patch.depth).roundToInt()
         var centerY = (CY + FY * patch.worldY / patch.depth).roundToInt()
         if (displacedOutliers && frameIndex == 2 && isOutlier(patch)) {
             centerX += if ((patch.row / 2 + patch.column) % 2 == 0) 6 else -6
@@ -652,13 +728,14 @@ private object SyntheticSequence {
         size: Int,
         left: Int,
         top: Int,
-        depth: Int
+        depth: Int,
+        imageWidth: Int
     ) {
         for (y in 0 until size) {
             val targetY = top + y
             for (x in 0 until size) {
                 val targetX = left + x
-                val index = targetY * WIDTH + targetX
+                val index = targetY * imageWidth + targetX
                 if (depth < depthBuffer[index]) {
                     destination[index] = patch[y * size + x]
                     depthBuffer[index] = depth
