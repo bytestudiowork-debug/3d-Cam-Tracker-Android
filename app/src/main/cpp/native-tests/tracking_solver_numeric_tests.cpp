@@ -541,10 +541,24 @@ void TestBundleAdjustmentRejectsDisconnectedGraph() {
     const std::vector<double> image_points(16, 640.0);
     const std::vector<double> intrinsics = {700, 0, 640, 700, 360};
     tracking::GlobalBundleAdjustmentResult result;
+    result.camera_centers = {42.0};
+    result.rotations = {43.0};
+    result.points = {44.0};
+    result.intrinsics = {45.0};
+    result.initial_cost = 46.0;
+    result.final_cost = 47.0;
+    result.positive_depth_ratio = 0.75;
+    result.iterations = 48;
     Require(!tracking::RunGlobalBundleAdjustment(
                     centers, rotations, points, frame_indices, track_indices,
                     image_points, intrinsics, 30, 1, &result),
             "disconnected camera-track graph was accepted");
+    Require(result.camera_centers.empty() && result.rotations.empty() &&
+                    result.points.empty() && result.intrinsics.empty(),
+            "failed bundle adjustment retained stale result vectors");
+    Require(result.initial_cost == 0.0 && result.final_cost == 0.0 &&
+                    result.positive_depth_ratio == 0.0 && result.iterations == 0,
+            "failed bundle adjustment retained stale result metrics");
 }
 
 void TestBundleAdjustmentRejectsRepeatedFrameObservation() {

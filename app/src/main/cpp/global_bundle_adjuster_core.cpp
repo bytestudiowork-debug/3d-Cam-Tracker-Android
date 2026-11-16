@@ -168,7 +168,9 @@ bool RunGlobalBundleAdjustment(const std::vector<double>& initial_camera_centers
                                bool refine_principal_point,
                                int image_width,
                                int image_height) {
-    if (result == nullptr || initial_camera_centers.empty() ||
+    if (result == nullptr) return false;
+    *result = GlobalBundleAdjustmentResult{};
+    if (initial_camera_centers.empty() ||
         initial_camera_centers.size() % 3 != 0 || initial_points.empty() ||
         initial_points.size() % 3 != 0 || frame_indices.size() < 2 ||
         track_indices.size() != frame_indices.size() ||
