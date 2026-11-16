@@ -394,11 +394,15 @@ internal class IncrementalSfMSolver(
                             totalInliers += registration.inlierCount
                             registeredFrames++
                             acceptedRegistrationsSinceMapUpdate++
+                            val refinementFallbackNote = if (
+                                registration.reason.contains("used RANSAC PnP seed")
+                            ) " · RANSAC PnP seed used" else ""
                             diagnostics[frameIndex] = FrameTrackingDiagnostic(
                                 frameIndex, currentKeypoints.size, matches.size,
                                 registration.inlierCount,
                                 "PnP registered (${registration.inlierCount} inliers, " +
-                                    "median ${"%.2f".format(registration.medianReprojectionErrorPx)} px)"
+                                    "median ${"%.2f".format(registration.medianReprojectionErrorPx)} px" +
+                                    "$refinementFallbackNote)"
                             )
 
                             // Triangulate periodically, not after every frame. This bounds
@@ -577,10 +581,14 @@ internal class IncrementalSfMSolver(
                                 totalInliers += registration.inlierCount
                                 registeredFrames++
                                 acceptedRegistrationsSinceMapUpdate++
+                                val refinementFallbackNote = if (
+                                    registration.reason.contains("used RANSAC PnP seed")
+                                ) " · RANSAC PnP seed used" else ""
                                 diagnostics[frameIndex] = FrameTrackingDiagnostic(
                                     frameIndex, currentKeypoints.size, matches.size,
                                     registration.inlierCount,
-                                    "PnP registered backwards (${registration.inlierCount} inliers)"
+                                    "PnP registered backwards (${registration.inlierCount} inliers)" +
+                                        refinementFallbackNote
                                 )
                                 if (acceptedRegistrationsSinceMapUpdate >= 2) {
                                     tracks = trackBuilder.build()

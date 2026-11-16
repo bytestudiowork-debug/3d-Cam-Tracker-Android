@@ -149,22 +149,38 @@ internal object IncrementalCameraRegistrar {
                 rotationVector,
                 translationVector
             )
-            if (refinement == null ||
-                rotationVector.put(0, 0, *refinement.rotationVector) != 3 ||
-                translationVector.put(0, 0, *refinement.translation) != 3
+            val ransacRotationVector = DoubleArray(3)
+            val ransacTranslation = DoubleArray(3)
+            if (rotationVector.get(0, 0, ransacRotationVector) != ransacRotationVector.size ||
+                translationVector.get(0, 0, ransacTranslation) != ransacTranslation.size
             ) {
                 return CameraRegistrationResult.rejected(
                     frameIndex,
                     correspondenceCount,
-                    "Robust pose refinement failed",
+                    "Could not read the RANSAC PnP pose",
+                    inlierCount,
+                    inlierRatio
+                )
+            }
+            if (refinement != null &&
+                (rotationVector.put(0, 0, *refinement.rotationVector) != refinement.rotationVector.size ||
+                    translationVector.put(0, 0, *refinement.translation) != refinement.translation.size)
+            ) {
+                return CameraRegistrationResult.rejected(
+                    frameIndex,
+                    correspondenceCount,
+                    "Could not store the robustly refined PnP pose",
                     inlierCount,
                     inlierRatio
                 )
             }
 
-            val initialPose = poseModel(refinement.rotationVector, refinement.translation)
+            val initialPose = poseModel(
+                refinement?.rotationVector ?: ransacRotationVector,
+                refinement?.translation ?: ransacTranslation
+            )
                 ?: return CameraRegistrationResult.rejected(
-                    frameIndex, correspondenceCount, "Invalid refined PnP pose", inlierCount, inlierRatio
+                    frameIndex, correspondenceCount, "Invalid PnP pose", inlierCount, inlierRatio
                 )
             val polished = LocalConsensusOptimizer.refine(
                 initialModel = initialPose,
@@ -301,7 +317,11 @@ internal object IncrementalCameraRegistrar {
                 occupiedGridCells = occupiedCells,
                 medianReprojectionErrorPx = median,
                 rmsReprojectionErrorPx = rms,
-                reason = "Registered against existing 3D map"
+                reason = if (refinement == null) {
+                    "Registered against existing 3D map; used RANSAC PnP seed because robust refinement returned no candidate"
+                } else {
+                    "Registered against existing 3D map"
+                }
             )
         } finally {
             objectPoints.release()
