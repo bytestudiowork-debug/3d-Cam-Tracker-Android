@@ -657,6 +657,29 @@ void TestGlobalPositioningCeresRecovery() {
             "GLOMAP positioning points did not recover the synthetic scene geometry");
 }
 
+void TestGlobalPositioningRejectsDisconnectedTrackGraph() {
+    const std::vector<double> centers = {
+            0.0, 0.0, 0.0, 0.0, 0.0, 0.0,
+            0.0, 0.0, 0.0, 0.0, 0.0, 0.0,
+            0.0, 0.0, 0.0, 0.0, 0.0, 0.0};
+    const std::vector<double> points = {
+            0.0, 0.0, 5.0, 0.0, 0.0, 5.0};
+    const std::vector<int> frame_indices = {0, 1, 2, 3, 4, 5};
+    const std::vector<int> track_indices = {0, 0, 0, 1, 1, 1};
+    const std::vector<double> directions = {
+            0.0, 0.0, 1.0, 0.0, 0.0, 1.0,
+            0.0, 0.0, 1.0, 0.0, 0.0, 1.0,
+            0.0, 0.0, 1.0, 0.0, 0.0, 1.0};
+    const std::vector<double> scales(6, 0.2);
+    const std::vector<double> loss_scales(6, 1.0);
+    tracking::GlobalPositioningResult result;
+
+    Require(!tracking::RunGlobalPositioning(
+                    centers, points, frame_indices, track_indices, directions,
+                    scales, loss_scales, 20, 1, &result),
+            "global positioning accepted two disconnected camera-track components");
+}
+
 void TestMalformedRotationIsRejected() {
     double scaled_identity[9] = {2, 0, 0, 0, 2, 0, 0, 0, 2};
     Require(!tracking::IsValidRotationMatrix(scaled_identity),
@@ -677,6 +700,7 @@ int main() {
         TestObservablePrincipalPointRefinement();
         TestBundleAdjustmentRejectsDisconnectedGraph();
         TestGlobalPositioningCeresRecovery();
+        TestGlobalPositioningRejectsDisconnectedTrackGraph();
         TestMalformedRotationIsRejected();
         std::cout << "Native numerical regression tests passed.\n";
         return 0;

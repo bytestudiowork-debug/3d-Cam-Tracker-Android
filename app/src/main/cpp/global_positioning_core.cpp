@@ -19,6 +19,31 @@ bool AllFinite(const std::vector<double>& values) {
                        [](double value) { return std::isfinite(value); });
 }
 
+class DisjointSet {
+public:
+    explicit DisjointSet(int size) : parent_(size), rank_(size, 0) {
+        std::iota(parent_.begin(), parent_.end(), 0);
+    }
+
+    int Find(int value) {
+        if (parent_[value] != value) parent_[value] = Find(parent_[value]);
+        return parent_[value];
+    }
+
+    void Unite(int first, int second) {
+        int a = Find(first);
+        int b = Find(second);
+        if (a == b) return;
+        if (rank_[a] < rank_[b]) std::swap(a, b);
+        parent_[b] = a;
+        if (rank_[a] == rank_[b]) ++rank_[a];
+    }
+
+private:
+    std::vector<int> parent_;
+    std::vector<int> rank_;
+};
+
 class ProgressCallback final : public ceres::IterationCallback {
 public:
     ProgressCallback(const std::function<bool(int, int)>& callback,
@@ -80,6 +105,29 @@ bool RunGlobalPositioning(const std::vector<double>& initial_frame_centers,
             loss_scales[i] <= 0.0) {
             return false;
         }
+    }
+
+    // A shared track couples its observing cameras. Reject multiple active
+    // components before Ceres sees their independent translation gauges.
+    DisjointSet camera_components(frame_count);
+    std::vector<int> first_frame_for_track(point_count, -1);
+    std::vector<bool> active_frames(frame_count, false);
+    for (size_t i = 0; i < frame_indices.size(); ++i) {
+        const int frame = frame_indices[i];
+        const int track = track_indices[i];
+        active_frames[frame] = true;
+        if (first_frame_for_track[track] < 0) {
+            first_frame_for_track[track] = frame;
+        } else {
+            camera_components.Unite(first_frame_for_track[track], frame);
+        }
+    }
+    int active_root = -1;
+    for (int frame = 0; frame < frame_count; ++frame) {
+        if (!active_frames[frame]) continue;
+        const int root = camera_components.Find(frame);
+        if (active_root < 0) active_root = root;
+        else if (root != active_root) return false;
     }
 
     std::vector<double> frame_centers = initial_frame_centers;
