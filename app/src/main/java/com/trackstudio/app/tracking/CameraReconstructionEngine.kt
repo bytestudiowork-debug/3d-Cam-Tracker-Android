@@ -7,13 +7,16 @@ class CameraReconstructionOptions(
     val globalMaxFeatures: Int = 1400,
     val ratioThreshold: Float = 0.8f,
     val maximumPairCount: Int = 420,
-    val enableWeakConnectivityPruning: Boolean = false
+    val enableWeakConnectivityPruning: Boolean = false,
+    val globalMinTracksPerView: Int = -1,
+    val globalMaxTracks: Int = 10_000_000
 ) {
     init {
         require(customMaxFeatures in 400..5000)
         require(globalMaxFeatures in 500..4000)
         require(ratioThreshold.isFinite() && ratioThreshold > 0f && ratioThreshold < 1f)
         require(maximumPairCount > 0)
+        require(globalMaxTracks >= 0)
     }
 }
 
@@ -30,7 +33,9 @@ class CameraReconstructionEngine(
             maxFeatures = options.globalMaxFeatures,
             ratioThreshold = options.ratioThreshold,
             maximumPairCount = options.maximumPairCount,
-            enableWeakConnectivityPruning = options.enableWeakConnectivityPruning
+            enableWeakConnectivityPruning = options.enableWeakConnectivityPruning,
+            minTracksPerView = options.globalMinTracksPerView,
+            maximumTracks = options.globalMaxTracks
         )
     }
 

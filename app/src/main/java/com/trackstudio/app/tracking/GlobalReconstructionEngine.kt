@@ -13,6 +13,7 @@ import com.trackstudio.app.tracking.glomap.GlomapTrackFilter
 import com.trackstudio.app.tracking.glomap.GlomapPostRetriangulationRefinement
 import com.trackstudio.app.tracking.glomap.GlomapReconstructionNormalizer
 import com.trackstudio.app.tracking.glomap.GlomapCovisibilityPruner
+import com.trackstudio.app.tracking.glomap.GlomapTrackQuotaSelector
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.async
 import kotlinx.coroutines.awaitAll
@@ -53,12 +54,16 @@ class GlobalReconstructionEngine(
     private val ratioThreshold: Float = 0.8f,
     private val maximumPairCount: Int = 420,
     // GLOMAP's corresponding skip_pruning option defaults to true.
-    private val enableWeakConnectivityPruning: Boolean = false
+    private val enableWeakConnectivityPruning: Boolean = false,
+    // Negative follows the intended unlimited sentinel; see the selector's pinned-source note.
+    private val minTracksPerView: Int = GlomapTrackQuotaSelector.DEFAULT_MIN_TRACKS_PER_VIEW,
+    private val maximumTracks: Int = GlomapTrackQuotaSelector.DEFAULT_MAX_TRACKS
 ) : ReconstructionEngine {
     init {
         require(maxFeatures in 500..4000)
         require(ratioThreshold.isFinite() && ratioThreshold > 0f && ratioThreshold < 1f)
         require(maximumPairCount > 0)
+        require(maximumTracks >= 0)
     }
 
     internal data class FrameFeatures(
@@ -328,7 +333,15 @@ class GlobalReconstructionEngine(
             activePairs.forEach { pair ->
                 trackBuilder.addVerifiedMatches(pair.first, pair.second, pair.inlierMatches)
             }
-            val tracks = trackBuilder.build(frames, rotations.keys)
+            // The builder already orders by descending length and stable representative ID,
+            // matching GLOMAP's track priority before dense Android IDs are assigned.
+            val priorityOrderedTracks = trackBuilder.build(frames, rotations.keys)
+            val tracks = GlomapTrackQuotaSelector.select(
+                priorityOrderedTracks = priorityOrderedTracks,
+                registeredFrameIds = activeFrames.toSet(),
+                minTracksPerView = minTracksPerView,
+                maxNumTracks = maximumTracks
+            ).selectedTracks
             if (tracks.size < 20) {
                 throw IllegalStateException("Global reconstruction found only ${tracks.size} multi-view tracks; at least 20 are needed for a stable solve.")
             }
