@@ -48,6 +48,14 @@ internal class IncrementalSfMSolver(
     private val ratioThreshold: Float = 0.8f,
     private val cameraFocalLengthHasPrior: Boolean = false
 ) {
+    private companion object {
+        const val INITIAL_PAIR_SAMPLE_FRAME_LIMIT = 24
+        const val INITIAL_PAIR_COARSE_DESCRIPTOR_LIMIT = 48
+        const val INITIAL_PAIR_COARSE_EDGE_LIMIT = 320
+        const val INITIAL_PAIR_GEOMETRY_LIMIT = 36
+        const val INITIAL_PAIR_CORRESPONDENCE_RANK_LIMIT = 24
+    }
+
     private data class CachedFrame(
         val keypoints: Array<KeyPoint>,
         val descriptors: Mat,
@@ -74,14 +82,23 @@ internal class IncrementalSfMSolver(
         }
         check(OpenCvRuntime.ensureLoaded()) { "OpenCV could not be initialized on this device." }
 
-        val pairCandidates = InitialPairSelector.temporalCandidates(
+        val temporalPairCandidates = InitialPairSelector.temporalCandidates(
             frameCount = frameCount,
             anchorCount = 6,
             offsets = listOf(2, 4, 6, 9, 13, 18, 24, 32),
             maximumPairs = 36
         )
-        require(pairCandidates.isNotEmpty()) { "No initialization frame pairs are available." }
-        val candidateFrames = pairCandidates.flatMap { listOf(it.first, it.second) }.toSet()
+        val sampledFrameIndices = InitialPairSelector.uniformFrameSamples(
+            frameCount, INITIAL_PAIR_SAMPLE_FRAME_LIMIT
+        )
+        val sampledPairCandidates = InitialPairSelector.sampledFramePairs(
+            sampledFrameIndices, minimumFrameGap = 2
+        )
+        val coarsePairCandidates = (temporalPairCandidates + sampledPairCandidates)
+            .distinct()
+            .take(INITIAL_PAIR_COARSE_EDGE_LIMIT)
+        require(coarsePairCandidates.isNotEmpty()) { "No initialization frame pairs are available." }
+        val candidateFrames = coarsePairCandidates.flatMap { listOf(it.first, it.second) }.toSet()
         val processedFrameFlags = BooleanArray(frameCount)
         var processedFrameCount = 0
         fun markFrameProcessed(index: Int) {
@@ -91,6 +108,7 @@ internal class IncrementalSfMSolver(
             }
         }
         val cache = linkedMapOf<Int, CachedFrame>()
+        val coarseDescriptorCache = linkedMapOf<Int, Mat>()
         val featureExtractor = AndroidSiftFeatureExtractor(maxFeatures.coerceIn(400, 5000))
         val matcher = SiftDescriptorMatcher(ratioThreshold)
         var referenceFrameSize: Pair<Int, Int>? = null
@@ -147,6 +165,41 @@ internal class IncrementalSfMSolver(
                 )
             }
 
+            val coarseMatchSupport = linkedMapOf<Pair<Int, Int>, Int>()
+            coarsePairCandidates.forEachIndexed { candidateIndex, pair ->
+                currentCoroutineContext().ensureActive()
+                val first = cache[pair.first]
+                val second = cache[pair.second]
+                if (first != null && second != null) {
+                    val firstCoarse = coarseDescriptorCache.getOrPut(pair.first) {
+                        coarseDescriptorSubset(first, INITIAL_PAIR_COARSE_DESCRIPTOR_LIMIT)
+                    }
+                    val secondCoarse = coarseDescriptorCache.getOrPut(pair.second) {
+                        coarseDescriptorSubset(second, INITIAL_PAIR_COARSE_DESCRIPTOR_LIMIT)
+                    }
+                    coarseMatchSupport[pair] = matcher.match(firstCoarse, secondCoarse).size
+                }
+                if ((candidateIndex + 1) % 16 == 0 || candidateIndex + 1 == coarsePairCandidates.size) {
+                    onProgress(
+                        CameraTrackingProgress(
+                            frameIndex = frameCount,
+                            frameCount = frameCount,
+                            phase = "Ranking seed pairs by coarse match support (${candidateIndex + 1}/${coarsePairCandidates.size})",
+                            overallFraction = 0.25f + 0.02f * (candidateIndex + 1) / coarsePairCandidates.size,
+                            completedFrames = processedFrameCount,
+                            totalFrames = frameCount
+                        )
+                    )
+                }
+            }
+            val pairCandidates = InitialPairSelector.correspondenceRankedCandidates(
+                candidatePairs = coarsePairCandidates,
+                temporalFallbackPairs = temporalPairCandidates,
+                matchSupportByPair = coarseMatchSupport,
+                maximumCandidates = INITIAL_PAIR_GEOMETRY_LIMIT,
+                correspondenceRankBudget = INITIAL_PAIR_CORRESPONDENCE_RANK_LIMIT
+            )
+
             val evaluations = mutableListOf<InitialPairEvaluation>()
             pairCandidates.forEachIndexed { candidateIndex, pair ->
                 currentCoroutineContext().ensureActive()
@@ -171,7 +224,7 @@ internal class IncrementalSfMSolver(
                         frameIndex = frameCount,
                         frameCount = frameCount,
                         phase = "Evaluating camera-pair geometry (${candidateIndex + 1}/${pairCandidates.size})",
-                        overallFraction = 0.25f + 0.10f * (candidateIndex + 1) / pairCandidates.size,
+                        overallFraction = 0.27f + 0.085f * (candidateIndex + 1) / pairCandidates.size,
                         completedFrames = processedFrameCount,
                         totalFrames = frameCount
                     )
@@ -1721,6 +1774,7 @@ internal class IncrementalSfMSolver(
                 refinedCameraIntrinsics = refinedCameraIntrinsics ?: estimatedCameraIntrinsics
             )
         } finally {
+            coarseDescriptorCache.values.forEach { it.release() }
             cache.values.forEach { it.descriptors.release() }
             matcher.clear()
             featureExtractor.clear()
@@ -1729,6 +1783,37 @@ internal class IncrementalSfMSolver(
             } finally {
                 originalCameraMatrix.release()
             }
+        }
+    }
+
+    private fun coarseDescriptorSubset(frame: CachedFrame, maximumDescriptors: Int): Mat {
+        require(maximumDescriptors > 0)
+        val descriptors = frame.descriptors
+        if (descriptors.empty() || frame.keypoints.isEmpty()) return Mat()
+        require(descriptors.type() == CvType.CV_8U) {
+            "Coarse SIFT matching requires quantized single-channel descriptors."
+        }
+        val availableRows = minOf(descriptors.rows(), frame.keypoints.size)
+        if (availableRows <= 0) return Mat()
+        val selectedRows = (0 until availableRows)
+            .sortedWith(
+                compareByDescending<Int> { row ->
+                    frame.keypoints[row].response.takeIf { it.isFinite() } ?: Float.NEGATIVE_INFINITY
+                }.thenBy { it }
+            )
+            .take(maximumDescriptors)
+        val subset = Mat(selectedRows.size, descriptors.cols(), descriptors.type())
+        val rowBuffer = ByteArray(descriptors.cols() * descriptors.channels())
+        try {
+            selectedRows.forEachIndexed { subsetRow, sourceRow ->
+                val copied = descriptors.get(sourceRow, 0, rowBuffer)
+                check(copied == rowBuffer.size) { "Unable to read a coarse SIFT descriptor row." }
+                subset.put(subsetRow, 0, rowBuffer)
+            }
+            return subset
+        } catch (failure: Throwable) {
+            subset.release()
+            throw failure
         }
     }
 

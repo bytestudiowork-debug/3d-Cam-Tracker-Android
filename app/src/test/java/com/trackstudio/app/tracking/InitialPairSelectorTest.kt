@@ -76,6 +76,83 @@ class InitialPairSelectorTest {
     }
 
     @Test
+    fun uniformSeedSamplesAndPairGraphAreBoundedDeterministicAndCoverSequenceEnds() {
+        val frames = InitialPairSelector.uniformFrameSamples(frameCount = 100, maximumFrames = 24)
+        val pairs = InitialPairSelector.sampledFramePairs(frames, minimumFrameGap = 2)
+
+        assertEquals(24, frames.size)
+        assertEquals(0, frames.first())
+        assertEquals(99, frames.last())
+        assertEquals(frames.size, frames.distinct().size)
+        assertEquals(frames.size * (frames.size - 1) / 2, pairs.size)
+        assertEquals(pairs, InitialPairSelector.sampledFramePairs(frames, minimumFrameGap = 2))
+    }
+
+    @Test
+    fun coarseMatchDegreeOrdersHighCorrespondenceFramesBeforePairSupportTies() {
+        val pairs = listOf(0 to 1, 0 to 2, 0 to 3, 4 to 5)
+        val support = mapOf(
+            (0 to 1) to 7,
+            (0 to 2) to 7,
+            (0 to 3) to 7,
+            (4 to 5) to 18
+        )
+
+        val ranked = InitialPairSelector.correspondenceRankedCandidates(
+            candidatePairs = pairs,
+            temporalFallbackPairs = emptyList(),
+            matchSupportByPair = support,
+            maximumCandidates = 4,
+            correspondenceRankBudget = 4
+        )
+
+        assertEquals(listOf(0 to 1, 0 to 2, 0 to 3, 4 to 5), ranked)
+    }
+
+    @Test
+    fun correspondenceSearchCanPromoteSupportedPairOutsideTemporalSchedule() {
+        val temporal = InitialPairSelector.temporalCandidates(
+            frameCount = 100,
+            anchorCount = 6,
+            offsets = listOf(2, 4, 6, 9, 13, 18, 24, 32),
+            maximumPairs = 36
+        )
+        val sampled = InitialPairSelector.sampledFramePairs(
+            InitialPairSelector.uniformFrameSamples(100, 24), minimumFrameGap = 2
+        )
+        val outsideTemporal = sampled.first { it !in temporal }
+        val support = (sampled + temporal).distinct().associateWith { 1 }.toMutableMap()
+        support[outsideTemporal] = 48
+
+        val ranked = InitialPairSelector.correspondenceRankedCandidates(
+            candidatePairs = sampled + temporal,
+            temporalFallbackPairs = temporal,
+            matchSupportByPair = support,
+            maximumCandidates = 36,
+            correspondenceRankBudget = 24
+        )
+
+        assertTrue("Supported non-temporal edge was omitted: $outsideTemporal", outsideTemporal in ranked)
+        assertEquals(ranked.size, ranked.distinct().size)
+        assertTrue(ranked.size <= 36)
+    }
+
+    @Test
+    fun temporalCandidatesRemainAsBoundedFallbackWhenCoarseGraphHasNoMatches() {
+        val temporal = listOf(0 to 5, 10 to 15, 20 to 25)
+
+        val selected = InitialPairSelector.correspondenceRankedCandidates(
+            candidatePairs = temporal,
+            temporalFallbackPairs = temporal,
+            matchSupportByPair = emptyMap(),
+            maximumCandidates = 2,
+            correspondenceRankBudget = 1
+        )
+
+        assertEquals(temporal.take(2), selected)
+    }
+
+    @Test
     fun selectedCandidatePreservesRecoveredRelativePoseForViewGraph() {
         val rotation = doubleArrayOf(
             1.0, 0.0, 0.0,

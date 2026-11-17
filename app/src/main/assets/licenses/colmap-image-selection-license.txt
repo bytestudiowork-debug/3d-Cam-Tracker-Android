@@ -1,4 +1,4 @@
-The COLMAP library is licensed under the new BSD license. This notice covers the source-derived next-image selection policy and multi-resolution visibility-pyramid scoring adapted into the Android tracking engine from the pinned sources below.
+The COLMAP library is licensed under the new BSD license. This notice covers the source-derived next-image selection policy, initial image-pair candidate ordering, and multi-resolution visibility-pyramid scoring adapted into the Android tracking engine from the pinned sources below.
 
 Adapted sources: src/colmap/sfm/incremental_mapper_impl.cc, src/colmap/sfm/incremental_mapper.h, src/colmap/sfm/observation_manager.cc, src/colmap/sfm/observation_manager.h, and src/colmap/scene/visibility_pyramid.h and visibility_pyramid.cc
 COLMAP commit: c5f9cefc87e5dd596b638e4cee0ff543c7d14755

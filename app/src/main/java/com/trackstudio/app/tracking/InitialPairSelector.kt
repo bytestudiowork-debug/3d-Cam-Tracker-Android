@@ -164,6 +164,97 @@ internal object InitialPairSelector {
         }
         return pairs.toList()
     }
+
+    /** Uniform, deterministic frame samples used by the bounded correspondence pre-search. */
+    fun uniformFrameSamples(frameCount: Int, maximumFrames: Int): List<Int> {
+        if (frameCount <= 0 || maximumFrames <= 0) return emptyList()
+        if (frameCount <= maximumFrames) return (0 until frameCount).toList()
+        if (maximumFrames == 1) return listOf(0)
+        val lastFrame = frameCount - 1
+        return (0 until maximumFrames).map { sampleIndex ->
+            (sampleIndex.toLong() * lastFrame / (maximumFrames - 1)).toInt()
+        }.distinct()
+    }
+
+    /** Enumerates unique chronological pairs from a bounded frame sample. */
+    fun sampledFramePairs(
+        frameIndices: List<Int>,
+        minimumFrameGap: Int = 2,
+        maximumPairs: Int = Int.MAX_VALUE
+    ): List<Pair<Int, Int>> {
+        if (minimumFrameGap < 1 || maximumPairs <= 0) return emptyList()
+        val frames = frameIndices.filter { it >= 0 }.distinct().sorted()
+        val pairs = ArrayList<Pair<Int, Int>>()
+        for (firstIndex in frames.indices) {
+            for (secondIndex in firstIndex + 1 until frames.size) {
+                val first = frames[firstIndex]
+                val second = frames[secondIndex]
+                if (second - first < minimumFrameGap) continue
+                pairs += first to second
+                if (pairs.size >= maximumPairs) return pairs
+            }
+        }
+        return pairs
+    }
+
+    /**
+     * Ranks bounded candidate edges by coarse per-frame match degree, then pair support.
+     * This mirrors COLMAP's image-first/connected-image ordering using Android's sampled
+     * descriptor graph; temporal candidates remain as a bounded fallback.
+     */
+    fun correspondenceRankedCandidates(
+        candidatePairs: List<Pair<Int, Int>>,
+        temporalFallbackPairs: List<Pair<Int, Int>>,
+        matchSupportByPair: Map<Pair<Int, Int>, Int>,
+        maximumCandidates: Int = 36,
+        correspondenceRankBudget: Int = 24
+    ): List<Pair<Int, Int>> {
+        if (maximumCandidates <= 0) return emptyList()
+        require(correspondenceRankBudget >= 0)
+        val uniquePairs = linkedSetOf<Pair<Int, Int>>()
+        (candidatePairs + temporalFallbackPairs).forEach { pair ->
+            val normalized = normalizePair(pair) ?: return@forEach
+            uniquePairs += normalized
+        }
+        if (uniquePairs.isEmpty()) return emptyList()
+
+        val support = uniquePairs.associateWith { pair ->
+            matchSupportByPair[ pair ] ?: matchSupportByPair[ pair.second to pair.first ] ?: 0
+        }
+        val frameDegree = HashMap<Int, Int>()
+        support.forEach { (pair, count) ->
+            val nonNegativeCount = count.coerceAtLeast(0)
+            frameDegree[pair.first] = (frameDegree[pair.first] ?: 0) + nonNegativeCount
+            frameDegree[pair.second] = (frameDegree[pair.second] ?: 0) + nonNegativeCount
+        }
+        val rankedEdges = uniquePairs
+            .filter { (support[it] ?: 0) > 0 }
+            .sortedWith(
+                compareByDescending<Pair<Int, Int>> {
+                    maxOf(frameDegree[it.first] ?: 0, frameDegree[it.second] ?: 0)
+                }.thenByDescending { support[it] ?: 0 }
+                    .thenBy { it.first }
+                    .thenBy { it.second }
+            )
+        val rankedBudget = minOf(maximumCandidates, correspondenceRankBudget)
+        val selected = ArrayList<Pair<Int, Int>>(maximumCandidates)
+        selected += rankedEdges.take(rankedBudget)
+
+        val temporalOrder = temporalFallbackPairs.mapIndexedNotNull { index, pair ->
+            normalizePair(pair)?.let { normalized -> Triple(index, normalized, support[normalized] ?: 0) }
+        }.distinctBy { it.second }
+            .sortedWith(compareByDescending<Triple<Int, Pair<Int, Int>, Int>> { it.third }.thenBy { it.first })
+        for ((_, pair, _) in temporalOrder) {
+            if (selected.size >= maximumCandidates) break
+            if (pair !in selected) selected += pair
+        }
+        return selected
+    }
+
+    private fun normalizePair(pair: Pair<Int, Int>): Pair<Int, Int>? {
+        if (pair.first == pair.second || pair.first < 0 || pair.second < 0) return null
+        return minOf(pair.first, pair.second) to maxOf(pair.first, pair.second)
+    }
 }
 
 internal data class InitialPairCandidate(
