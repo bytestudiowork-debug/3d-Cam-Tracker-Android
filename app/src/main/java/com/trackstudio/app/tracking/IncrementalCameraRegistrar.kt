@@ -1,5 +1,6 @@
 package com.trackstudio.app.tracking
 
+import com.trackstudio.app.tracking.colmap.ColmapP4pfAbsolutePoseEstimator
 import org.opencv.calib3d.Calib3d
 import org.opencv.core.CvException
 import org.opencv.core.CvType
@@ -35,7 +36,8 @@ internal object IncrementalCameraRegistrar {
         maximumReprojectionErrorPx: Float = CameraRegistrationPolicy.FINAL_REPROJECTION_ERROR_PX,
         minimumOccupiedGridCells: Int = CameraRegistrationPolicy.MINIMUM_OCCUPIED_GRID_CELLS,
         ransacReprojectionErrorPx: Float = CameraRegistrationPolicy.RANSAC_REPROJECTION_ERROR_PX,
-        minimumCheiralityRatio: Double = CameraRegistrationPolicy.MINIMUM_CHEIRALITY_RATIO
+        minimumCheiralityRatio: Double = CameraRegistrationPolicy.MINIMUM_CHEIRALITY_RATIO,
+        estimateFocalLength: Boolean = false
     ): CameraRegistrationResult {
         require(frameWidth > 0 && frameHeight > 0)
         require(cameraMatrix.rows() == 3 && cameraMatrix.cols() == 3 && !cameraMatrix.empty())
@@ -46,16 +48,17 @@ internal object IncrementalCameraRegistrar {
         require(ransacReprojectionErrorPx.isFinite() && ransacReprojectionErrorPx > 0f)
         require(minimumCheiralityRatio.isFinite() && minimumCheiralityRatio in 0.0..1.0)
 
-        val intrinsics = PinholeIntrinsics(
+        val initialIntrinsics = PinholeIntrinsics(
             cameraMatrix.get(0, 0)?.firstOrNull() ?: Double.NaN,
             cameraMatrix.get(1, 1)?.firstOrNull() ?: Double.NaN,
             cameraMatrix.get(0, 1)?.firstOrNull() ?: Double.NaN,
             cameraMatrix.get(0, 2)?.firstOrNull() ?: Double.NaN,
             cameraMatrix.get(1, 2)?.firstOrNull() ?: Double.NaN
         )
-        if (!intrinsics.fx.isFinite() || !intrinsics.fy.isFinite() ||
-            !intrinsics.skew.isFinite() || !intrinsics.cx.isFinite() ||
-            !intrinsics.cy.isFinite() || intrinsics.fx <= 0.0 || intrinsics.fy <= 0.0
+        if (!initialIntrinsics.fx.isFinite() || !initialIntrinsics.fy.isFinite() ||
+            !initialIntrinsics.skew.isFinite() || !initialIntrinsics.cx.isFinite() ||
+            !initialIntrinsics.cy.isFinite() || initialIntrinsics.fx <= 0.0 ||
+            initialIntrinsics.fy <= 0.0
         ) return CameraRegistrationResult.rejected(frameIndex, 0, "Invalid camera intrinsics")
 
         val observationsByTrack = featureTracks.associate { track ->
@@ -90,29 +93,83 @@ internal object IncrementalCameraRegistrar {
         val inlierImagePoints = MatOfPoint2f()
         val projectedPoints = MatOfPoint2f()
         val rotationMatrix = Mat(3, 3, CvType.CV_64F)
+        val effectiveCameraMatrix = cameraMatrix.clone()
+        var effectiveIntrinsics = initialIntrinsics
 
         return try {
-            val estimate = AbsolutePoseLORansacEstimator.estimate(
-                points3d.toTypedArray(),
-                points2d.toTypedArray(),
-                cameraMatrix,
-                ransacReprojectionErrorPx
-            )
-            if (estimate == null) {
+            val p4pfEstimate = if (estimateFocalLength) {
+                val worldPointsXYZ = DoubleArray(points3d.size * 3)
+                val imagePointsXY = DoubleArray(points2d.size * 2)
+                points3d.forEachIndexed { index, point ->
+                    worldPointsXYZ[index * 3] = point.x
+                    worldPointsXYZ[index * 3 + 1] = point.y
+                    worldPointsXYZ[index * 3 + 2] = point.z
+                    imagePointsXY[index * 2] = points2d[index].x
+                    imagePointsXY[index * 2 + 1] = points2d[index].y
+                }
+                ColmapP4pfAbsolutePoseEstimator.estimate(
+                    worldPointsXYZ = worldPointsXYZ,
+                    imagePointsXY = imagePointsXY,
+                    initialIntrinsics = initialIntrinsics,
+                    maxErrorPx = ransacReprojectionErrorPx.toDouble()
+                )
+            } else {
+                null
+            }
+            if (estimateFocalLength && p4pfEstimate == null) {
+                return CameraRegistrationResult.rejected(
+                    frameIndex, correspondenceCount,
+                    "COLMAP P4PF could not estimate pose and focal length"
+                )
+            }
+            val fixedIntrinsicsEstimate = if (p4pfEstimate == null) {
+                AbsolutePoseLORansacEstimator.estimate(
+                    points3d.toTypedArray(),
+                    points2d.toTypedArray(),
+                    effectiveCameraMatrix,
+                    ransacReprojectionErrorPx
+                )
+            } else {
+                null
+            }
+            if (p4pfEstimate == null && fixedIntrinsicsEstimate == null) {
                 return CameraRegistrationResult.rejected(
                     frameIndex, correspondenceCount, "PnP LO-RANSAC could not estimate a stable pose"
                 )
             }
-            if (rotationMatrix.put(0, 0, *estimate.rotation) != 9 ||
-                translationVector.put(0, 0, *estimate.translation) != 3
+            if (p4pfEstimate != null) {
+                val referenceDimension = maxOf(frameWidth, frameHeight).toDouble()
+                val minimumFocal = CameraRegistrationPolicy.MINIMUM_FOCAL_LENGTH_RATIO * referenceDimension
+                val maximumFocal = CameraRegistrationPolicy.MAXIMUM_FOCAL_LENGTH_RATIO * referenceDimension
+                if (p4pfEstimate.refinedFx !in minimumFocal..maximumFocal ||
+                    p4pfEstimate.refinedFy !in minimumFocal..maximumFocal
+                ) {
+                    return CameraRegistrationResult.rejected(
+                        frameIndex, correspondenceCount,
+                        "COLMAP P4PF focal length failed the camera sanity bounds"
+                    )
+                }
+                effectiveIntrinsics = initialIntrinsics.copy(
+                    fx = p4pfEstimate.refinedFx,
+                    fy = p4pfEstimate.refinedFy
+                )
+                if (effectiveCameraMatrix.put(0, 0, *effectiveIntrinsics.toRowMajorMatrix()) != 9) {
+                    return CameraRegistrationResult.rejected(
+                        frameIndex, correspondenceCount, "Could not store the P4PF focal estimate"
+                    )
+                }
+            }
+            val estimateRotation = p4pfEstimate?.rotation ?: fixedIntrinsicsEstimate!!.rotation
+            val estimateTranslation = p4pfEstimate?.translation ?: fixedIntrinsicsEstimate!!.translation
+            var inlierIds = p4pfEstimate?.inlierIndices ?: fixedIntrinsicsEstimate!!.inlierIndices
+            if (rotationMatrix.put(0, 0, *estimateRotation) != 9 ||
+                translationVector.put(0, 0, *estimateTranslation) != 3
             ) {
                 return CameraRegistrationResult.rejected(
-                    frameIndex, correspondenceCount, "Invalid PnP LO-RANSAC pose output"
+                    frameIndex, correspondenceCount, "Invalid absolute-pose estimator output"
                 )
             }
             Calib3d.Rodrigues(rotationMatrix, rotationVector)
-
-            var inlierIds = estimate.inlierIndices
 
             var inlierCount = inlierIds.size
             var inlierRatio = inlierCount.toDouble() / correspondenceCount
@@ -130,13 +187,17 @@ internal object IncrementalCameraRegistrar {
             val initialImageArray = inlierIds.map { points2d[it] }.toTypedArray()
 
             // Refine the RANSAC pose against its initial consensus.
-            val refinement = CameraPoseRefiner.refine(
-                initialObjectArray,
-                initialImageArray,
-                cameraMatrix,
-                rotationVector,
-                translationVector
-            )
+            val refinement = if (p4pfEstimate == null) {
+                CameraPoseRefiner.refine(
+                    initialObjectArray,
+                    initialImageArray,
+                    effectiveCameraMatrix,
+                    rotationVector,
+                    translationVector
+                )
+            } else {
+                null
+            }
             val ransacRotationVector = DoubleArray(3)
             val ransacTranslation = DoubleArray(3)
             val expectedPoseReadBytes = ransacRotationVector.size * java.lang.Double.BYTES
@@ -184,11 +245,11 @@ internal object IncrementalCameraRegistrar {
                 maximumRefitRounds = CameraRegistrationPolicy.LOCAL_OPTIMIZATION_ROUNDS,
                 fitCandidates = { _, consensusIndices ->
                     fitPoseModel(
-                        consensusIndices, points3d, points2d, cameraMatrix
+                        consensusIndices, points3d, points2d, effectiveCameraMatrix
                     )?.let(::listOf).orEmpty()
                 },
                 residual = { pose, index ->
-                    reprojectionError(pose, points3d[index], points2d[index], intrinsics)
+                    reprojectionError(pose, points3d[index], points2d[index], effectiveIntrinsics)
                 }
             )
             val finalPose = if (polished != null && polished.inlierIndices.size >= inlierCount) {
@@ -263,7 +324,7 @@ internal object IncrementalCameraRegistrar {
                 inlierObjectPoints,
                 rotationVector,
                 translationVector,
-                cameraMatrix,
+                effectiveCameraMatrix,
                 distortion,
                 projectedPoints
             )
@@ -322,7 +383,10 @@ internal object IncrementalCameraRegistrar {
                 occupiedGridCells = occupiedCells,
                 medianReprojectionErrorPx = median,
                 rmsReprojectionErrorPx = rms,
-                reason = if (refinement == null) {
+                refinedIntrinsics = p4pfEstimate?.let { effectiveIntrinsics },
+                reason = if (p4pfEstimate != null) {
+                    "Registered against existing 3D map with COLMAP P4PF focal estimation"
+                } else if (refinement == null) {
                     "Registered against existing 3D map; used the LO-RANSAC pose because robust refinement returned no candidate"
                 } else {
                     "Registered against existing 3D map"
@@ -336,6 +400,7 @@ internal object IncrementalCameraRegistrar {
             inlierImagePoints.release()
             projectedPoints.release()
             rotationMatrix.release()
+            effectiveCameraMatrix.release()
         }
     }
 
@@ -455,6 +520,8 @@ internal object CameraRegistrationPolicy {
     const val RANSAC_MIN_NUM_TRIALS = 100
     const val RANSAC_MAX_LOCAL_TRIALS = 10
     const val LOCAL_OPTIMIZATION_ROUNDS = 2
+    const val MINIMUM_FOCAL_LENGTH_RATIO = 0.1
+    const val MAXIMUM_FOCAL_LENGTH_RATIO = 10.0
     const val FINAL_REPROJECTION_ERROR_PX = 4.0f
     const val MINIMUM_CHEIRALITY_RATIO = 0.90
     const val MINIMUM_OCCUPIED_GRID_CELLS = 4
@@ -470,7 +537,8 @@ internal data class CameraRegistrationResult(
     val occupiedGridCells: Int,
     val medianReprojectionErrorPx: Double,
     val rmsReprojectionErrorPx: Double,
-    val reason: String
+    val reason: String,
+    val refinedIntrinsics: PinholeIntrinsics? = null
 ) {
     companion object {
         fun rejected(

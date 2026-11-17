@@ -9,6 +9,7 @@
 #include "positioning_direction_residual.h"
 #include "view_graph_calibration_core.h"
 #include "glomap_relative_pose_estimator_core.h"
+#include "colmap_p4pf_absolute_pose_core.h"
 
 #include <ceres/loss_function.h>
 #include <ceres/rotation.h>
@@ -1296,6 +1297,104 @@ void TestAbsolutePoseLORansacFinitePopulationAndOutlierRecovery() {
             "fixed-seed LO-RANSAC changed its result across repeated runs");
 }
 
+void TestColmapP4pfAbsolutePoseFocalRecovery() {
+    constexpr int kNumInliers = 140;
+    constexpr int kNumOutliers = 40;
+    const Eigen::Matrix3d truth_rotation =
+            Eigen::AngleAxisd(0.11, Eigen::Vector3d(0.3, -0.4, 0.8).normalized())
+                    .toRotationMatrix();
+    const Eigen::Vector3d truth_translation(0.24, -0.17, 0.31);
+    constexpr double kTruthFocal = 920.0;
+    constexpr double kCx = 640.0;
+    constexpr double kCy = 360.0;
+    std::vector<Eigen::Vector2d> image_points;
+    std::vector<Eigen::Vector3d> world_points;
+    image_points.reserve(kNumInliers + kNumOutliers);
+    world_points.reserve(kNumInliers + kNumOutliers);
+    for (int index = 0; index < kNumInliers + kNumOutliers; ++index) {
+        const Eigen::Vector3d world_point(
+                1.8 * std::sin(0.17 * index),
+                1.4 * std::cos(0.13 * index),
+                4.2 + 0.035 * index + 0.4 * std::sin(0.07 * index));
+        const Eigen::Vector3d camera_point = truth_rotation * world_point + truth_translation;
+        Require(camera_point.z() > 0.0,
+                "P4PF synthetic scene contains a point behind the camera");
+        Eigen::Vector2d pixel(kTruthFocal * camera_point.x() / camera_point.z() + kCx,
+                              kTruthFocal * camera_point.y() / camera_point.z() + kCy);
+        if (index < kNumInliers) {
+            pixel.x() += 0.12 * std::sin(0.31 * index);
+            pixel.y() += 0.10 * std::cos(0.23 * index);
+        } else {
+            pixel.x() += 110.0 + 3.0 * (index % 11);
+            pixel.y() -= 125.0 + 2.0 * (index % 13);
+        }
+        image_points.push_back(pixel);
+        world_points.push_back(world_point);
+    }
+
+    tracking::P4pfCameraIntrinsics intrinsics{720.0, 735.0, 0.0, kCx, kCy};
+    tracking::P4pfAbsolutePoseOptions options;
+    options.max_error_px = 3.0;
+    options.min_inlier_ratio = 0.1;
+    options.confidence = 0.99999;
+    options.dynamic_trial_multiplier = 3.0;
+    options.min_num_trials = 100;
+    options.max_num_trials = 5000;
+    options.random_seed = 20261117;
+
+    const double inlier_probability =
+            (80.0 / 100.0) * (79.0 / 99.0) * (78.0 / 98.0) * (77.0 / 97.0);
+    const size_t expected_trials = static_cast<size_t>(std::ceil(
+            std::log(1.0 - options.confidence) /
+            std::log(1.0 - inlier_probability) * options.dynamic_trial_multiplier));
+    Require(tracking::ComputeP4pfRansacNumTrials(
+                    80, 100, options.confidence, options.dynamic_trial_multiplier) ==
+                    expected_trials,
+            "P4PF adaptive RANSAC trial count differs from the finite-population formula");
+
+    tracking::P4pfAbsolutePoseResult result;
+    Require(tracking::EstimateAbsolutePoseP4PF(
+                    image_points, world_points, intrinsics, options, &result),
+            "COLMAP P4PF failed to recover the synthetic pose and focal length");
+    Require(result.num_trials >= options.min_num_trials &&
+                    result.num_trials <= options.max_num_trials,
+            "COLMAP P4PF violated its minimum or maximum RANSAC trial bound");
+    Require(result.inlier_indices.size() >= kNumInliers - 3 &&
+                    result.inlier_indices.size() <= kNumInliers,
+            "COLMAP P4PF did not recover the clean correspondence consensus");
+    Require(std::all_of(result.inlier_indices.begin(), result.inlier_indices.end(),
+                        [](int index) { return index >= 0 && index < kNumInliers; }),
+            "COLMAP P4PF accepted a synthetic outlier");
+    const double rotation_error = Eigen::AngleAxisd(
+            result.rotation * truth_rotation.transpose()).angle();
+    Require(rotation_error < 0.004 &&
+                    (result.translation - truth_translation).norm() < 0.04 &&
+                    std::abs(result.refined_fx - kTruthFocal) < 12.0 &&
+                    std::abs(result.refined_fy - kTruthFocal) < 12.0,
+            "COLMAP P4PF pose or independently refined PINHOLE focal values are inaccurate");
+
+    tracking::P4pfAbsolutePoseOptions invalid_options = options;
+    tracking::P4pfCameraIntrinsics skewed_intrinsics = intrinsics;
+    skewed_intrinsics.skew = 0.25;
+    tracking::P4pfAbsolutePoseResult invalid_result;
+    Require(!tracking::EstimateAbsolutePoseP4PF(
+                    image_points, world_points, skewed_intrinsics, invalid_options,
+                    &invalid_result),
+            "zero-skew COLMAP P4PF path accepted unsupported camera skew");
+
+    tracking::P4pfAbsolutePoseResult repeated;
+    Require(tracking::EstimateAbsolutePoseP4PF(
+                    image_points, world_points, intrinsics, options, &repeated),
+            "fixed-seed COLMAP P4PF repeat failed");
+    Require(result.inlier_indices == repeated.inlier_indices &&
+                    result.num_trials == repeated.num_trials &&
+                    (result.rotation - repeated.rotation).norm() < 1e-12 &&
+                    (result.translation - repeated.translation).norm() < 1e-12 &&
+                    std::abs(result.refined_fx - repeated.refined_fx) < 1e-12 &&
+                    std::abs(result.refined_fy - repeated.refined_fy) < 1e-12,
+            "fixed-seed COLMAP P4PF output changed for identical inputs");
+}
+
 void TestGlomapRelativePoseEstimatorWithPinnedPoseLib() {
     const tracking::GlomapRelativePoseCamera camera{
             780.0, 805.0, 3.5, 640.0, 360.0, 1280, 720};
@@ -1415,6 +1514,7 @@ int main() {
         TestP3PCandidateRecoveryAcrossInputPermutations();
         TestP3PRejectsDegenerateTriples();
         TestAbsolutePoseLORansacFinitePopulationAndOutlierRecovery();
+        TestColmapP4pfAbsolutePoseFocalRecovery();
         TestGlomapRelativePoseEstimatorWithPinnedPoseLib();
         TestMalformedRotationIsRejected();
         std::cout << "Native numerical regression tests passed.\n";

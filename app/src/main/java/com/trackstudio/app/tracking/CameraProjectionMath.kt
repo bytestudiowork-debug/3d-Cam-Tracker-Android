@@ -6,7 +6,13 @@ internal data class PinholeIntrinsics(
     val skew: Double,
     val cx: Double,
     val cy: Double
-)
+) {
+    fun toRowMajorMatrix(): DoubleArray = doubleArrayOf(
+        fx, skew, cx,
+        0.0, fy, cy,
+        0.0, 0.0, 1.0
+    )
+}
 
 internal object CameraProjectionMath {
     fun pixelToNormalized(x: Double, y: Double, intrinsics: PinholeIntrinsics): DoubleArray {

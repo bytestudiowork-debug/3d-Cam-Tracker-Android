@@ -13,7 +13,8 @@ import org.opencv.core.Mat
  */
 class CameraTrackingEngine(
     private val maxFeatures: Int = 1800,
-    private val ratioThreshold: Float = 0.8f
+    private val ratioThreshold: Float = 0.8f,
+    private val cameraFocalLengthHasPrior: Boolean = false
 ) : ReconstructionEngine {
     init {
         require(maxFeatures in 400..5000)
@@ -26,7 +27,7 @@ class CameraTrackingEngine(
         frameProvider: suspend (Int) -> Mat?,
         onProgress: suspend (CameraTrackingProgress) -> Unit
     ): CameraTrackingResult = withContext(Dispatchers.Default) {
-        IncrementalSfMSolver(maxFeatures, ratioThreshold).solve(
+        IncrementalSfMSolver(maxFeatures, ratioThreshold, cameraFocalLengthHasPrior).solve(
             frameCount = frameCount,
             cameraMatrix = cameraMatrix,
             frameProvider = frameProvider,

@@ -42,7 +42,8 @@ internal fun <T> withSourceReleaseOnFailure(source: Mat, block: (Mat) -> T): T {
  */
 internal class IncrementalSfMSolver(
     private val maxFeatures: Int = 1800,
-    private val ratioThreshold: Float = 0.8f
+    private val ratioThreshold: Float = 0.8f,
+    private val cameraFocalLengthHasPrior: Boolean = false
 ) {
     private data class CachedFrame(
         val keypoints: Array<KeyPoint>,
@@ -90,6 +91,7 @@ internal class IncrementalSfMSolver(
         val featureExtractor = AndroidSiftFeatureExtractor(maxFeatures.coerceIn(400, 5000))
         val matcher = SiftDescriptorMatcher(ratioThreshold)
         var referenceFrameSize: Pair<Int, Int>? = null
+        val originalCameraMatrix = cameraMatrix.clone()
 
         try {
             // Bounded first pass: retain descriptors only for frames participating
@@ -337,7 +339,7 @@ internal class IncrementalSfMSolver(
                 }
             }
 
-            val filterIntrinsics = PinholeIntrinsics(
+            var filterIntrinsics = PinholeIntrinsics(
                 fx = cameraMatrix.get(0, 0)?.firstOrNull() ?: Double.NaN,
                 skew = cameraMatrix.get(0, 1)?.firstOrNull() ?: Double.NaN,
                 cx = cameraMatrix.get(0, 2)?.firstOrNull() ?: Double.NaN,
@@ -461,6 +463,8 @@ internal class IncrementalSfMSolver(
             var totalInliers = geometry.inlierCount
             var registeredFrames = 2
             var acceptedRegistrationsSinceMapUpdate = 0
+            var focalLengthHasBeenEstimated = cameraFocalLengthHasPrior
+            var estimatedCameraIntrinsics: CameraIntrinsics? = null
             val diagnostics = MutableList(frameCount) { index ->
                 FrameTrackingDiagnostic(index, 0, 0, 0, "Not registered")
             }
@@ -474,6 +478,51 @@ internal class IncrementalSfMSolver(
 
             val registrationTrialsByFrame = IntArray(frameCount)
             val failedRegistrationFrames = linkedSetOf<Int>()
+
+            fun registerMapFrame(
+                frameIndex: Int,
+                imageWidth: Int,
+                imageHeight: Int,
+                featureTracks: List<CameraFeatureTrack>,
+                landmarks: Collection<CameraLandmark>,
+                cameraMatrix: Mat
+            ): CameraRegistrationResult {
+                val shouldEstimateFocalLength = !focalLengthHasBeenEstimated
+                val registration = IncrementalCameraRegistrar.register(
+                    frameIndex = frameIndex,
+                    frameWidth = imageWidth,
+                    frameHeight = imageHeight,
+                    featureTracks = featureTracks,
+                    landmarks = landmarks,
+                    cameraMatrix = cameraMatrix,
+                    estimateFocalLength = shouldEstimateFocalLength
+                )
+                if (!registration.accepted || !shouldEstimateFocalLength) return registration
+                val estimatedIntrinsics = registration.refinedIntrinsics
+                    ?: return registration.copy(
+                        accepted = false,
+                        pose = null,
+                        reason = "Accepted P4PF pose did not return its focal estimate"
+                    )
+                if (cameraMatrix.put(0, 0, *estimatedIntrinsics.toRowMajorMatrix()) != 9) {
+                    return registration.copy(
+                        accepted = false,
+                        pose = null,
+                        reason = "Could not commit the accepted P4PF focal estimate"
+                    )
+                }
+                filterIntrinsics = estimatedIntrinsics
+                estimatedCameraIntrinsics = CameraIntrinsics(
+                    fx = estimatedIntrinsics.fx,
+                    skew = estimatedIntrinsics.skew,
+                    cx = estimatedIntrinsics.cx,
+                    fy = estimatedIntrinsics.fy,
+                    cy = estimatedIntrinsics.cy
+                )
+                focalLengthHasBeenEstimated = true
+                return registration
+            }
+
             suspend fun retryFailedFramesAfterMapUpdate(imageWidth: Int, imageHeight: Int) {
                 // The streaming Android path only retries frames whose features have
                 // already entered the persistent track graph; it does not cache all frames.
@@ -524,7 +573,7 @@ internal class IncrementalSfMSolver(
                     currentCoroutineContext().ensureActive()
                     val candidateFrame = candidate.frameIndex
                     registrationTrialsByFrame[candidateFrame]++
-                    val registration = IncrementalCameraRegistrar.register(
+                    val registration = registerMapFrame(
                         frameIndex = candidateFrame,
                         frameWidth = imageWidth,
                         frameHeight = imageHeight,
@@ -608,7 +657,7 @@ internal class IncrementalSfMSolver(
                         }
 
                         registrationTrialsByFrame[frameIndex]++
-                        var registration = IncrementalCameraRegistrar.register(
+                        var registration = registerMapFrame(
                             frameIndex = frameIndex,
                             frameWidth = source.cols(),
                             frameHeight = source.rows(),
@@ -631,7 +680,7 @@ internal class IncrementalSfMSolver(
                                     selected.secondFrame, frameIndex,
                                     secondFrame.keypoints, currentKeypoints, anchorMatches
                                 )
-                                                                val recovered = IncrementalCameraRegistrar.register(
+                                val recovered = registerMapFrame(
                                     frameIndex = frameIndex,
                                     frameWidth = source.cols(),
                                     frameHeight = source.rows(),
@@ -659,7 +708,7 @@ internal class IncrementalSfMSolver(
                                     selected.firstFrame, frameIndex,
                                     firstFrame.keypoints, currentKeypoints, firstAnchorMatches
                                 )
-                                                                val recoveredFromFirst = IncrementalCameraRegistrar.register(
+                                val recoveredFromFirst = registerMapFrame(
                                     frameIndex = frameIndex,
                                     frameWidth = source.cols(),
                                     frameHeight = source.rows(),
@@ -806,7 +855,7 @@ internal class IncrementalSfMSolver(
                             )
                         } else {
                             registrationTrialsByFrame[frameIndex]++
-                            var registration = IncrementalCameraRegistrar.register(
+                            var registration = registerMapFrame(
                                 frameIndex = frameIndex,
                                 frameWidth = source.cols(),
                                 frameHeight = source.rows(),
@@ -828,7 +877,7 @@ internal class IncrementalSfMSolver(
                                         selected.secondFrame, frameIndex,
                                         secondFrame.keypoints, currentKeypoints, anchorMatches
                                     )
-                                                                        val recovered = IncrementalCameraRegistrar.register(
+                                    val recovered = registerMapFrame(
                                         frameIndex = frameIndex,
                                         frameWidth = source.cols(),
                                         frameHeight = source.rows(),
@@ -856,7 +905,7 @@ internal class IncrementalSfMSolver(
                                         selected.firstFrame, frameIndex,
                                         firstFrame.keypoints, currentKeypoints, firstAnchorMatches
                                     )
-                                                                        val recoveredFromFirst = IncrementalCameraRegistrar.register(
+                                    val recoveredFromFirst = registerMapFrame(
                                         frameIndex = frameIndex,
                                         frameWidth = source.cols(),
                                         frameHeight = source.rows(),
@@ -977,7 +1026,7 @@ internal class IncrementalSfMSolver(
                 }
                 for ((position, frameIndex) in refinementFrames.withIndex()) {
                     currentCoroutineContext().ensureActive()
-                    val registration = IncrementalCameraRegistrar.register(
+                    val registration = registerMapFrame(
                         frameIndex = frameIndex,
                         frameWidth = firstFrame.width,
                         frameHeight = firstFrame.height,
@@ -1485,12 +1534,17 @@ internal class IncrementalSfMSolver(
                 jointBundleAdjustmentPositiveDepthRatio = jointBundleAdjustmentPositiveDepthRatio,
                 jointBundleAdjustmentPrincipalPointRefinementEnabled =
                     jointBundleAdjustmentPrincipalPointRefinementEnabled,
-                refinedCameraIntrinsics = refinedCameraIntrinsics
+                refinedCameraIntrinsics = refinedCameraIntrinsics ?: estimatedCameraIntrinsics
             )
         } finally {
             cache.values.forEach { it.descriptors.release() }
             matcher.clear()
             featureExtractor.clear()
+            try {
+                originalCameraMatrix.copyTo(cameraMatrix)
+            } finally {
+                originalCameraMatrix.release()
+            }
         }
     }
 

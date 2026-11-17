@@ -92,6 +92,8 @@ find_library(jnigraphics-lib jnigraphics)
 add_library(trackstudio_reconstruction SHARED
         glomap_positioner.cpp
         global_positioning_core.cpp
+        colmap_p4pf_absolute_pose_core.cpp
+        colmap_p4pf_absolute_pose_jni.cpp
         glomap_relative_pose_estimator_core.cpp
         glomap_relative_pose_estimator_jni.cpp
         glomap_view_graph_calibrator.cpp

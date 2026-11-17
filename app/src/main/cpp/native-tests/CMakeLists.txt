@@ -28,6 +28,7 @@ target_compile_options(PoseLib PRIVATE -Wno-error)
 add_executable(tracking_solver_numeric_tests
         tracking_solver_numeric_tests.cpp
         ../absolute_pose_loransac_core.cpp
+        ../colmap_p4pf_absolute_pose_core.cpp
         ../camera_pose_refiner_core.cpp
         ../epnp_pose_estimator_core.cpp
         ../p3p_pose_estimator_core.cpp
