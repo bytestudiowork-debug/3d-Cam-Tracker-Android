@@ -51,6 +51,40 @@ class GlobalViewGraphSolverTest {
         assertEquals(1, result.acceptedEdgeCount)
     }
 
+    @Test
+    fun averagedRotationsAlignToPnPGaugeWithoutChangingRelativeRotations() {
+        val expected = (0..3).associateWith { frame ->
+            rotation(frame * 0.03, frame * -0.07, frame * 0.02)
+        }
+        val arbitraryGauge = rotation(0.31, -0.17, 0.08)
+        val graphGaugeRotations = expected.mapValues { (_, value) ->
+            multiply(value, transpose(arbitraryGauge))
+        }
+
+        val aligned = GlobalViewGraphSolver.alignRotationsToPoseGauge(
+            rotationsByFrame = graphGaugeRotations,
+            anchorFrameId = 2,
+            targetAnchorRotation = expected.getValue(2)
+        )
+
+        assertNotNull(aligned)
+        for ((frame, truth) in expected) {
+            assertTrue(
+                "frame=$frame",
+                rotationError(aligned!!.getValue(frame), truth) < 1e-6
+            )
+        }
+        val beforeRelative = relative(graphGaugeRotations.getValue(3), graphGaugeRotations.getValue(1))
+        val afterRelative = relative(aligned!!.getValue(3), aligned.getValue(1))
+        assertTrue(rotationError(beforeRelative, afterRelative) < 1e-6)
+        assertTrue(
+            GlobalViewGraphSolver.alignRotationsToPoseGauge(
+                graphGaugeRotations, anchorFrameId = 99,
+                targetAnchorRotation = expected.getValue(2)
+            ) == null
+        )
+    }
+
     private fun candidate(a: Int, b: Int, r: DoubleArray?) = InitialPairCandidate(
         firstFrame = a,
         secondFrame = b,

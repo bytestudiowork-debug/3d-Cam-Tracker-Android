@@ -1247,10 +1247,10 @@ internal class IncrementalSfMSolver(
                 }
             }
 
-            // Refine the incremental camera centers and sparse points with the
-            // pinned GLOMAP ONLY_POINTS formulation. The current PnP/triangulation
-            // map supplies a stable initialization; only registered observations
-            // with an existing 3D point enter the Ceres problem.
+            // Refine camera centers and sparse points with the pinned GLOMAP
+            // ONLY_POINTS formulation. Use globally averaged rotations wherever
+            // the bounded view graph covers a registered frame; retain the PnP
+            // map for uncovered frames and as the rollback state.
             var globalPositioningApplied = false
             var globalPositioningInitialCost = Double.NaN
             var globalPositioningFinalCost = Double.NaN
@@ -1266,6 +1266,29 @@ internal class IncrementalSfMSolver(
                 pose.status != CameraPoseStatus.HELD_LAST_VALID &&
                     pose.status != CameraPoseStatus.UNREGISTERED
             }.associateBy { it.frameIndex }
+
+            // Rotation averaging has an arbitrary world gauge. Align it to one
+            // camera from the selected PnP seed pair so its rotations share the
+            // existing centers/points coordinate system. Only graph-covered,
+            // registered frames receive an override.
+            val alignedGlobalRotationsByFrame: Map<Int, DoubleArray> =
+                viewGraphRotation?.let { result ->
+                    val anchorFrameId = listOf(selected.firstFrame, selected.secondFrame)
+                        .firstOrNull { it in result.rotationsByFrame && it in validPoseByFrame }
+                    val anchorPose = anchorFrameId?.let { validPoseByFrame[it] }
+                    if (anchorFrameId == null || anchorPose == null) {
+                        emptyMap()
+                    } else {
+                        GlobalViewGraphSolver.alignRotationsToPoseGauge(
+                            rotationsByFrame = result.rotationsByFrame,
+                            anchorFrameId = anchorFrameId,
+                            targetAnchorRotation = anchorPose.rotation
+                        ).orEmpty()
+                    }
+                }.orEmpty()
+            val positioningRotationsByFrame = validPoseByFrame.mapValues { (frameId, pose) ->
+                alignedGlobalRotationsByFrame[frameId] ?: pose.rotation
+            }
 
             val initialCameraCenters = validPoseByFrame.mapValues { (_, pose) ->
                 cameraCenter(pose)
@@ -1287,7 +1310,7 @@ internal class IncrementalSfMSolver(
                     val normalizedX = (observation.x - cx - skew * normalizedY) / fx
                     GlomapGlobalPositioningProblemBuilder.CameraObservation(
                         frameIndex = observation.frameIndex,
-                        rotation = pose.rotation,
+                        rotation = positioningRotationsByFrame.getValue(observation.frameIndex),
                         cameraCenter = initialCameraCenters.getValue(observation.frameIndex),
                         undistortedFeatureDirection = doubleArrayOf(normalizedX, normalizedY, 1.0),
                         // The current focal length is estimated, not user-calibrated.
@@ -1335,7 +1358,8 @@ internal class IncrementalSfMSolver(
                             ) {
                                 for ((frameId, center) in solution.frameCentersById) {
                                     val oldPose = poseByFrame.getOrNull(frameId) ?: continue
-                                    val rotation = oldPose.rotation
+                                    val rotation = positioningRotationsByFrame[frameId]
+                                        ?: oldPose.rotation
                                     val translation = doubleArrayOf(
                                         -(rotation[0] * center[0] + rotation[1] * center[1] + rotation[2] * center[2]),
                                         -(rotation[3] * center[0] + rotation[4] * center[1] + rotation[5] * center[2]),
