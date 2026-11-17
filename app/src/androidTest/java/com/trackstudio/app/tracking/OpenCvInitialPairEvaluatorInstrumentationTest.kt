@@ -9,6 +9,7 @@ import org.opencv.core.KeyPoint
 import org.opencv.core.Mat
 import java.util.Random
 import kotlin.math.cos
+import kotlin.math.roundToInt
 import kotlin.math.sin
 import kotlin.math.sqrt
 
@@ -57,9 +58,14 @@ class OpenCvInitialPairEvaluatorInstrumentationTest {
                 firstKeypoints[index] = KeyPoint(firstPixelX.toFloat(), firstPixelY.toFloat(), 1.0f)
                 secondKeypoints[index] = KeyPoint(secondPixelX.toFloat(), secondPixelY.toFloat(), 1.0f)
                 descriptorRandom.nextBytes(descriptorRow)
-                System.arraycopy(
-                    descriptorRow, 0, descriptors, index * DESCRIPTOR_LENGTH, DESCRIPTOR_LENGTH
-                )
+                val descriptorValues = FloatArray(DESCRIPTOR_LENGTH) {
+                    (descriptorRow[it].toInt() and 0xff).toFloat()
+                }
+                RootSiftDescriptorMath.normalizeDescriptorInPlace(descriptorValues)
+                for (descriptorIndex in descriptorValues.indices) {
+                    descriptors[index * DESCRIPTOR_LENGTH + descriptorIndex] =
+                        descriptorValues[descriptorIndex].roundToInt().coerceIn(0, 255).toByte()
+                }
             }
             assertTrue(
                 firstDescriptors.put(0, 0, descriptors) == descriptors.size &&
