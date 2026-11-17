@@ -14,6 +14,7 @@ import org.opencv.imgproc.Imgproc
 import org.opencv.core.Point3
 import com.trackstudio.app.tracking.colmap.ColmapLocalBundleSelector
 import com.trackstudio.app.tracking.glomap.GlomapGlobalPositioningProblemBuilder
+import com.trackstudio.app.tracking.colmap.ColmapObservationFilter
 import com.trackstudio.app.tracking.glomap.GlomapNativeSolver
 import kotlin.math.hypot
 import kotlin.math.max
@@ -269,6 +270,80 @@ internal class IncrementalSfMSolver(
             val landmarksByTrack = linkedMapOf<Int, CameraLandmark>()
             initialReconstruction.landmarks.forEach { landmarksByTrack[it.trackId] = it }
 
+            val excludedObservationsByTrack = linkedMapOf<Int, MutableSet<CameraFeatureObservation>>()
+            val deletedTrackObservationCountsByTrack = linkedMapOf<Int, Int>()
+            fun filteredMapTrack(track: CameraFeatureTrack): CameraFeatureTrack? {
+                val excluded = excludedObservationsByTrack[track.id].orEmpty()
+                if (excluded.isEmpty()) return track
+                val retained = track.observations.filterNot { it in excluded }
+                return retained.takeIf { it.size >= 2 }?.let { track.copy(observations = it) }
+            }
+
+            fun currentMapTracks(): List<CameraFeatureTrack> =
+                trackBuilder.build(trackIds = landmarksByTrack.keys).mapNotNull(::filteredMapTrack)
+
+            fun currentFeatureTracks(): List<CameraFeatureTrack> =
+                trackBuilder.build().mapNotNull { track ->
+                    val previousRegisteredCount = deletedTrackObservationCountsByTrack[track.id]
+                    if (track.id !in landmarksByTrack && previousRegisteredCount != null) {
+                        val registeredCount = track.observations.count { observation ->
+                            poseByFrame.getOrNull(observation.frameIndex)?.status?.let { status ->
+                                status != CameraPoseStatus.HELD_LAST_VALID &&
+                                    status != CameraPoseStatus.UNREGISTERED
+                            } == true
+                        }
+                        if (registeredCount <= previousRegisteredCount) return@mapNotNull null
+                        deletedTrackObservationCountsByTrack.remove(track.id)
+                    }
+                    filteredMapTrack(track)
+                }
+
+            fun applyObservationFilter(
+                affectedFrameIds: Set<Int>,
+                changedTrackIds: Set<Int>,
+                intrinsics: PinholeIntrinsics
+            ) {
+                val filtered = ColmapObservationFilter.filter(
+                    tracksById = currentMapTracks().associateBy { it.id },
+                    landmarksByTrackId = landmarksByTrack,
+                    posesByFrame = poseByFrame.filterNotNull().associateBy { it.frameIndex },
+                    intrinsics = intrinsics,
+                    affectedFrameIds = affectedFrameIds,
+                    changedTrackIds = changedTrackIds
+                )
+                val registeredFrameIds = poseByFrame.filterNotNull().asSequence()
+                    .filter { pose ->
+                        pose.status != CameraPoseStatus.HELD_LAST_VALID &&
+                            pose.status != CameraPoseStatus.UNREGISTERED
+                    }
+                    .mapTo(linkedSetOf()) { it.frameIndex }
+                val rawDeletedTrackRegisteredCounts = trackBuilder
+                    .build(trackIds = filtered.deletedTrackIds)
+                    .associate { track ->
+                        track.id to track.observations.count { it.frameIndex in registeredFrameIds }
+                    }
+                for (trackId in filtered.deletedTrackIds) {
+                    deletedTrackObservationCountsByTrack[trackId] =
+                        rawDeletedTrackRegisteredCounts[trackId] ?: 0
+                    landmarksByTrack.remove(trackId)
+                }
+                for ((trackId, observations) in filtered.removedObservationsByTrack) {
+                    excludedObservationsByTrack.getOrPut(trackId) { linkedSetOf() }
+                        .addAll(observations)
+                }
+                filtered.landmarksByTrackId.forEach { (trackId, landmark) ->
+                    landmarksByTrack[trackId] = landmark
+                }
+            }
+
+            val filterIntrinsics = PinholeIntrinsics(
+                fx = cameraMatrix.get(0, 0)?.firstOrNull() ?: Double.NaN,
+                skew = cameraMatrix.get(0, 1)?.firstOrNull() ?: Double.NaN,
+                cx = cameraMatrix.get(0, 2)?.firstOrNull() ?: Double.NaN,
+                fy = cameraMatrix.get(1, 1)?.firstOrNull() ?: Double.NaN,
+                cy = cameraMatrix.get(1, 2)?.firstOrNull() ?: Double.NaN
+            )
+
             fun cameraCenter(pose: CameraPose): DoubleArray {
                 val r = pose.rotation
                 val t = pose.translation
@@ -287,7 +362,7 @@ internal class IncrementalSfMSolver(
                 val centersByFrame = validPoses.associate { pose ->
                     pose.frameIndex to cameraCenter(pose)
                 }
-                val mapTracks = trackBuilder.build(trackIds = landmarksByTrack.keys)
+                val mapTracks = currentMapTracks()
                 val referenceTracks = mapTracks.filter { track ->
                     track.observations.any { it.frameIndex == referenceFrameId }
                 }
@@ -370,6 +445,11 @@ internal class IncrementalSfMSolver(
                         position = Point3(point[0], point[1], point[2])
                     )
                 }
+                applyObservationFilter(
+                    affectedFrameIds = localFrameIds,
+                    changedTrackIds = candidate.pointsByTrackId.keys,
+                    intrinsics = filterIntrinsics
+                )
                 return true
             }
 
@@ -444,7 +524,7 @@ internal class IncrementalSfMSolver(
                             frameIndex = frameIndex,
                             frameWidth = source.cols(),
                             frameHeight = source.rows(),
-                            featureTracks = trackBuilder.build(trackIds = landmarksByTrack.keys),
+                            featureTracks = currentMapTracks(),
                             landmarks = landmarksByTrack.values.toList(),
                             cameraMatrix = cameraMatrix
                         )
@@ -467,7 +547,7 @@ internal class IncrementalSfMSolver(
                                     frameIndex = frameIndex,
                                     frameWidth = source.cols(),
                                     frameHeight = source.rows(),
-                                    featureTracks = trackBuilder.build(trackIds = landmarksByTrack.keys),
+                                    featureTracks = currentMapTracks(),
                                     landmarks = landmarksByTrack.values.toList(),
                                     cameraMatrix = cameraMatrix
                                 )
@@ -495,7 +575,7 @@ internal class IncrementalSfMSolver(
                                     frameIndex = frameIndex,
                                     frameWidth = source.cols(),
                                     frameHeight = source.rows(),
-                                    featureTracks = trackBuilder.build(trackIds = landmarksByTrack.keys),
+                                    featureTracks = currentMapTracks(),
                                     landmarks = landmarksByTrack.values.toList(),
                                     cameraMatrix = cameraMatrix
                                 )
@@ -523,7 +603,7 @@ internal class IncrementalSfMSolver(
 
                             // Bound local map work to one update per two accepted cameras.
                             if (acceptedRegistrationsSinceMapUpdate >= 2) {
-                                tracks = trackBuilder.build()
+                                tracks = currentFeatureTracks()
                                 val validPoses = poseByFrame.filterNotNull()
                                 val newTracks = tracks.filter { track ->
                                     track.id !in landmarksByTrack &&
@@ -639,7 +719,7 @@ internal class IncrementalSfMSolver(
                                 frameIndex = frameIndex,
                                 frameWidth = source.cols(),
                                 frameHeight = source.rows(),
-                                featureTracks = trackBuilder.build(trackIds = landmarksByTrack.keys),
+                                featureTracks = currentMapTracks(),
                                 landmarks = landmarksByTrack.values.toList(),
                                 cameraMatrix = cameraMatrix
                             )
@@ -661,7 +741,7 @@ internal class IncrementalSfMSolver(
                                         frameIndex = frameIndex,
                                         frameWidth = source.cols(),
                                         frameHeight = source.rows(),
-                                        featureTracks = trackBuilder.build(trackIds = landmarksByTrack.keys),
+                                        featureTracks = currentMapTracks(),
                                         landmarks = landmarksByTrack.values.toList(),
                                         cameraMatrix = cameraMatrix
                                     )
@@ -689,7 +769,7 @@ internal class IncrementalSfMSolver(
                                         frameIndex = frameIndex,
                                         frameWidth = source.cols(),
                                         frameHeight = source.rows(),
-                                        featureTracks = trackBuilder.build(trackIds = landmarksByTrack.keys),
+                                        featureTracks = currentMapTracks(),
                                         landmarks = landmarksByTrack.values.toList(),
                                         cameraMatrix = cameraMatrix
                                     )
@@ -714,7 +794,7 @@ internal class IncrementalSfMSolver(
                                         refinementFallbackNote
                                 )
                                 if (acceptedRegistrationsSinceMapUpdate >= 2) {
-                                    tracks = trackBuilder.build()
+                                    tracks = currentFeatureTracks()
                                     val newTracks = tracks.filter { track ->
                                         track.id !in landmarksByTrack &&
                                             track.observations.any { it.frameIndex == frameIndex }
@@ -770,7 +850,7 @@ internal class IncrementalSfMSolver(
             }
 
             // Refresh the complete immutable snapshot once for final triangulation and refinement.
-            tracks = trackBuilder.build()
+            tracks = currentFeatureTracks()
             // Flush newly observed tracks once more after the final registered pose.
             SfMTriangulator.triangulate(
                 tracks, poseByFrame.filterNotNull(), cameraMatrix
@@ -790,7 +870,7 @@ internal class IncrementalSfMSolver(
             repeat(2) { refinementRound ->
                 currentCoroutineContext().ensureActive()
                 val adjustedLandmarks = MobileBundleAdjuster.optimizeLandmarks(
-                    featureTracks = trackBuilder.build(trackIds = landmarksByTrack.keys),
+                    featureTracks = currentMapTracks(),
                     landmarks = landmarksByTrack.values.toList(),
                     poses = poseByFrame.filterNotNull(),
                     cameraMatrix = cameraMatrix
@@ -807,7 +887,7 @@ internal class IncrementalSfMSolver(
                         frameIndex = frameIndex,
                         frameWidth = firstFrame.width,
                         frameHeight = firstFrame.height,
-                        featureTracks = trackBuilder.build(trackIds = landmarksByTrack.keys),
+                        featureTracks = currentMapTracks(),
                         landmarks = landmarksByTrack.values.toList(),
                         cameraMatrix = cameraMatrix
                     )
@@ -840,7 +920,7 @@ internal class IncrementalSfMSolver(
                 }
 
                 val postPoseLandmarks = MobileBundleAdjuster.optimizeLandmarks(
-                    featureTracks = trackBuilder.build(trackIds = landmarksByTrack.keys),
+                    featureTracks = currentMapTracks(),
                     landmarks = landmarksByTrack.values.toList(),
                     poses = poseByFrame.filterNotNull(),
                     cameraMatrix = cameraMatrix
@@ -994,7 +1074,7 @@ internal class IncrementalSfMSolver(
             var jointRefinedTrackIds: Set<Int> = emptySet()
             var refinedCameraIntrinsics: CameraIntrinsics? = null
 
-            val jointTracks = trackBuilder.build(trackIds = landmarksByTrack.keys)
+            val jointTracks = currentMapTracks()
             val jointPoseByFrame = poseByFrame.filterNotNull().filter { pose ->
                 pose.status != CameraPoseStatus.HELD_LAST_VALID &&
                     pose.status != CameraPoseStatus.UNREGISTERED
@@ -1162,7 +1242,12 @@ internal class IncrementalSfMSolver(
                                     cx = candidate.intrinsics.cx,
                                     cy = candidate.intrinsics.cy
                                 )
-                                for (track in jointTracks) {
+                                applyObservationFilter(
+                                    affectedFrameIds = candidate.frameCentersById.keys,
+                                    changedTrackIds = candidate.pointsByTrackId.keys,
+                                    intrinsics = intrinsics
+                                )
+                                for (track in currentMapTracks()) {
                                     val landmark = landmarksByTrack[track.id] ?: continue
                                     val point = doubleArrayOf(
                                         landmark.position.x,
@@ -1199,7 +1284,8 @@ internal class IncrementalSfMSolver(
                                 refinedCameraIntrinsics = candidate.intrinsics
                                 jointBundleAdjustmentApplied = true
                                 jointBundleAdjustmentStatus = "Applied"
-                                jointRefinedTrackIds = candidate.pointsByTrackId.keys.toSet()
+                                jointRefinedTrackIds = candidate.pointsByTrackId.keys
+                                    .filterTo(linkedSetOf()) { it in landmarksByTrack }
                             } else {
                                 jointBundleAdjustmentStatus =
                                     "No cost improvement; kept incremental solution"
@@ -1253,7 +1339,7 @@ internal class IncrementalSfMSolver(
             } ?: cameraMatrix
             val finalTriangulation = try {
                 SfMTriangulator.triangulate(
-                    tracks, poseByFrame.filterNotNull(), finalCameraMatrix
+                    currentFeatureTracks(), poseByFrame.filterNotNull(), finalCameraMatrix
                 )
             } finally {
                 if (finalCameraMatrix !== cameraMatrix) finalCameraMatrix.release()
@@ -1267,6 +1353,7 @@ internal class IncrementalSfMSolver(
                 ) ?: triangulated
             }
             val finalStats = finalTriangulation.stats.withFinalLandmarks(finalLandmarks)
+            val finalLandmarkTrackIds = finalLandmarks.mapTo(linkedSetOf<Int>()) { it.trackId }
             onProgress(CameraTrackingProgress(
                 frameCount, frameCount, "Camera solve complete",
                 overallFraction = 1f,
@@ -1282,9 +1369,7 @@ internal class IncrementalSfMSolver(
                 totalInliers = totalInliers,
                 inlierRatio = (totalInliers.toDouble() / allCorrespondences).coerceIn(0.0, 1.0),
                 isCameraMotionEstimated = registeredFrames >= 2,
-                featureTracks = trackBuilder.build(
-                    trackIds = finalLandmarks.mapTo(linkedSetOf<Int>()) { it.trackId }
-                ),
+                featureTracks = currentFeatureTracks().filter { it.id in finalLandmarkTrackIds },
                 landmarks = finalLandmarks,
                 triangulationStats = finalStats,
                 initialPairFrames = selected.firstFrame to selected.secondFrame,
