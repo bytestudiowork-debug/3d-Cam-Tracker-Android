@@ -135,24 +135,35 @@ class InitialPairSelectorTest {
     }
 
     @Test
-    fun homographyDominanceIsMeasuredAgainstEssentialSupportAndMayExceedOne() {
+    fun homographyDominanceUsesEssentialSupportAndRejectsAboveTheStrictBoundary() {
         val candidate = candidate(
             medianParallax = 6.0,
-            upperParallax = 12.0,
+            upperParallax = 12.0
+        )
+        val exactDominanceBoundary = InitialPairSelector.evaluate(
+            candidate.copy(homographyInlierRatio = 0.8)
+        )
+        val planar = InitialPairSelector.evaluate(
+            candidate.copy(homographyInlierRatio = 1.2)
+        )
+
+        assertTrue(exactDominanceBoundary.accepted)
+        assertFalse(planar.accepted)
+        assertTrue(planar.reason.contains("planar or panoramic"))
+    }
+
+    @Test
+    fun selectorDoesNotTreatHigherParallaxAsAnEscapeFromPlanarClassification() {
+        val candidate = candidate(
+            medianParallax = 20.0,
+            upperParallax = 25.0,
             homographyRatio = 1.2
         )
 
         val evaluation = InitialPairSelector.evaluate(candidate)
-        val exactDominanceBoundary = InitialPairSelector.evaluate(
-            candidate.copy(homographyInlierRatio = 0.8)
-        )
-        val nonDominantScore = InitialPairSelector.evaluate(
-            candidate.copy(homographyInlierRatio = 0.2)
-        ).score
 
-        assertTrue(evaluation.accepted)
-        assertEquals(nonDominantScore, exactDominanceBoundary.score, 1e-12)
-        assertTrue(evaluation.score < nonDominantScore)
+        assertFalse(evaluation.accepted)
+        assertTrue(evaluation.reason.contains("planar or panoramic"))
     }
 
     @Test

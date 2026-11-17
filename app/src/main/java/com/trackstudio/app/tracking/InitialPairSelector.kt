@@ -91,9 +91,8 @@ internal object InitialPairSelector {
                 "Too few points satisfy positive-depth cheirality"
             candidate.forwardMotionRatio >= policy.maximumForwardMotionRatio ->
                 "Pair is dominated by degenerate forward motion"
-            candidate.homographyInlierRatio > policy.planarDominanceRatio &&
-                candidate.upperQuartileParallaxDegrees < policy.planarParallaxEscapeDegrees ->
-                "Homography-dominated pair has insufficient non-planar parallax"
+            candidate.homographyInlierRatio > policy.planarDominanceRatio ->
+                "Homography-dominated pair is planar or panoramic for calibrated initialization"
             else -> null
         }
 
@@ -114,10 +113,6 @@ internal object InitialPairSelector {
             policy.targetUpperQuartileParallaxDegrees).coerceIn(0.0, 1.0)
         val parallaxScore = 0.65 * medianParallaxScore + 0.35 * upperParallaxScore
         val cheiralityScore = candidate.cheiralityRatio.coerceIn(0.0, 1.0)
-        val homographyPenalty = if (
-            candidate.homographyInlierRatio > policy.planarDominanceRatio
-        ) 0.65 else 1.0
-
         // Balanced scoring avoids selecting a pair on raw match count alone.
         val score = (
             0.18 * countScore +
@@ -125,7 +120,7 @@ internal object InitialPairSelector {
                 0.18 * coverageScore +
                 0.27 * parallaxScore +
                 0.20 * cheiralityScore
-            ) * homographyPenalty
+            )
 
         return InitialPairEvaluation(
             candidate = candidate,
@@ -215,7 +210,6 @@ internal data class InitialPairPolicy(
     val minimumEssentialToFundamentalInlierRatio: Double = 0.95,
     /** Homography inlier support divided by essential-matrix inlier support. */
     val planarDominanceRatio: Double = 0.8,
-    val planarParallaxEscapeDegrees: Double = 5.0,
     val inlierCountSaturation: Int = 500
 ) {
     init {
@@ -232,9 +226,8 @@ internal data class InitialPairPolicy(
         require(minimumCheiralityRatio in 0.0..1.0)
         require(maximumForwardMotionRatio in 0.0..1.0)
         require(minimumEssentialToFundamentalInlierRatio.isFinite() &&
-            minimumEssentialToFundamentalInlierRatio >= 0.0)
-        require(planarDominanceRatio.isFinite() && planarDominanceRatio >= 0.0)
-        require(planarParallaxEscapeDegrees.isFinite() && planarParallaxEscapeDegrees >= 0.0)
+            minimumEssentialToFundamentalInlierRatio in 0.0..1.0)
+        require(planarDominanceRatio.isFinite() && planarDominanceRatio in 0.0..1.0)
         require(inlierCountSaturation > 0)
     }
 

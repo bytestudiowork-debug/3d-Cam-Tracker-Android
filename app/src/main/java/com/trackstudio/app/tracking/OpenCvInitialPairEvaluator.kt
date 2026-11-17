@@ -84,27 +84,30 @@ internal object OpenCvInitialPairEvaluator {
                 essentialMask
             )
             try {
-                if (essentialEstimate.empty() || essentialEstimate.cols() != 3 ||
-                    essentialEstimate.rows() < 3 || essentialEstimate.rows() % 3 != 0
-                ) {
-                    return rejected(firstFrame, secondFrame, "Essential matrix estimation failed", matchCount)
+                val essentialSucceeded = !essentialEstimate.empty() && essentialEstimate.cols() == 3 &&
+                    essentialEstimate.rows() >= 3 && essentialEstimate.rows() % 3 == 0
+                val essentialInlierCount = if (essentialSucceeded) {
+                    countMaskInliers(essentialMask, matchCount)
+                } else {
+                    0
                 }
-
-                val essentialInlierCount = countMaskInliers(essentialMask, matchCount)
-                if (essentialInlierCount < policy.minimumInliers) {
-                    return rejected(firstFrame, secondFrame, "Too few essential-matrix inliers", matchCount)
-                }
-                var selectedEssentialSupport = essentialInlierCount
 
                 val estimatedFundamental = Calib3d.findFundamentalMat(
                     points1, points2, Calib3d.FM_RANSAC,
                     ransacThresholdPx, 0.999, 10000, fundamentalMask
                 )
-                val fundamentalInlierCount = try {
-                    countMaskInliers(fundamentalMask, matchCount)
+                val fundamentalSucceeded = try {
+                    !estimatedFundamental.empty() && estimatedFundamental.cols() == 3 &&
+                        estimatedFundamental.rows() >= 3 && estimatedFundamental.rows() % 3 == 0
                 } finally {
                     estimatedFundamental.release()
                 }
+                val fundamentalInlierCount = if (fundamentalSucceeded) {
+                    countMaskInliers(fundamentalMask, matchCount)
+                } else {
+                    0
+                }
+                var homographySucceeded = false
                 var homographyInlierCount = 0
                 try {
                     val estimatedHomography = Calib3d.findHomography(
@@ -112,31 +115,49 @@ internal object OpenCvInitialPairEvaluator {
                         homographyMask, 10000, 0.999
                     )
                     try {
-                        homographyInlierCount = countMaskInliers(homographyMask, matchCount)
-                        val initialHomography = DoubleArray(9)
-                        if (estimatedHomography.rows() == 3 && estimatedHomography.cols() == 3 &&
-                            estimatedHomography.get(0, 0, initialHomography) ==
-                                initialHomography.size * java.lang.Double.BYTES
-                        ) {
-                            val polished = OpenCvHomographyLocalOptimizer.refine(
-                                matchedFirst.toTypedArray(),
-                                matchedSecond.toTypedArray(),
-                                initialHomography,
-                                OpenCvTwoViewLocalOptimizer.inliersFromMask(homographyMask, matchCount),
-                                HOMOGRAPHY_THRESHOLD_PX,
-                                maximumRefitRounds = 2
-                            )
-                            if (polished != null &&
-                                polished.inlierIndices.size >= homographyInlierCount
-                            ) {
-                                homographyInlierCount = polished.inlierIndices.size
-                            }
+                        homographySucceeded = estimatedHomography.rows() == 3 &&
+                            estimatedHomography.cols() == 3
+                        if (homographySucceeded) {
+                            homographyInlierCount = countMaskInliers(homographyMask, matchCount)
                         }
                     } finally {
                         estimatedHomography.release()
                     }
                 } catch (_: CvException) {
+                    homographySucceeded = false
                     homographyInlierCount = 0
+                }
+
+                val modelDecision = ColmapTwoViewModelArbitrator.arbitrate(
+                    essentialSucceeded = essentialSucceeded,
+                    essentialInliers = essentialInlierCount,
+                    fundamentalSucceeded = fundamentalSucceeded,
+                    fundamentalInliers = fundamentalInlierCount,
+                    homographySucceeded = homographySucceeded,
+                    homographyInliers = homographyInlierCount,
+                    minimumEssentialToFundamentalRatio =
+                        policy.minimumEssentialToFundamentalInlierRatio,
+                    maximumHomographyRatio = policy.planarDominanceRatio
+                )
+                if (modelDecision.configuration !=
+                    ColmapTwoViewModelArbitrator.Configuration.CALIBRATED
+                ) {
+                    return rejected(
+                        firstFrame,
+                        secondFrame,
+                        "COLMAP E/F/H arbitration classified the pair as ${modelDecision.configuration}",
+                        matchCount
+                    )
+                }
+                val selectedModelMask = when (modelDecision.inlierModel) {
+                    ColmapTwoViewModelArbitrator.InlierModel.ESSENTIAL -> essentialMask
+                    ColmapTwoViewModelArbitrator.InlierModel.FUNDAMENTAL -> fundamentalMask
+                    ColmapTwoViewModelArbitrator.InlierModel.HOMOGRAPHY,
+                    ColmapTwoViewModelArbitrator.InlierModel.NONE ->
+                        return rejected(firstFrame, secondFrame, "No calibrated epipolar inlier mask", matchCount)
+                }
+                if (countMaskInliers(selectedModelMask, matchCount) != modelDecision.inlierCount) {
+                    return rejected(firstFrame, secondFrame, "Invalid COLMAP-selected inlier mask", matchCount)
                 }
 
                 var bestPoseInliers = 0
@@ -149,7 +170,7 @@ internal object OpenCvInitialPairEvaluator {
                         val candidate = essentialEstimate
                             .rowRange(candidateIndex * 3, candidateIndex * 3 + 3)
                             .clone()
-                        val mask = essentialMask.clone()
+                        val mask = selectedModelMask.clone()
                         val candidateRotation = Mat()
                         val candidateTranslation = Mat()
                         try {
@@ -212,7 +233,6 @@ internal object OpenCvInitialPairEvaluator {
                                         bestRotation = polishedRotation
                                         bestTranslation = polishedTranslation
                                         bestPoseInliers = polished.inlierIndices.size
-                                        selectedEssentialSupport = polished.epipolarInlierCount
                                         retained = true
                                     }
                                 } finally {
@@ -259,10 +279,10 @@ internal object OpenCvInitialPairEvaluator {
                 val essentialToFundamentalRatio = if (fundamentalInlierCount == 0) {
                     Double.MAX_VALUE
                 } else {
-                    selectedEssentialSupport.toDouble() / fundamentalInlierCount
+                    essentialInlierCount.toDouble() / fundamentalInlierCount
                 }
                 val homographyRatio =
-                    homographyInlierCount.toDouble() / selectedEssentialSupport.coerceAtLeast(1)
+                    homographyInlierCount.toDouble() / essentialInlierCount.coerceAtLeast(1)
                 val coverage = occupiedGridCells(
                     inlierIndices.map { matchedFirst[it] }, frameWidth, frameHeight
                 )
@@ -294,7 +314,7 @@ internal object OpenCvInitialPairEvaluator {
                     coveredGridCells = coverage,
                     medianParallaxDegrees = medianParallax,
                     upperQuartileParallaxDegrees = upperQuartileParallax,
-                    cheiralityRatio = inlierCount.toDouble() / selectedEssentialSupport.coerceAtLeast(1),
+                    cheiralityRatio = inlierCount.toDouble() / modelDecision.inlierCount.coerceAtLeast(1),
                     homographyInlierRatio = homographyRatio,
                     forwardMotionRatio = forwardMotionRatio,
                     relativeRotation = relativeRotation,
