@@ -1,6 +1,7 @@
 package com.trackstudio.app.tracking
 
 import com.trackstudio.app.tracking.colmap.ColmapTrackCompleter
+import com.trackstudio.app.tracking.colmap.ColmapTrackCreator
 import com.trackstudio.app.tracking.colmap.ColmapTrackMerger
 import com.trackstudio.app.tracking.colmap.ColmapTrackRetriangulator
 import com.trackstudio.app.tracking.glomap.GlomapGlobalPositioningInitializer
@@ -569,10 +570,30 @@ class GlobalReconstructionEngine(
                     progressStart + 0.0125f * completed.toFloat() / total.coerceAtLeast(1)
                 )
             }
-            var triangulated = SfMTriangulator.triangulate(
-                reconstructionTracks, poses, resultCameraMatrix,
-                onProgress = triangulationProgress
-            )
+            fun triangulateWithColmapCreation(): ColmapTrackCreator.Result {
+                val result = ColmapTrackCreator.create(
+                    tracks = reconstructionTracks,
+                    poses = poses,
+                    intrinsics = projectionIntrinsics,
+                    onProgress = triangulationProgress
+                )
+                reconstructionTracks = result.tracks
+                val activeTrackIds = reconstructionTracks.mapTo(HashSet<Int>()) { it.id }
+                val updatedPoints = finalPointsForLandmarks.filterKeys { it in activeTrackIds }
+                    .toMutableMap()
+                result.landmarks.forEach { landmark ->
+                    if (landmark.trackId !in updatedPoints) {
+                        updatedPoints[landmark.trackId] = doubleArrayOf(
+                            landmark.position.x,
+                            landmark.position.y,
+                            landmark.position.z
+                        )
+                    }
+                }
+                finalPointsForLandmarks = updatedPoints
+                return result
+            }
+            var triangulated = triangulateWithColmapCreation()
             val featureAt: (Int, Int) -> CameraFeatureObservation? = { frame, feature ->
                 val keypoint = frames.getOrNull(frame)?.keypoints?.getOrNull(feature)
                 keypoint?.let {
@@ -596,14 +617,11 @@ class GlobalReconstructionEngine(
                     tracks = completion.tracks,
                     cameraCentersByFrame = finalCenters,
                     rotationsByFrame = finalRotations,
-                    pointsByTrackId = finalPoints,
+                    pointsByTrackId = finalPointsForLandmarks,
                     intrinsics = refinedIntrinsics ?: effectiveIntrinsics
                 )
                 triangulationPass++
-                triangulated = SfMTriangulator.triangulate(
-                    reconstructionTracks, poses, resultCameraMatrix,
-                    onProgress = triangulationProgress
-                )
+                triangulated = triangulateWithColmapCreation()
             }
             val retriangulation = ColmapTrackRetriangulator.retriangulate(
                 tracks = reconstructionTracks,
@@ -620,10 +638,7 @@ class GlobalReconstructionEngine(
             if (retriangulation.addedObservations > 0) {
                 reconstructionTracks = retriangulation.tracks
                 triangulationPass++
-                triangulated = SfMTriangulator.triangulate(
-                    reconstructionTracks, poses, resultCameraMatrix,
-                    onProgress = triangulationProgress
-                )
+                triangulated = triangulateWithColmapCreation()
                 val completionAfterRetriangulation = ColmapTrackCompleter.completeTracks(
                     tracks = reconstructionTracks,
                     landmarks = triangulated.landmarks,
@@ -636,10 +651,7 @@ class GlobalReconstructionEngine(
                 if (completionAfterRetriangulation.addedObservations > 0) {
                     reconstructionTracks = completionAfterRetriangulation.tracks
                     triangulationPass++
-                    triangulated = SfMTriangulator.triangulate(
-                        reconstructionTracks, poses, resultCameraMatrix,
-                        onProgress = triangulationProgress
-                    )
+                    triangulated = triangulateWithColmapCreation()
                 }
             }
             val trackMerging = ColmapTrackMerger.mergeTracks(
@@ -654,6 +666,7 @@ class GlobalReconstructionEngine(
             if (trackMerging.mergedTrackCount > 0) {
                 reconstructionTracks = trackMerging.tracks
                 triangulated = triangulated.copy(
+                    tracks = trackMerging.tracks,
                     landmarks = trackMerging.landmarks,
                     stats = triangulated.stats.withFinalLandmarks(trackMerging.landmarks)
                 )
