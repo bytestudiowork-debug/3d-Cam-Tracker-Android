@@ -13,6 +13,7 @@ import org.opencv.core.Point
 import org.opencv.imgproc.Imgproc
 import org.opencv.core.Point3
 import com.trackstudio.app.tracking.colmap.ColmapLocalBundleSelector
+import com.trackstudio.app.tracking.colmap.ColmapNextImageSelector
 import com.trackstudio.app.tracking.glomap.GlomapGlobalPositioningProblemBuilder
 import com.trackstudio.app.tracking.colmap.ColmapObservationFilter
 import com.trackstudio.app.tracking.glomap.GlomapNativeSolver
@@ -471,6 +472,92 @@ internal class IncrementalSfMSolver(
                 geometry.matches.size, geometry.inlierCount, "Initial pair reconstructed"
             )
 
+            val registrationTrialsByFrame = IntArray(frameCount)
+            val failedRegistrationFrames = linkedSetOf<Int>()
+            suspend fun retryFailedFramesAfterMapUpdate(imageWidth: Int, imageHeight: Int) {
+                // The streaming Android path only retries frames whose features have
+                // already entered the persistent track graph; it does not cache all frames.
+                failedRegistrationFrames.removeAll { frameIndex ->
+                    poseByFrame[frameIndex] != null ||
+                        registrationTrialsByFrame[frameIndex] >=
+                        ColmapNextImageSelector.DEFAULT_MAX_REGISTRATION_TRIALS
+                }
+                if (failedRegistrationFrames.isEmpty()) return
+
+                val mapTracks = currentMapTracks()
+                val visibleObservationsByFrame = HashMap<Int, MutableList<CameraFeatureObservation>>()
+                mapTracks.forEach { track ->
+                    track.observations.forEach { observation ->
+                        if (observation.frameIndex in failedRegistrationFrames) {
+                            visibleObservationsByFrame.getOrPut(observation.frameIndex) { mutableListOf() }
+                                .add(observation)
+                        }
+                    }
+                }
+                val observationCountsByFrame = HashMap<Int, Int>()
+                currentFeatureTracks().forEach { track ->
+                    track.observations.forEach { observation ->
+                        if (observation.frameIndex in failedRegistrationFrames) {
+                            observationCountsByFrame[observation.frameIndex] =
+                                (observationCountsByFrame[observation.frameIndex] ?: 0) + 1
+                        }
+                    }
+                }
+                val candidates = failedRegistrationFrames.map { frameIndex ->
+                    ColmapNextImageSelector.Candidate(
+                        frameIndex = frameIndex,
+                        visibleObservations = visibleObservationsByFrame[frameIndex].orEmpty(),
+                        totalObservations = observationCountsByFrame[frameIndex] ?: 0,
+                        registrationTrials = registrationTrialsByFrame[frameIndex]
+                    )
+                }
+                val rankedCandidates = ColmapNextImageSelector.rank(
+                    candidates = candidates,
+                    imageWidth = imageWidth,
+                    imageHeight = imageHeight,
+                    options = ColmapNextImageSelector.Options(
+                        minimumVisiblePoints = CameraRegistrationPolicy.MINIMUM_CORRESPONDENCES
+                    )
+                ).take(ColmapNextImageSelector.ANDROID_MAX_CANDIDATES_PER_BATCH)
+                val landmarks = landmarksByTrack.values.toList()
+                for (candidate in rankedCandidates) {
+                    currentCoroutineContext().ensureActive()
+                    val candidateFrame = candidate.frameIndex
+                    registrationTrialsByFrame[candidateFrame]++
+                    val registration = IncrementalCameraRegistrar.register(
+                        frameIndex = candidateFrame,
+                        frameWidth = imageWidth,
+                        frameHeight = imageHeight,
+                        featureTracks = mapTracks,
+                        landmarks = landmarks,
+                        cameraMatrix = cameraMatrix
+                    )
+                    totalCorrespondences += registration.correspondenceCount
+                    val previousDiagnostic = diagnostics[candidateFrame]
+                    if (registration.accepted && registration.pose != null) {
+                        poseByFrame[candidateFrame] = registration.pose
+                        totalInliers += registration.inlierCount
+                        registeredFrames++
+                        acceptedRegistrationsSinceMapUpdate++
+                        failedRegistrationFrames.remove(candidateFrame)
+                        diagnostics[candidateFrame] = previousDiagnostic.copy(
+                            inlierFeatures = registration.inlierCount,
+                            status = "PnP registered after map update (${registration.inlierCount} inliers, " +
+                                "median ${"%.2f".format(registration.medianReprojectionErrorPx)} px)"
+                        )
+                        return
+                    }
+                    diagnostics[candidateFrame] = previousDiagnostic.copy(
+                        inlierFeatures = registration.inlierCount,
+                        status = "Map-based retry ${registrationTrialsByFrame[candidateFrame]}/" +
+                            "${ColmapNextImageSelector.DEFAULT_MAX_REGISTRATION_TRIALS}: ${registration.reason}"
+                    )
+                    if (registrationTrialsByFrame[candidateFrame] >=
+                        ColmapNextImageSelector.DEFAULT_MAX_REGISTRATION_TRIALS
+                    ) failedRegistrationFrames.remove(candidateFrame)
+                }
+            }
+
             try {
                 for (frameIndex in selected.secondFrame + 1 until frameCount) {
                     currentCoroutineContext().ensureActive()
@@ -519,7 +606,8 @@ internal class IncrementalSfMSolver(
                                 frameIndex, previousKeypoints, currentKeypoints, matches
                             )
                         }
-                        
+
+                        registrationTrialsByFrame[frameIndex]++
                         var registration = IncrementalCameraRegistrar.register(
                             frameIndex = frameIndex,
                             frameWidth = source.cols(),
@@ -620,8 +708,10 @@ internal class IncrementalSfMSolver(
                                 acceptedRegistrationsSinceMapUpdate = 0
                                 currentCoroutineContext().ensureActive()
                                 refineLocalBundle(frameIndex)
+                                retryFailedFramesAfterMapUpdate(firstFrame.width, firstFrame.height)
                             }
                         } else {
+                            failedRegistrationFrames += frameIndex
                             diagnostics[frameIndex] = FrameTrackingDiagnostic(
                                 frameIndex, currentKeypoints.size, matches.size,
                                 registration.inlierCount, registration.reason
@@ -715,6 +805,7 @@ internal class IncrementalSfMSolver(
                                 matches.size, "Initialization reference"
                             )
                         } else {
+                            registrationTrialsByFrame[frameIndex]++
                             var registration = IncrementalCameraRegistrar.register(
                                 frameIndex = frameIndex,
                                 frameWidth = source.cols(),
@@ -813,8 +904,10 @@ internal class IncrementalSfMSolver(
                                     acceptedRegistrationsSinceMapUpdate = 0
                                     currentCoroutineContext().ensureActive()
                                     refineLocalBundle(frameIndex)
+                                    retryFailedFramesAfterMapUpdate(firstFrame.width, firstFrame.height)
                                 }
                             } else {
+                                failedRegistrationFrames += frameIndex
                                 diagnostics[frameIndex] = FrameTrackingDiagnostic(
                                     frameIndex, currentKeypoints.size, matches.size,
                                     registration.inlierCount, registration.reason
@@ -849,6 +942,7 @@ internal class IncrementalSfMSolver(
                 reverseDescriptors.release()
             }
 
+            retryFailedFramesAfterMapUpdate(firstFrame.width, firstFrame.height)
             // Refresh the complete immutable snapshot once for final triangulation and refinement.
             tracks = currentFeatureTracks()
             // Flush newly observed tracks once more after the final registered pose.
