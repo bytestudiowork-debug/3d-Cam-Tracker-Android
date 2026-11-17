@@ -36,7 +36,7 @@ class SiftFeaturePipelineTest {
             row(0, 0, 0.10, 1, 0.20),
             row(1, 1, 0.08, 0, 0.30),
             row(2, 2, 0.30, 3, 0.35),
-            row(3, 3, 0.36, 2, 0.60)
+            row(3, 3, 0.72, 2, 0.90)
         )
         val reverse = listOf(
             row(0, 0, 0.11, 1, 0.25),
@@ -80,12 +80,12 @@ class SiftFeaturePipelineTest {
     @Test
     fun rejectsNonReciprocalMatchesAndRatioBoundary() {
         val forward = listOf(
-            row(0, 0, 0.08, 1, 0.10),
+            row(0, 0, 0.40, 1, 0.50),
             row(1, 0, 0.07, 1, 0.20)
         )
         val reverse = listOf(
             row(0, 0, 0.07, 1, 0.20),
-            row(1, 1, 0.08, 0, 0.10)
+            row(1, 1, 0.40, 0, 0.50)
         )
 
         assertEquals(emptyList<Pair<Int, Int>>(), SiftMatchPolicy.selectMutualMatches(forward, reverse))
