@@ -31,7 +31,8 @@ internal class JointCameraBundleAdjuster {
         imageWidth: Int,
         imageHeight: Int,
         maxIterations: Int = 45,
-        numThreads: Int = Runtime.getRuntime().availableProcessors().coerceIn(1, 4)
+        numThreads: Int = Runtime.getRuntime().availableProcessors().coerceIn(1, 4),
+        optimizeFocalLength: Boolean = true
     ): Result? {
         require(maxIterations > 0 && numThreads > 0)
         if (cameraMatrix.empty() || cameraMatrix.rows() != 3 || cameraMatrix.cols() != 3) return null
@@ -98,7 +99,7 @@ internal class JointCameraBundleAdjuster {
         )
         if (intrinsics.any { !it.isFinite() } || intrinsics[0] <= 0.0 || intrinsics[3] <= 0.0) return null
 
-        val refinePrincipalPoint = PrincipalPointRefinementPolicy.isObservable(
+        val refinePrincipalPoint = optimizeFocalLength && PrincipalPointRefinementPolicy.isObservable(
             PrincipalPointRefinementPolicy.assess(
                 tracks = tracks,
                 frameCentersById = frameCentersById,
@@ -111,7 +112,7 @@ internal class JointCameraBundleAdjuster {
         val packed = nativeSolve(
             centers, rotations, points, frameIndices, trackIndices, imagePoints,
             intrinsics, refinePrincipalPoint, imageWidth, imageHeight,
-            maxIterations, numThreads, null
+            maxIterations, numThreads, optimizeFocalLength, null
         ) ?: return null
         val expectedSize = 10L + centers.size + rotations.size + points.size
         if (packed.size.toLong() != expectedSize || packed[0] != 1.0 ||
@@ -147,6 +148,8 @@ internal class JointCameraBundleAdjuster {
         if (solvedIntrinsicValues.any { !it.isFinite() } ||
             solvedIntrinsicValues[0] <= 0.0 || solvedIntrinsicValues[3] <= 0.0 ||
             solvedIntrinsicValues[1] != intrinsics[1] ||
+            (!optimizeFocalLength &&
+                (solvedIntrinsicValues[0] != intrinsics[0] || solvedIntrinsicValues[3] != intrinsics[3])) ||
             (!refinePrincipalPoint && solvedIntrinsicValues[2] != intrinsics[2]) ||
             (!refinePrincipalPoint && solvedIntrinsicValues[4] != intrinsics[4]) ||
             !principalPointWithinBounds ||
@@ -186,6 +189,7 @@ internal class JointCameraBundleAdjuster {
         imageHeight: Int,
         maxIterations: Int,
         numThreads: Int,
+        optimizeFocalLength: Boolean,
         progressListener: Any?
     ): DoubleArray?
 

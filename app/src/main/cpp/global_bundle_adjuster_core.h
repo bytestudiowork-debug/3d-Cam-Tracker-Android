@@ -33,6 +33,7 @@ bool RunGlobalBundleAdjustment(const std::vector<double>& initial_camera_centers
                                int image_width = 0,
                                int image_height = 0,
                                bool optimize_rotations = true,
-                               bool optimize_translation = true);
+                               bool optimize_translation = true,
+                               bool optimize_focal_length = true);
 
 }  // namespace tracking

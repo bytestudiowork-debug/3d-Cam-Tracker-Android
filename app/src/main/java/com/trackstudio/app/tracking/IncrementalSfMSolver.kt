@@ -12,6 +12,7 @@ import org.opencv.core.KeyPoint
 import org.opencv.core.Point
 import org.opencv.imgproc.Imgproc
 import org.opencv.core.Point3
+import com.trackstudio.app.tracking.colmap.ColmapLocalBundleSelector
 import com.trackstudio.app.tracking.glomap.GlomapGlobalPositioningProblemBuilder
 import com.trackstudio.app.tracking.glomap.GlomapNativeSolver
 import kotlin.math.hypot
@@ -901,6 +902,58 @@ internal class IncrementalSfMSolver(
                 doubleArrayOf(landmark.position.x, landmark.position.y, landmark.position.z)
             }
 
+            // COLMAP runs this window after each registered image. This pipeline applies one
+            // bounded final window after its earlier map-wide positioning/refinement stages.
+            val localBundleSelection = if (
+                jointPoseByFrame.size > ColmapLocalBundleSelector.DEFAULT_MAX_NUM_IMAGES
+            ) {
+                // The highest registered frame is the stable temporal anchor here.
+                jointPoseByFrame.keys.maxOrNull()?.let { referenceFrameId ->
+                    ColmapLocalBundleSelector.select(
+                        referenceFrameId = referenceFrameId,
+                        cameraCentersByFrame = jointCenters,
+                        tracks = jointTracks,
+                        pointsByTrackId = jointPoints
+                    )
+                }
+            } else {
+                null
+            }
+            val localFrameIds = localBundleSelection?.frameIds?.toSet().orEmpty()
+            val localBundleTracks = if (localBundleSelection != null) {
+                jointTracks.filter { track ->
+                    // COLMAP keeps tracks longer than 15 fixed in a local bundle.
+                    track.length <= 15 &&
+                        track.observations.count { it.frameIndex in localFrameIds } >= 3
+                }
+            } else {
+                emptyList()
+            }
+            val localTrackIds = localBundleTracks.map { it.id }.toSet()
+            val localObservationCount = localBundleTracks.sumOf { track ->
+                track.observations.count { it.frameIndex in localFrameIds }
+            }
+            val useLocalBundle = localBundleSelection != null &&
+                localBundleSelection.frameIds.size >= 3 &&
+                localBundleTracks.size >= 20 &&
+                localObservationCount >= 60
+            val bundleFrameCenters = if (useLocalBundle) {
+                jointCenters.filterKeys { it in localFrameIds }
+            } else {
+                jointCenters
+            }
+            val bundleRotations = if (useLocalBundle) {
+                jointRotations.filterKeys { it in localFrameIds }
+            } else {
+                jointRotations
+            }
+            val bundlePoints = if (useLocalBundle) {
+                jointPoints.filterKeys { it in localTrackIds }
+            } else {
+                jointPoints
+            }
+            val bundleTracks = if (useLocalBundle) localBundleTracks else jointTracks
+
             when {
                 jointPoseByFrame.size < 3 || jointTracks.count { track ->
                     track.observations.count { it.frameIndex in jointPoseByFrame } >= 3
@@ -917,16 +970,47 @@ internal class IncrementalSfMSolver(
                         )
                     )
                     try {
-                        val candidate = JointCameraBundleAdjuster().solve(
-                            frameCentersById = jointCenters,
-                            rotationsByFrame = jointRotations,
-                            pointsByTrackId = jointPoints,
-                            tracks = jointTracks,
+                        val adjuster = JointCameraBundleAdjuster()
+                        fun solveJointBundle(
+                            centers: Map<Int, DoubleArray>,
+                            rotations: Map<Int, DoubleArray>,
+                            points: Map<Int, DoubleArray>,
+                            tracks: List<CameraFeatureTrack>,
+                            optimizeFocalLength: Boolean
+                        ) = adjuster.solve(
+                            frameCentersById = centers,
+                            rotationsByFrame = rotations,
+                            pointsByTrackId = points,
+                            tracks = tracks,
                             cameraMatrix = cameraMatrix,
                             imageWidth = firstFrame.width,
                             imageHeight = firstFrame.height,
                             maxIterations = 45,
-                            numThreads = Runtime.getRuntime().availableProcessors().coerceIn(1, 4)
+                            numThreads = Runtime.getRuntime().availableProcessors().coerceIn(1, 4),
+                            optimizeFocalLength = optimizeFocalLength
+                        )
+
+                        val localCandidate = if (useLocalBundle) {
+                            try {
+                                solveJointBundle(
+                                    bundleFrameCenters,
+                                    bundleRotations,
+                                    bundlePoints,
+                                    bundleTracks,
+                                    optimizeFocalLength = false
+                                )
+                            } catch (_: RuntimeException) {
+                                null
+                            }
+                        } else {
+                            null
+                        }
+                        val candidate = localCandidate ?: solveJointBundle(
+                            jointCenters,
+                            jointRotations,
+                            jointPoints,
+                            jointTracks,
+                            optimizeFocalLength = true
                         )
                         if (candidate == null) {
                             jointBundleAdjustmentStatus = "Skipped: insufficient connected observations"

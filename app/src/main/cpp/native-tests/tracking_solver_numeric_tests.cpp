@@ -465,6 +465,16 @@ void TestBundleAdjustmentJointRecoveryOutliersAndGauge() {
                     robust_result.intrinsics[3] > 0.25 * truth_intrinsics[3] &&
                     robust_result.intrinsics[3] < 4.0 * truth_intrinsics[3],
             "robust outlier solve produced an unbounded focal length");
+
+    tracking::GlobalBundleAdjustmentResult fixed_focal_result;
+    Require(tracking::RunGlobalBundleAdjustment(
+                    truth_centers, truth_rotations, truth_points, frame_indices,
+                    track_indices, image_points, initial_intrinsics, 60, 1,
+                    &fixed_focal_result, {}, false, 0, 0, true, true, false),
+            "local-window bundle adjustment with fixed focal lengths did not solve");
+    Require(fixed_focal_result.intrinsics[0] == initial_intrinsics[0] &&
+                    fixed_focal_result.intrinsics[3] == initial_intrinsics[3],
+            "fixed-intrinsics local bundle adjustment changed focal lengths");
 }
 
 void TestObservablePrincipalPointRefinement() {

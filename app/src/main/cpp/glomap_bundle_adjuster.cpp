@@ -32,6 +32,7 @@ jdoubleArray JointCameraBundleAdjusterSolve(
         jint image_height,
         jboolean optimize_rotations,
         jboolean optimize_translation,
+        jboolean optimize_focal_length,
         jint max_iterations,
         jint num_threads,
         jobject progress_listener);
@@ -61,7 +62,7 @@ Java_com_trackstudio_app_tracking_glomap_GlomapGlobalBundleAdjuster_nativeSolve(
             env, camera_centers_array, rotations_array, points_array,
             frame_indices_array, track_indices_array, image_points_array,
             intrinsics_array, refine_principal_point, image_width, image_height,
-            optimize_rotations, optimize_translation, max_iterations, num_threads,
+            optimize_rotations, optimize_translation, JNI_TRUE, max_iterations, num_threads,
             progress_listener);
 }
 
@@ -81,6 +82,7 @@ jdoubleArray JointCameraBundleAdjusterSolve(
         jint image_height,
         jboolean optimize_rotations,
         jboolean optimize_translation,
+        jboolean optimize_focal_length,
         jint max_iterations,
         jint num_threads,
         jobject progress_listener) {
@@ -145,7 +147,8 @@ jdoubleArray JointCameraBundleAdjusterSolve(
                     refine_principal_point != JNI_FALSE,
                     image_width, image_height,
                     optimize_rotations != JNI_FALSE,
-                    optimize_translation != JNI_FALSE)) {
+                    optimize_translation != JNI_FALSE,
+                    optimize_focal_length != JNI_FALSE)) {
             if (env->ExceptionCheck()) return nullptr;
             return EmptyResult(env);
         }
@@ -205,10 +208,12 @@ Java_com_trackstudio_app_tracking_JointCameraBundleAdjuster_nativeSolve(
         jint image_height,
         jint max_iterations,
         jint num_threads,
+        jboolean optimize_focal_length,
         jobject progress_listener) {
     return JointCameraBundleAdjusterSolve(
             env, camera_centers_array, rotations_array, points_array,
             frame_indices_array, track_indices_array, image_points_array,
             intrinsics_array, refine_principal_point, image_width, image_height,
-            JNI_TRUE, JNI_TRUE, max_iterations, num_threads, progress_listener);
+            JNI_TRUE, JNI_TRUE, optimize_focal_length, max_iterations, num_threads,
+            progress_listener);
 }
