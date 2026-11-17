@@ -100,7 +100,13 @@ internal object GlomapImagePairInlierScorer {
             translation[2], 0.0, -translation[0],
             -translation[1], translation[0], 0.0
         )
-        return multiply(tx, rotation)
+        return DoubleArray(9) { index ->
+            val row = index / 3
+            val column = index % 3
+            tx[row * 3] * rotation[column] +
+                tx[row * 3 + 1] * rotation[3 + column] +
+                tx[row * 3 + 2] * rotation[6 + column]
+        }
     }
 
     /** Exact pinned GLOMAP 3D-ray Sampson-error form. */
@@ -172,10 +178,6 @@ internal object GlomapImagePairInlierScorer {
                 rotation[1] * (rotation[3] * rotation[8] - rotation[5] * rotation[6]) +
                 rotation[2] * (rotation[3] * rotation[7] - rotation[4] * rotation[6])
         return determinant.isFinite() && kotlin.math.abs(determinant - 1.0) <= 1e-3
-    }
-
-    private fun multiply(matrix: DoubleArray, vector: DoubleArray): DoubleArray = DoubleArray(3) { row ->
-        matrix[row * 3] * vector[0] + matrix[row * 3 + 1] * vector[1] + matrix[row * 3 + 2] * vector[2]
     }
 
     private fun transposeMultiply(matrix: DoubleArray, vector: DoubleArray): DoubleArray = DoubleArray(3) { column ->
