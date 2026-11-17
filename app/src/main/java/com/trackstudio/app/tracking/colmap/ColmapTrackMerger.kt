@@ -185,7 +185,7 @@ internal object ColmapTrackMerger {
                     ownerByNode[node(observation.frameIndex, observation.featureIndex)] = survivingId
                 }
                 mergedTrackCount++
-                pending.addLast(survivingId)
+                pending.addFirst(survivingId)
                 break
             }
         }
