@@ -180,9 +180,7 @@ internal object OpenCvInitialPairEvaluator {
                         fundamentalValues, cameraValues, cameraValues
                     ) ?: return rejected(firstFrame, secondFrame, "Could not convert F to E", matchCount)
                     Mat(3, 3, CvType.CV_64F).apply {
-                        if (put(0, 0, *essentialValues) !=
-                            essentialValues.size * java.lang.Double.BYTES
-                        ) {
+                        if (put(0, 0, *essentialValues) != essentialValues.size) {
                             release()
                             return rejected(firstFrame, secondFrame, "Could not store F-derived E", matchCount)
                         }
