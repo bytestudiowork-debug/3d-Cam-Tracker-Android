@@ -1,5 +1,9 @@
 package com.trackstudio.app.tracking
 
+import kotlin.math.acos
+import kotlin.math.abs
+import kotlin.math.min
+import kotlin.math.sqrt
 import org.junit.Assert.assertArrayEquals
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNotNull
@@ -27,6 +31,49 @@ class MultiViewTriangulationMathTest {
 
         assertNotNull(estimate)
         assertArrayEquals(worldPoint, estimate!!, 1e-6)
+    }
+
+    @Test
+    fun triangulationAngleUsesTheEstimatedPointAndCameraCentersForNoisyRays() {
+        val worldPoint = doubleArrayOf(0.25, -0.17, 4.7)
+        val first = view(frame = 0, centerX = 0.0, centerY = 0.0, point = worldPoint)
+        val second = view(frame = 1, centerX = 1.2, centerY = 0.1, point = worldPoint)
+            .let { it.copy(pixelY = it.pixelY + 150.0) }
+
+        val triangulatedPoint = MultiViewTriangulationMath.triangulateDlt(
+            listOf(first, second), intrinsics
+        )
+        assertNotNull(triangulatedPoint)
+        val angle = MultiViewTriangulationMath.triangulationAngleDegrees(first, second, intrinsics)
+        assertNotNull(angle)
+
+        val center1 = CameraPoseGeometry.cameraCenterWorld(first.pose)
+        val center2 = CameraPoseGeometry.cameraCenterWorld(second.pose)
+        val point = triangulatedPoint!!
+        val ray1Length = sqrt(center1.indices.sumOf { axis ->
+            val distance = point[axis] - center1[axis]
+            distance * distance
+        })
+        val ray2Length = sqrt(center2.indices.sumOf { axis ->
+            val distance = point[axis] - center2[axis]
+            distance * distance
+        })
+        val baselineLength = sqrt(center1.indices.sumOf { axis ->
+            val distance = center1[axis] - center2[axis]
+            distance * distance
+        })
+        val cosine = ((ray1Length * ray1Length + ray2Length * ray2Length - baselineLength * baselineLength) /
+            (2.0 * ray1Length * ray2Length)).coerceIn(-1.0, 1.0)
+        val rawAngle = acos(cosine)
+        val expectedAngle = Math.toDegrees(min(rawAngle, Math.PI - rawAngle))
+
+        assertEquals(expectedAngle, angle!!, 1e-9)
+        assertTrue(
+            "Noisy ray-angle proxy should differ from the triangulated-point angle",
+            abs(
+                angle - MultiViewTriangulationMath.rayAngleDegrees(first, second, intrinsics)
+            ) > 2.0
+        )
     }
 
     @Test

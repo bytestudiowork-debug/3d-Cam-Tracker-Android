@@ -6,7 +6,6 @@ import org.opencv.core.MatOfPoint2f
 import org.opencv.core.KeyPoint
 import org.opencv.core.CvType
 import org.opencv.core.CvException
-import kotlin.math.acos
 import kotlin.math.sqrt
 
 /**
@@ -328,15 +327,44 @@ internal object OpenCvInitialPairEvaluator {
                 val coverage = occupiedGridCells(
                     inlierIndices.map { matchedFirst[it] }, frameWidth, frameHeight
                 )
-                val parallax = inlierIndices.map { index ->
-                    rayAngleDegrees(
-                        matchedFirst[index], matchedSecond[index],
-                        relativeRotation, cameraMatrix
+                val fx = cameraMatrix.get(0, 0)[0]
+                val fy = cameraMatrix.get(1, 1)[0]
+                val skew = cameraMatrix.get(0, 1)[0]
+                val cx = cameraMatrix.get(0, 2)[0]
+                val cy = cameraMatrix.get(1, 2)[0]
+                val intrinsics = PinholeIntrinsics(fx, fy, skew, cx, cy)
+                val firstPose = CameraPose(
+                    frameIndex = firstFrame,
+                    rotation = doubleArrayOf(
+                        1.0, 0.0, 0.0,
+                        0.0, 1.0, 0.0,
+                        0.0, 0.0, 1.0
+                    ),
+                    translation = doubleArrayOf(0.0, 0.0, 0.0),
+                    status = CameraPoseStatus.REFERENCE
+                )
+                val secondPose = CameraPose(
+                    frameIndex = secondFrame,
+                    rotation = relativeRotation,
+                    translation = t,
+                    status = CameraPoseStatus.RELATIVE_ESTIMATE
+                )
+                val parallax = inlierIndices.mapNotNull { index ->
+                    MultiViewTriangulationMath.triangulationAngleDegrees(
+                        first = TriangulationView(
+                            matchedFirst[index].x, matchedFirst[index].y, firstPose
+                        ),
+                        second = TriangulationView(
+                            matchedSecond[index].x, matchedSecond[index].y, secondPose
+                        ),
+                        intrinsics = intrinsics
                     )
                 }.filter { it.isFinite() }.sorted()
 
                 if (parallax.isEmpty()) {
-                    return rejected(firstFrame, secondFrame, "No valid parallax measurements", matchCount)
+                    return rejected(
+                        firstFrame, secondFrame, "No valid triangulation-angle measurements", matchCount
+                    )
                 }
                 val medianParallax = percentile(parallax, 0.50)
                 val upperQuartileParallax = percentile(parallax, 0.75)
@@ -418,46 +446,6 @@ internal object OpenCvInitialPairEvaluator {
             cells[y * 4 + x] = true
         }
         return cells.count { it }
-    }
-
-    private fun rayAngleDegrees(
-        first: org.opencv.core.Point,
-        second: org.opencv.core.Point,
-        rotationValues: DoubleArray,
-        cameraMatrix: Mat
-    ): Double {
-        val fx = cameraMatrix.get(0, 0)[0]
-        val fy = cameraMatrix.get(1, 1)[0]
-        val skew = cameraMatrix.get(0, 1)[0]
-        val cx = cameraMatrix.get(0, 2)[0]
-        val cy = cameraMatrix.get(1, 2)[0]
-        if (kotlin.math.abs(fx) < 1e-12 || kotlin.math.abs(fy) < 1e-12) return 0.0
-        val intrinsics = PinholeIntrinsics(fx, fy, skew, cx, cy)
-
-        fun normalize(point: org.opencv.core.Point): DoubleArray {
-            val ray = CameraProjectionMath.pixelToNormalized(point.x, point.y, intrinsics)
-            val n = sqrt(ray[0] * ray[0] + ray[1] * ray[1] + 1.0)
-            return doubleArrayOf(ray[0] / n, ray[1] / n, 1.0 / n)
-        }
-
-        val a = normalize(first)
-        val bCamera = normalize(second)
-        // recoverPose returns X2 = R * X1 + t; rotate the second ray
-        // back into camera-1 coordinates before comparing viewing rays.
-        val b = doubleArrayOf(
-            rotationValues[0] * bCamera[0] +
-                rotationValues[3] * bCamera[1] +
-                rotationValues[6] * bCamera[2],
-            rotationValues[1] * bCamera[0] +
-                rotationValues[4] * bCamera[1] +
-                rotationValues[7] * bCamera[2],
-            rotationValues[2] * bCamera[0] +
-                rotationValues[5] * bCamera[1] +
-                rotationValues[8] * bCamera[2]
-        )
-        val dot = (a[0] * b[0] + a[1] * b[1] + a[2] * b[2])
-            .coerceIn(-1.0, 1.0)
-        return Math.toDegrees(acos(dot))
     }
 
     private fun percentile(sorted: List<Double>, fraction: Double): Double {

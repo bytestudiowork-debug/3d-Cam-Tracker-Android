@@ -175,6 +175,22 @@ internal object MultiViewTriangulationMath {
         return point.takeIf { values -> values.all { it.isFinite() } }
     }
 
+    fun triangulationAngleDegrees(
+        first: TriangulationView,
+        second: TriangulationView,
+        intrinsics: PinholeIntrinsics
+    ): Double? {
+        if (!isValid(first) || !isValid(second)) return null
+        val point = triangulateDlt(listOf(first, second), intrinsics) ?: return null
+        val firstCameraPoint = worldToCamera(first.pose, point)
+        val secondCameraPoint = worldToCamera(second.pose, point)
+        if (!firstCameraPoint.all(Double::isFinite) || firstCameraPoint[2] <= 1e-9 ||
+            !secondCameraPoint.all(Double::isFinite) || secondCameraPoint[2] <= 1e-9
+        ) return null
+        val angle = triangulationAngleDegrees(point, first.pose, second.pose)
+        return angle.takeIf { it.isFinite() }
+    }
+
     fun angularErrorDegrees(
         pointWorld: DoubleArray,
         observation: TriangulationView,
