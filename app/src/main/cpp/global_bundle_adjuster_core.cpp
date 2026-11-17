@@ -170,7 +170,8 @@ bool RunGlobalBundleAdjustment(const std::vector<double>& initial_camera_centers
                                int image_height,
                                bool optimize_rotations,
                                bool optimize_translation,
-                               bool optimize_focal_length) {
+                               bool optimize_focal_length,
+                               const std::vector<int>* point_optimization_mask) {
     if (result == nullptr) return false;
     *result = GlobalBundleAdjustmentResult{};
     if (initial_camera_centers.empty() ||
@@ -193,6 +194,12 @@ bool RunGlobalBundleAdjustment(const std::vector<double>& initial_camera_centers
     const int frame_count = static_cast<int>(initial_camera_centers.size() / 3);
     const int point_count = static_cast<int>(initial_points.size() / 3);
     if (frame_count < 2 || point_count < 1) return false;
+    if (point_optimization_mask != nullptr &&
+        (point_optimization_mask->size() != static_cast<size_t>(point_count) ||
+         std::any_of(point_optimization_mask->begin(), point_optimization_mask->end(),
+                     [](int value) { return value != 0 && value != 1; }))) {
+        return false;
+    }
     for (int frame = 0; frame < frame_count; ++frame) {
         if (!IsValidRotationMatrix(rotations.data() + frame * 9)) return false;
     }
@@ -271,6 +278,14 @@ bool RunGlobalBundleAdjustment(const std::vector<double>& initial_camera_centers
     }
     ordering->AddElementToGroup(focal_lengths.data(), 1);
     ordering->AddElementToGroup(principal_point.data(), 1);
+
+    if (point_optimization_mask != nullptr) {
+        for (int track = 0; track < point_count; ++track) {
+            if ((*point_optimization_mask)[track] == 0) {
+                problem.SetParameterBlockConstant(points.data() + track * 3);
+            }
+        }
+    }
 
     for (int frame = 0; frame < frame_count; ++frame) {
         if (!optimize_rotations || frame == 0) {

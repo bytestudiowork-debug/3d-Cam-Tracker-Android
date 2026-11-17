@@ -269,6 +269,110 @@ internal class IncrementalSfMSolver(
             val landmarksByTrack = linkedMapOf<Int, CameraLandmark>()
             initialReconstruction.landmarks.forEach { landmarksByTrack[it.trackId] = it }
 
+            fun cameraCenter(pose: CameraPose): DoubleArray {
+                val r = pose.rotation
+                val t = pose.translation
+                return doubleArrayOf(
+                    -(r[0] * t[0] + r[3] * t[1] + r[6] * t[2]),
+                    -(r[1] * t[0] + r[4] * t[1] + r[7] * t[2]),
+                    -(r[2] * t[0] + r[5] * t[1] + r[8] * t[2])
+                )
+            }
+
+            fun refineLocalBundle(referenceFrameId: Int): Boolean {
+                val validPoses = poseByFrame.filterNotNull().filter { pose ->
+                    pose.status != CameraPoseStatus.HELD_LAST_VALID &&
+                        pose.status != CameraPoseStatus.UNREGISTERED
+                }
+                val centersByFrame = validPoses.associate { pose ->
+                    pose.frameIndex to cameraCenter(pose)
+                }
+                val mapTracks = trackBuilder.build(trackIds = landmarksByTrack.keys)
+                val referenceTracks = mapTracks.filter { track ->
+                    track.observations.any { it.frameIndex == referenceFrameId }
+                }
+                val referencePoints = referenceTracks.associate { track ->
+                    val landmark = landmarksByTrack.getValue(track.id)
+                    track.id to doubleArrayOf(
+                        landmark.position.x, landmark.position.y, landmark.position.z
+                    )
+                }
+                val selection = ColmapLocalBundleSelector.select(
+                    referenceFrameId = referenceFrameId,
+                    cameraCentersByFrame = centersByFrame,
+                    tracks = referenceTracks,
+                    pointsByTrackId = referencePoints
+                )
+                val localFrameIds = selection.frameIds.toSet()
+                if (localFrameIds.size < 3) return false
+
+                val localTracks = mapTracks.filter { track ->
+                    track.observations.count { it.frameIndex in localFrameIds } >= 3
+                }
+                val localTrackIds = localTracks.mapTo(linkedSetOf()) { it.id }
+                val localObservationCount = localTracks.sumOf { track ->
+                    track.observations.count { it.frameIndex in localFrameIds }
+                }
+                if (localTracks.size < 20 || localObservationCount < 60) return false
+
+                val localCenters = centersByFrame.filterKeys { it in localFrameIds }
+                val localRotations = validPoses.asSequence()
+                    .filter { it.frameIndex in localFrameIds }
+                    .associate { it.frameIndex to it.rotation }
+                val localPoints = localTrackIds.associateWith { trackId ->
+                    val landmark = landmarksByTrack.getValue(trackId)
+                    doubleArrayOf(landmark.position.x, landmark.position.y, landmark.position.z)
+                }
+                val variablePointTrackIds = localTracks.asSequence()
+                    .filter { it.length <= 15 }
+                    .map { it.id }
+                    .toSet()
+                val candidate = try {
+                    JointCameraBundleAdjuster().solve(
+                        frameCentersById = localCenters,
+                        rotationsByFrame = localRotations,
+                        pointsByTrackId = localPoints,
+                        tracks = localTracks,
+                        cameraMatrix = cameraMatrix,
+                        imageWidth = firstFrame.width,
+                        imageHeight = firstFrame.height,
+                        maxIterations = 8,
+                        numThreads = 1,
+                        optimizeFocalLength = false,
+                        optimizePointTrackIds = variablePointTrackIds
+                    )
+                } catch (_: LinkageError) {
+                    null
+                } catch (_: RuntimeException) {
+                    null
+                } ?: return false
+
+                if (!SolverObjective.didNotIncrease(candidate.initialCost, candidate.finalCost)) {
+                    return false
+                }
+                for ((frameId, center) in candidate.frameCentersById) {
+                    val oldPose = poseByFrame.getOrNull(frameId) ?: continue
+                    val rotation = candidate.rotationsByFrame[frameId] ?: continue
+                    val translation = doubleArrayOf(
+                        -(rotation[0] * center[0] + rotation[1] * center[1] + rotation[2] * center[2]),
+                        -(rotation[3] * center[0] + rotation[4] * center[1] + rotation[5] * center[2]),
+                        -(rotation[6] * center[0] + rotation[7] * center[1] + rotation[8] * center[2])
+                    )
+                    poseByFrame[frameId] = oldPose.copy(
+                        rotation = rotation.copyOf(),
+                        translation = translation
+                    )
+                }
+
+                for ((trackId, point) in candidate.pointsByTrackId) {
+                    val oldLandmark = landmarksByTrack[trackId] ?: continue
+                    landmarksByTrack[trackId] = oldLandmark.copy(
+                        position = Point3(point[0], point[1], point[2])
+                    )
+                }
+                return true
+            }
+
             var previousDescriptors = secondFrame.descriptors.clone()
             var previousKeypoints = secondFrame.keypoints
             var totalMatches = geometry.matches.size
@@ -417,14 +521,14 @@ internal class IncrementalSfMSolver(
                                     "$refinementFallbackNote)"
                             )
 
-                            // Triangulate periodically, not after every frame. This bounds
-                            // CPU cost while allowing the map to grow during the solve.
+                            // Bound local map work to one update per two accepted cameras.
                             if (acceptedRegistrationsSinceMapUpdate >= 2) {
                                 tracks = trackBuilder.build()
                                 val validPoses = poseByFrame.filterNotNull()
-                                // Only triangulate tracks not already in the sparse map;
-                                // repeated full-map passes waste CPU on longer clips.
-                                val newTracks = tracks.filter { it.id !in landmarksByTrack }
+                                val newTracks = tracks.filter { track ->
+                                    track.id !in landmarksByTrack &&
+                                        track.observations.any { it.frameIndex == frameIndex }
+                                }
                                 if (newTracks.isNotEmpty()) {
                                     val update = SfMTriangulator.triangulate(
                                         newTracks, validPoses, cameraMatrix
@@ -434,6 +538,8 @@ internal class IncrementalSfMSolver(
                                     }
                                 }
                                 acceptedRegistrationsSinceMapUpdate = 0
+                                currentCoroutineContext().ensureActive()
+                                refineLocalBundle(frameIndex)
                             }
                         } else {
                             diagnostics[frameIndex] = FrameTrackingDiagnostic(
@@ -609,17 +715,24 @@ internal class IncrementalSfMSolver(
                                 )
                                 if (acceptedRegistrationsSinceMapUpdate >= 2) {
                                     tracks = trackBuilder.build()
-                                    val newTracks = tracks.filter { it.id !in landmarksByTrack }
-                                    val update = SfMTriangulator.triangulate(
-                                        newTracks, poseByFrame.filterNotNull(), cameraMatrix
-                                    )
-                                    update.landmarks.forEach { landmark ->
-                                        val old = landmarksByTrack[landmark.trackId]
-                                        if (old == null ||
-                                            landmark.meanReprojectionErrorPx < old.meanReprojectionErrorPx
-                                        ) landmarksByTrack[landmark.trackId] = landmark
+                                    val newTracks = tracks.filter { track ->
+                                        track.id !in landmarksByTrack &&
+                                            track.observations.any { it.frameIndex == frameIndex }
+                                    }
+                                    if (newTracks.isNotEmpty()) {
+                                        val update = SfMTriangulator.triangulate(
+                                            newTracks, poseByFrame.filterNotNull(), cameraMatrix
+                                        )
+                                        update.landmarks.forEach { landmark ->
+                                            val old = landmarksByTrack[landmark.trackId]
+                                            if (old == null ||
+                                                landmark.meanReprojectionErrorPx < old.meanReprojectionErrorPx
+                                            ) landmarksByTrack[landmark.trackId] = landmark
+                                        }
                                     }
                                     acceptedRegistrationsSinceMapUpdate = 0
+                                    currentCoroutineContext().ensureActive()
+                                    refineLocalBundle(frameIndex)
                                 }
                             } else {
                                 diagnostics[frameIndex] = FrameTrackingDiagnostic(
@@ -771,16 +884,6 @@ internal class IncrementalSfMSolver(
                     pose.status != CameraPoseStatus.UNREGISTERED
             }.associateBy { it.frameIndex }
 
-            fun cameraCenter(pose: CameraPose): DoubleArray {
-                val r = pose.rotation
-                val t = pose.translation
-                return doubleArrayOf(
-                    -(r[0] * t[0] + r[3] * t[1] + r[6] * t[2]),
-                    -(r[1] * t[0] + r[4] * t[1] + r[7] * t[2]),
-                    -(r[2] * t[0] + r[5] * t[1] + r[8] * t[2])
-                )
-            }
-
             val initialCameraCenters = validPoseByFrame.mapValues { (_, pose) ->
                 cameraCenter(pose)
             }
@@ -902,8 +1005,8 @@ internal class IncrementalSfMSolver(
                 doubleArrayOf(landmark.position.x, landmark.position.y, landmark.position.z)
             }
 
-            // COLMAP runs this window after each registered image. This pipeline applies one
-            // bounded final window after its earlier map-wide positioning/refinement stages.
+            // The Android path runs a bounded local window after each two accepted cameras,
+            // then keeps this closing pass after the map-wide positioning/refinement stages.
             val localBundleSelection = if (
                 jointPoseByFrame.size > ColmapLocalBundleSelector.DEFAULT_MAX_NUM_IMAGES
             ) {
@@ -922,14 +1025,16 @@ internal class IncrementalSfMSolver(
             val localFrameIds = localBundleSelection?.frameIds?.toSet().orEmpty()
             val localBundleTracks = if (localBundleSelection != null) {
                 jointTracks.filter { track ->
-                    // COLMAP keeps tracks longer than 15 fixed in a local bundle.
-                    track.length <= 15 &&
-                        track.observations.count { it.frameIndex in localFrameIds } >= 3
+                    track.observations.count { it.frameIndex in localFrameIds } >= 3
                 }
             } else {
                 emptyList()
             }
             val localTrackIds = localBundleTracks.map { it.id }.toSet()
+            val localVariablePointTrackIds = localBundleTracks.asSequence()
+                .filter { it.length <= 15 }
+                .map { it.id }
+                .toSet()
             val localObservationCount = localBundleTracks.sumOf { track ->
                 track.observations.count { it.frameIndex in localFrameIds }
             }
@@ -976,7 +1081,8 @@ internal class IncrementalSfMSolver(
                             rotations: Map<Int, DoubleArray>,
                             points: Map<Int, DoubleArray>,
                             tracks: List<CameraFeatureTrack>,
-                            optimizeFocalLength: Boolean
+                            optimizeFocalLength: Boolean,
+                            optimizePointTrackIds: Set<Int>? = null
                         ) = adjuster.solve(
                             frameCentersById = centers,
                             rotationsByFrame = rotations,
@@ -987,7 +1093,8 @@ internal class IncrementalSfMSolver(
                             imageHeight = firstFrame.height,
                             maxIterations = 45,
                             numThreads = Runtime.getRuntime().availableProcessors().coerceIn(1, 4),
-                            optimizeFocalLength = optimizeFocalLength
+                            optimizeFocalLength = optimizeFocalLength,
+                            optimizePointTrackIds = optimizePointTrackIds
                         )
 
                         val localCandidate = if (useLocalBundle) {
@@ -997,7 +1104,8 @@ internal class IncrementalSfMSolver(
                                     bundleRotations,
                                     bundlePoints,
                                     bundleTracks,
-                                    optimizeFocalLength = false
+                                    optimizeFocalLength = false,
+                                    optimizePointTrackIds = localVariablePointTrackIds
                                 )
                             } catch (_: RuntimeException) {
                                 null

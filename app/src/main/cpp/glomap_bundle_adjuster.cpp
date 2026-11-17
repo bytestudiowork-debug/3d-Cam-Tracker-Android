@@ -35,7 +35,8 @@ jdoubleArray JointCameraBundleAdjusterSolve(
         jboolean optimize_focal_length,
         jint max_iterations,
         jint num_threads,
-        jobject progress_listener);
+        jobject progress_listener,
+        jintArray point_optimization_mask_array);
 
 }  // namespace
 
@@ -63,7 +64,7 @@ Java_com_trackstudio_app_tracking_glomap_GlomapGlobalBundleAdjuster_nativeSolve(
             frame_indices_array, track_indices_array, image_points_array,
             intrinsics_array, refine_principal_point, image_width, image_height,
             optimize_rotations, optimize_translation, JNI_TRUE, max_iterations, num_threads,
-            progress_listener);
+            progress_listener, nullptr);
 }
 
 namespace {
@@ -85,7 +86,8 @@ jdoubleArray JointCameraBundleAdjusterSolve(
         jboolean optimize_focal_length,
         jint max_iterations,
         jint num_threads,
-        jobject progress_listener) {
+        jobject progress_listener,
+        jintArray point_optimization_mask_array) {
     try {
         if (!camera_centers_array || !rotations_array || !points_array ||
             !frame_indices_array || !track_indices_array || !image_points_array ||
@@ -106,6 +108,8 @@ jdoubleArray JointCameraBundleAdjusterSolve(
             env->GetArrayLength(track_indices_array) != observation_count ||
             env->GetArrayLength(image_points_array) != observation_count * 2 ||
             env->GetArrayLength(intrinsics_array) != 5 ||
+            (point_optimization_mask_array != nullptr &&
+             env->GetArrayLength(point_optimization_mask_array) != point_values / 3) ||
             (refine_principal_point != JNI_FALSE &&
              (image_width <= 0 || image_height <= 0)) ||
             max_iterations <= 0 || num_threads <= 0) {
@@ -119,6 +123,7 @@ jdoubleArray JointCameraBundleAdjusterSolve(
         std::vector<int> track_indices(static_cast<size_t>(observation_count));
         std::vector<double> image_points(static_cast<size_t>(observation_count) * 2);
         std::vector<double> intrinsics(5);
+        std::vector<int> point_optimization_mask;
 
         env->GetDoubleArrayRegion(camera_centers_array, 0, center_values, centers.data());
         env->GetDoubleArrayRegion(rotations_array, 0, rotation_values, rotations.data());
@@ -127,7 +132,17 @@ jdoubleArray JointCameraBundleAdjusterSolve(
         env->GetIntArrayRegion(track_indices_array, 0, observation_count, track_indices.data());
         env->GetDoubleArrayRegion(image_points_array, 0, observation_count * 2, image_points.data());
         env->GetDoubleArrayRegion(intrinsics_array, 0, 5, intrinsics.data());
+        if (point_optimization_mask_array != nullptr) {
+            const jsize mask_size = env->GetArrayLength(point_optimization_mask_array);
+            point_optimization_mask.resize(static_cast<size_t>(mask_size));
+            env->GetIntArrayRegion(point_optimization_mask_array, 0, mask_size,
+                                   point_optimization_mask.data());
+        }
         if (env->ExceptionCheck()) return nullptr;
+        if (std::any_of(point_optimization_mask.begin(), point_optimization_mask.end(),
+                        [](int value) { return value != 0 && value != 1; })) {
+            return EmptyResult(env);
+        }
 
         trackstudio::JniProgressCallback progress_callback(
                 env, progress_listener, std::min(max_iterations, 60));
@@ -148,7 +163,10 @@ jdoubleArray JointCameraBundleAdjusterSolve(
                     image_width, image_height,
                     optimize_rotations != JNI_FALSE,
                     optimize_translation != JNI_FALSE,
-                    optimize_focal_length != JNI_FALSE)) {
+                    optimize_focal_length != JNI_FALSE,
+                    point_optimization_mask_array != nullptr
+                            ? &point_optimization_mask
+                            : nullptr)) {
             if (env->ExceptionCheck()) return nullptr;
             return EmptyResult(env);
         }
@@ -209,11 +227,12 @@ Java_com_trackstudio_app_tracking_JointCameraBundleAdjuster_nativeSolve(
         jint max_iterations,
         jint num_threads,
         jboolean optimize_focal_length,
-        jobject progress_listener) {
+        jobject progress_listener,
+        jintArray point_optimization_mask_array) {
     return JointCameraBundleAdjusterSolve(
             env, camera_centers_array, rotations_array, points_array,
             frame_indices_array, track_indices_array, image_points_array,
             intrinsics_array, refine_principal_point, image_width, image_height,
             JNI_TRUE, JNI_TRUE, optimize_focal_length, max_iterations, num_threads,
-            progress_listener);
+            progress_listener, point_optimization_mask_array);
 }

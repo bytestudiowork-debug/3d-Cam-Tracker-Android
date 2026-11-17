@@ -1,6 +1,6 @@
-The COLMAP library is licensed under the new BSD license. This notice covers the source-derived adaptive local-bundle selection and triangulation-angle percentile logic adapted into the Android tracking engine from the pinned sources below.
+The COLMAP library is licensed under the new BSD license. This notice covers the source-derived adaptive local-bundle selection, per-registration triangulate/local-refinement ordering, long-track point fixing, and triangulation-angle percentile logic adapted into the Android tracking engine from the pinned sources below.
 
-Adapted sources: src/colmap/sfm/incremental_mapper_impl.cc, src/colmap/sfm/incremental_mapper.cc, src/colmap/geometry/triangulation.cc, and src/colmap/math/math.h
+Adapted sources: src/colmap/controllers/incremental_pipeline.cc, src/colmap/controllers/incremental_pipeline.h, src/colmap/sfm/incremental_mapper.cc, src/colmap/sfm/incremental_mapper.h, src/colmap/sfm/incremental_mapper_impl.cc, src/colmap/geometry/triangulation.cc, and src/colmap/math/math.h
 COLMAP commit: c5f9cefc87e5dd596b638e4cee0ff543c7d14755
 
 Copyright (c), ETH Zurich and UNC Chapel Hill. All rights reserved.

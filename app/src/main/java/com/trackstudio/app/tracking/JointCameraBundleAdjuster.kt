@@ -32,7 +32,8 @@ internal class JointCameraBundleAdjuster {
         imageHeight: Int,
         maxIterations: Int = 45,
         numThreads: Int = Runtime.getRuntime().availableProcessors().coerceIn(1, 4),
-        optimizeFocalLength: Boolean = true
+        optimizeFocalLength: Boolean = true,
+        optimizePointTrackIds: Set<Int>? = null
     ): Result? {
         require(maxIterations > 0 && numThreads > 0)
         if (cameraMatrix.empty() || cameraMatrix.rows() != 3 || cameraMatrix.cols() != 3) return null
@@ -55,6 +56,9 @@ internal class JointCameraBundleAdjuster {
 
         val frameIndexById = frameIds.withIndex().associate { it.value to it.index }
         val trackIndexById = trackIds.withIndex().associate { it.value to it.index }
+        if (optimizePointTrackIds != null && !trackIndexById.keys.containsAll(optimizePointTrackIds)) {
+            return null
+        }
         val observations = tracks.asSequence()
             .filter { it.id in trackIndexById }
             .flatMap { track ->
@@ -98,6 +102,11 @@ internal class JointCameraBundleAdjuster {
             cameraMatrix.get(1, 2)?.firstOrNull() ?: Double.NaN
         )
         if (intrinsics.any { !it.isFinite() } || intrinsics[0] <= 0.0 || intrinsics[3] <= 0.0) return null
+        val pointOptimizationMask = if (optimizePointTrackIds == null) null else {
+            IntArray(trackIds.size) { index ->
+                if (trackIds[index] in optimizePointTrackIds) 1 else 0
+            }
+        }
 
         val refinePrincipalPoint = optimizeFocalLength && PrincipalPointRefinementPolicy.isObservable(
             PrincipalPointRefinementPolicy.assess(
@@ -112,7 +121,7 @@ internal class JointCameraBundleAdjuster {
         val packed = nativeSolve(
             centers, rotations, points, frameIndices, trackIndices, imagePoints,
             intrinsics, refinePrincipalPoint, imageWidth, imageHeight,
-            maxIterations, numThreads, optimizeFocalLength, null
+            maxIterations, numThreads, optimizeFocalLength, null, pointOptimizationMask
         ) ?: return null
         val expectedSize = 10L + centers.size + rotations.size + points.size
         if (packed.size.toLong() != expectedSize || packed[0] != 1.0 ||
@@ -190,7 +199,8 @@ internal class JointCameraBundleAdjuster {
         maxIterations: Int,
         numThreads: Int,
         optimizeFocalLength: Boolean,
-        progressListener: Any?
+        progressListener: Any?,
+        pointOptimizationMask: IntArray?
     ): DoubleArray?
 
     private fun isVector3(value: DoubleArray): Boolean =

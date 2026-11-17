@@ -475,6 +475,24 @@ void TestBundleAdjustmentJointRecoveryOutliersAndGauge() {
     Require(fixed_focal_result.intrinsics[0] == initial_intrinsics[0] &&
                     fixed_focal_result.intrinsics[3] == initial_intrinsics[3],
             "fixed-intrinsics local bundle adjustment changed focal lengths");
+
+    std::vector<int> point_optimization_mask(40, 1);
+    std::fill(point_optimization_mask.begin(), point_optimization_mask.begin() + 10, 0);
+    tracking::GlobalBundleAdjustmentResult fixed_track_result;
+    Require(tracking::RunGlobalBundleAdjustment(
+                    truth_centers, truth_rotations, initial_points, frame_indices,
+                    track_indices, image_points, truth_intrinsics, 60, 1,
+                    &fixed_track_result, {}, false, 0, 0, false, false, false,
+                    &point_optimization_mask),
+            "local bundle with fixed long-track points did not solve");
+    for (int track = 0; track < 10; ++track) {
+        Require(Distance3(fixed_track_result.points.data() + track * 3,
+                          initial_points.data() + track * 3) < 1e-12,
+                "local bundle changed a fixed long-track point");
+    }
+    Require(Distance3(fixed_track_result.points.data() + 30, truth_points.data() + 30) <
+                    Distance3(initial_points.data() + 30, truth_points.data() + 30),
+            "local bundle failed to optimize a variable short-track point");
 }
 
 void TestObservablePrincipalPointRefinement() {
