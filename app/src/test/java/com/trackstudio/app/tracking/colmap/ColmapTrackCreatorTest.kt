@@ -6,6 +6,7 @@ import com.trackstudio.app.tracking.CameraPose
 import com.trackstudio.app.tracking.CameraPoseStatus
 import com.trackstudio.app.tracking.CameraProjectionMath
 import com.trackstudio.app.tracking.PinholeIntrinsics
+import org.junit.Assert.assertArrayEquals
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertTrue
 import org.junit.Test
@@ -19,6 +20,30 @@ class ColmapTrackCreatorTest {
         cx = 640.0,
         cy = 360.0
     )
+
+    @Test
+    fun globalRetriangulationReplacesExistingPointCoordinates() {
+        val originalPoints = mapOf(
+            9 to doubleArrayOf(1.0, 2.0, 8.0),
+            12 to doubleArrayOf(-1.0, 0.5, 6.0)
+        )
+        val retriangulation = ColmapTrackCreator.create(
+            tracks = listOf(mixedTrack(secondClusterFrameCount = 0)),
+            poses = poses(3),
+            intrinsics = intrinsics
+        )
+        assertEquals(1, retriangulation.landmarks.size)
+
+        val updatedPoints = ColmapTrackCreator.updatePointEstimates(
+            existingPointsByTrackId = originalPoints,
+            retriangulatedLandmarks = retriangulation.landmarks
+        )
+
+        assertTrue(abs(updatedPoints.getValue(9)[0]) < 1e-4)
+        assertTrue(abs(updatedPoints.getValue(9)[1]) < 1e-4)
+        assertTrue(abs(updatedPoints.getValue(9)[2] - 8.0) < 1e-4)
+        assertArrayEquals(originalPoints.getValue(12), updatedPoints.getValue(12), 0.0)
+    }
 
     @Test
     fun recursivelyCreatesAnotherPointFromThreeResidualObservations() {

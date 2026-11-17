@@ -188,6 +188,22 @@ internal object ColmapTrackCreator {
         )
     }
 
+    fun updatePointEstimates(
+        existingPointsByTrackId: Map<Int, DoubleArray>,
+        retriangulatedLandmarks: List<CameraLandmark>
+    ): Map<Int, DoubleArray> {
+        val updatedPoints = existingPointsByTrackId.toMutableMap()
+        retriangulatedLandmarks.forEach { landmark ->
+            val point = doubleArrayOf(
+                landmark.position.x,
+                landmark.position.y,
+                landmark.position.z
+            )
+            if (point.all(Double::isFinite)) updatedPoints[landmark.trackId] = point
+        }
+        return updatedPoints
+    }
+
     private fun reprojectionError(
         pointWorld: DoubleArray,
         pose: CameraPose,

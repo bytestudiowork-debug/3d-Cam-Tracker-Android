@@ -600,17 +600,10 @@ class GlobalReconstructionEngine(
                     onProgress = triangulationProgress
                 )
                 val pointTrackIds = result.tracks.mapTo(HashSet<Int>()) { it.id }
-                val updatedPoints = finalPointsForLandmarks.filterKeys { it in pointTrackIds }
-                    .toMutableMap()
-                result.landmarks.forEach { landmark ->
-                    if (landmark.trackId !in updatedPoints) {
-                        updatedPoints[landmark.trackId] = doubleArrayOf(
-                            landmark.position.x,
-                            landmark.position.y,
-                            landmark.position.z
-                        )
-                    }
-                }
+                val updatedPoints = ColmapTrackCreator.updatePointEstimates(
+                    existingPointsByTrackId = finalPointsForLandmarks.filterKeys { it in pointTrackIds },
+                    retriangulatedLandmarks = result.landmarks
+                ).toMutableMap()
                 val continuedAfterCreate = ColmapTrackContinuation.continueTracks(
                     tracks = result.tracks + result.unassignedTracks,
                     pointsByTrackId = updatedPoints,
