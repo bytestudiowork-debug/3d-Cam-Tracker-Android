@@ -913,6 +913,38 @@ Eigen::Matrix3d SyntheticFundamental(double focal,
     return fundamental;
 }
 
+Eigen::Matrix3d SyntheticCrossCameraFundamental(double focal0,
+                                                double principal_x0,
+                                                double principal_y0,
+                                                double focal1,
+                                                double principal_x1,
+                                                double principal_y1,
+                                                int pair_index) {
+    Eigen::Matrix3d camera0 = Eigen::Matrix3d::Identity();
+    camera0(0, 0) = focal0;
+    camera0(1, 1) = focal0;
+    camera0(0, 2) = principal_x0;
+    camera0(1, 2) = principal_y0;
+    Eigen::Matrix3d camera1 = Eigen::Matrix3d::Identity();
+    camera1(0, 0) = focal1;
+    camera1(1, 1) = focal1;
+    camera1(0, 2) = principal_x1;
+    camera1(1, 2) = principal_y1;
+    const Eigen::Vector3d axis(0.06 + 0.011 * pair_index,
+                               -0.12 + 0.007 * pair_index,
+                               0.04 + 0.009 * pair_index);
+    const Eigen::Matrix3d rotation = Eigen::AngleAxisd(
+            0.08 + 0.015 * pair_index, axis.normalized()).toRotationMatrix();
+    const Eigen::Vector3d translation(0.42 + 0.03 * pair_index,
+                                      -0.16 + 0.02 * pair_index,
+                                      0.09 + 0.013 * pair_index);
+    const Eigen::Matrix3d essential = SkewMatrix(translation) * rotation;
+    Eigen::Matrix3d fundamental =
+            camera1.inverse().transpose() * essential * camera0.inverse();
+    fundamental /= fundamental.norm();
+    return fundamental;
+}
+
 void AppendRowMajor(const Eigen::Matrix3d& matrix, std::vector<double>* packed) {
     for (int row = 0; row < 3; ++row) {
         for (int col = 0; col < 3; ++col) packed->push_back(matrix(row, col));
@@ -957,6 +989,18 @@ void TestViewGraphFocalCalibrationRecoveryAndEdgeFiltering() {
     Require(result.pair_is_valid.back() == 0,
             "view-graph focal calibration retained a mismatched edge");
 
+    std::vector<int> same_camera_indices((fundamentals.size() / 9) * 2, 0);
+    tracking::MultiCameraViewGraphCalibrationResult multi_camera_adapter_result;
+    Require(tracking::RunMultiCameraViewGraphFocalCalibration(
+                    fundamentals, same_camera_indices,
+                    {principal_x, principal_y}, {true_focal * 0.75}, {0},
+                    100, 2, &multi_camera_adapter_result),
+            "generalized view-graph calibration failed in the one-camera adapter case");
+    Require(multi_camera_adapter_result.focal_lengths.size() == 1 &&
+                    std::abs(multi_camera_adapter_result.focal_lengths[0] - result.focal_length) < 1e-9 &&
+                    multi_camera_adapter_result.pair_is_valid == result.pair_is_valid,
+            "generalized same-camera calibration diverged from the existing one-camera implementation");
+
     std::vector<double> with_degenerate = fundamentals;
     with_degenerate.insert(with_degenerate.end(), 9, 0.0);
     tracking::ViewGraphCalibrationResult degenerate_result;
@@ -967,6 +1011,71 @@ void TestViewGraphFocalCalibrationRecoveryAndEdgeFiltering() {
     Require(degenerate_result.pair_is_valid.size() == 12 &&
                     degenerate_result.pair_is_valid.back() == 0,
             "view-graph focal calibration accepted an all-zero fundamental matrix");
+}
+
+void TestMultiCameraViewGraphFocalCalibration() {
+    constexpr double focal0 = 900.0;
+    constexpr double focal1 = 1200.0;
+    constexpr double principal_x0 = 640.0;
+    constexpr double principal_y0 = 360.0;
+    constexpr double principal_x1 = 800.0;
+    constexpr double principal_y1 = 450.0;
+    std::vector<double> fundamentals;
+    std::vector<int> pair_camera_indices;
+    for (int pair_index = 0; pair_index < 8; ++pair_index) {
+        AppendRowMajor(SyntheticCrossCameraFundamental(
+                               focal0, principal_x0, principal_y0,
+                               focal1, principal_x1, principal_y1, pair_index),
+                       &fundamentals);
+        pair_camera_indices.insert(pair_camera_indices.end(), {0, 1});
+    }
+    for (int pair_index = 0; pair_index < 4; ++pair_index) {
+        AppendRowMajor(SyntheticFundamental(focal1, principal_x1, principal_y1,
+                                            pair_index + 20),
+                       &fundamentals);
+        pair_camera_indices.insert(pair_camera_indices.end(), {1, 1});
+    }
+    Eigen::Matrix3d mismatched_fundamental;
+    mismatched_fundamental <<
+            -1.0037475493, -0.01503000959, -0.6273950898,
+             0.07710208839, 1.087582599, -1.403222236,
+             0.4910696008, 0.7344655981, -0.6644424178;
+    AppendRowMajor(mismatched_fundamental, &fundamentals);
+    pair_camera_indices.insert(pair_camera_indices.end(), {0, 1});
+
+    const std::vector<double> principal_points = {
+            principal_x0, principal_y0, principal_x1, principal_y1};
+    const std::vector<double> initial_focals = {focal0, focal1 * 0.75};
+    tracking::MultiCameraViewGraphCalibrationResult result;
+    Require(tracking::RunMultiCameraViewGraphFocalCalibration(
+                    fundamentals, pair_camera_indices, principal_points,
+                    initial_focals, {1, 0}, 100, 2, &result),
+            "multi-camera view-graph focal calibration rejected a valid synthetic graph");
+    Require(result.focal_lengths.size() == 2 && result.focal_lengths[0] == focal0 &&
+                    std::abs(result.focal_lengths[1] - focal1) / focal1 < 0.02,
+            "multi-camera view-graph calibration did not preserve the prior focal and recover the unknown focal");
+    Require(result.final_cost < result.initial_cost &&
+                    result.pair_error_norms.size() == 13 &&
+                    result.pair_is_valid.size() == 13,
+            "multi-camera view-graph calibration failed to reduce cost or return pair diagnostics");
+    for (int pair_index = 0; pair_index < 12; ++pair_index) {
+        Require(result.pair_is_valid[static_cast<size_t>(pair_index)] != 0,
+                "multi-camera view-graph calibration rejected a consistent same/cross-camera edge");
+    }
+    Require(result.pair_is_valid.back() == 0,
+            "multi-camera view-graph calibration retained a mismatched cross-camera edge");
+
+    tracking::MultiCameraViewGraphCalibrationResult fixed_result;
+    Require(tracking::RunMultiCameraViewGraphFocalCalibration(
+                    fundamentals, pair_camera_indices, principal_points,
+                    initial_focals, {1, 1}, 100, 2, &fixed_result),
+            "multi-camera calibration with only prior focal lengths did not preserve GLOMAP's early return");
+    Require(fixed_result.focal_lengths == initial_focals && fixed_result.iterations == 0 &&
+                    fixed_result.initial_cost == 0.0 && fixed_result.final_cost == 0.0 &&
+                    std::all_of(fixed_result.pair_is_valid.begin(),
+                                fixed_result.pair_is_valid.end(),
+                                [](const std::uint8_t valid) { return valid != 0; }),
+            "fixed-prior multi-camera calibration changed focal values or filtered pairs");
 }
 
 void TestEpnpPoseRecoveryWithSkewedPinholeIntrinsics() {
@@ -1300,6 +1409,7 @@ int main() {
         TestGlobalPositioningRejectsRepeatedFrameObservation();
         TestGlobalPositioningRejectsZeroDirection();
         TestViewGraphFocalCalibrationRecoveryAndEdgeFiltering();
+        TestMultiCameraViewGraphFocalCalibration();
         TestEpnpPoseRecoveryWithSkewedPinholeIntrinsics();
         TestEpnpRejectsPlanarControlPointDegeneracy();
         TestP3PCandidateRecoveryAcrossInputPermutations();
