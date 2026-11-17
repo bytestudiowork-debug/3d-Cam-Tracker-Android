@@ -30,7 +30,8 @@ internal object ColmapTrackCreator {
         val tracks: List<CameraFeatureTrack>,
         val landmarks: List<CameraLandmark>,
         val stats: TriangulationStats,
-        val additionalTrackCount: Int
+        val additionalTrackCount: Int,
+        val unassignedTracks: List<CameraFeatureTrack> = emptyList()
     )
 
     fun create(
@@ -54,6 +55,7 @@ internal object ColmapTrackCreator {
             }
             .associateBy { it.frameIndex }
         val outputTracks = ArrayList<CameraFeatureTrack>()
+        val outputUnassignedTracks = ArrayList<CameraFeatureTrack>()
         val outputLandmarks = ArrayList<CameraLandmark>()
         var rejectedShort = 0
         var rejectedMissingPose = 0
@@ -61,6 +63,10 @@ internal object ColmapTrackCreator {
         var rejectedProjection = 0
         var additionalTrackCount = 0
         var nextTrackId = (tracks.maxOfOrNull { it.id }?.toLong() ?: -1L) + 1L
+        fun allocateTrackId(): Int? {
+            if (nextTrackId > Int.MAX_VALUE.toLong()) return null
+            return nextTrackId.toInt().also { nextTrackId++ }
+        }
 
         for ((trackIndex, track) in tracks.withIndex()) {
             if (trackIndex % 16 == 0 || trackIndex == tracks.lastIndex) {
@@ -68,6 +74,7 @@ internal object ColmapTrackCreator {
             }
             if (track.observations.size < 2) {
                 rejectedShort++
+                outputUnassignedTracks += track
                 continue
             }
 
@@ -76,14 +83,17 @@ internal object ColmapTrackCreator {
             }
             if (pending.size < 2) {
                 rejectedMissingPose++
+                outputUnassignedTracks += track
                 continue
             }
             if (pending.map { it.first.frameIndex }.distinct().size != pending.size) {
                 rejectedGeometry++
+                outputUnassignedTracks += track
                 continue
             }
 
             var componentCount = 0
+            val assignedObservations = HashSet<CameraFeatureObservation>()
             while (pending.size >= 2) {
                 val estimate = MultiViewTriangulationMath.estimate(
                     observations = pending.map { (observation, pose) ->
@@ -117,8 +127,7 @@ internal object ColmapTrackCreator {
                 val trackId = if (componentCount == 0) {
                     track.id
                 } else {
-                    if (nextTrackId > Int.MAX_VALUE.toLong()) break
-                    nextTrackId.toInt().also { nextTrackId++ }
+                    allocateTrackId() ?: break
                 }
                 val componentTrack = CameraFeatureTrack(
                     trackId,
@@ -136,13 +145,26 @@ internal object ColmapTrackCreator {
                 )
                 if (componentCount > 0) additionalTrackCount++
                 componentCount++
+                assignedObservations.addAll(inlierObservations.map { it.first })
 
                 val inlierSet = inlierIndices.toHashSet()
                 val residual = pending.filterIndexed { index, _ -> index !in inlierSet }
-                if (residual.size < MINIMUM_RECURSIVE_RESIDUAL_OBSERVATIONS) break
                 pending = residual
+                if (residual.size < MINIMUM_RECURSIVE_RESIDUAL_OBSERVATIONS) break
             }
-            if (componentCount == 0) rejectedGeometry++
+            if (componentCount == 0) {
+                rejectedGeometry++
+            }
+            val unassignedObservations = track.observations.filterNot { it in assignedObservations }
+            if (unassignedObservations.isNotEmpty()) {
+                val unassignedTrackId = if (componentCount == 0) track.id else allocateTrackId()
+                if (unassignedTrackId != null) {
+                    outputUnassignedTracks += CameraFeatureTrack(
+                        unassignedTrackId,
+                        unassignedObservations.sortedBy { it.frameIndex }
+                    )
+                }
+            }
         }
 
         val stats = TriangulationStats(
@@ -157,7 +179,13 @@ internal object ColmapTrackCreator {
             meanTriangulationAngleDegrees = outputLandmarks.map { it.triangulationAngleDegrees }
                 .takeIf { it.isNotEmpty() }?.average() ?: 0.0
         )
-        return Result(outputTracks, outputLandmarks, stats, additionalTrackCount)
+        return Result(
+            outputTracks,
+            outputLandmarks,
+            stats,
+            additionalTrackCount,
+            outputUnassignedTracks
+        )
     }
 
     private fun reprojectionError(

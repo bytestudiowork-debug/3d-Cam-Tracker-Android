@@ -59,6 +59,8 @@ class ColmapTrackCreatorTest {
         assertEquals(0, result.additionalTrackCount)
         assertEquals(3, result.tracks.single().observations.size)
         assertEquals(setOf(0, 1, 2), result.tracks.single().observations.map { it.frameIndex }.toSet())
+        assertEquals(1, result.unassignedTracks.size)
+        assertEquals(setOf(3, 4), result.unassignedTracks.single().observations.map { it.frameIndex }.toSet())
     }
 
     private fun mixedTrack(secondClusterFrameCount: Int): CameraFeatureTrack {

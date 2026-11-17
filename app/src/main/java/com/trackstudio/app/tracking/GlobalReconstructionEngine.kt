@@ -2,6 +2,7 @@ package com.trackstudio.app.tracking
 
 import com.trackstudio.app.tracking.colmap.ColmapTrackCompleter
 import com.trackstudio.app.tracking.colmap.ColmapTrackCreator
+import com.trackstudio.app.tracking.colmap.ColmapTrackContinuation
 import com.trackstudio.app.tracking.colmap.ColmapTrackMerger
 import com.trackstudio.app.tracking.colmap.ColmapTrackRetriangulator
 import com.trackstudio.app.tracking.glomap.GlomapGlobalPositioningInitializer
@@ -563,6 +564,10 @@ class GlobalReconstructionEngine(
                 cy = resultCameraMatrix.get(1, 2)[0]
             )
             var triangulationPass = 0
+            var unassignedTracks = emptyList<CameraFeatureTrack>()
+            val pairMatchesForContinuation = activePairs.map { pair ->
+                ColmapTrackContinuation.PairMatches(pair.first, pair.second, pair.inlierMatches)
+            }
             val triangulationProgress: (Int, Int) -> Unit = { completed, total ->
                 val progressStart = 0.94f + 0.0125f * triangulationPass
                 publishProgress(
@@ -571,15 +576,21 @@ class GlobalReconstructionEngine(
                 )
             }
             fun triangulateWithColmapCreation(): ColmapTrackCreator.Result {
+                val continuedBeforeCreate = ColmapTrackContinuation.continueTracks(
+                    tracks = reconstructionTracks + unassignedTracks,
+                    pointsByTrackId = finalPointsForLandmarks,
+                    pairMatches = pairMatchesForContinuation,
+                    poses = poses,
+                    intrinsics = projectionIntrinsics
+                )
                 val result = ColmapTrackCreator.create(
-                    tracks = reconstructionTracks,
+                    tracks = continuedBeforeCreate.tracks,
                     poses = poses,
                     intrinsics = projectionIntrinsics,
                     onProgress = triangulationProgress
                 )
-                reconstructionTracks = result.tracks
-                val activeTrackIds = reconstructionTracks.mapTo(HashSet<Int>()) { it.id }
-                val updatedPoints = finalPointsForLandmarks.filterKeys { it in activeTrackIds }
+                val pointTrackIds = result.tracks.mapTo(HashSet<Int>()) { it.id }
+                val updatedPoints = finalPointsForLandmarks.filterKeys { it in pointTrackIds }
                     .toMutableMap()
                 result.landmarks.forEach { landmark ->
                     if (landmark.trackId !in updatedPoints) {
@@ -590,8 +601,42 @@ class GlobalReconstructionEngine(
                         )
                     }
                 }
-                finalPointsForLandmarks = updatedPoints
-                return result
+                val continuedAfterCreate = ColmapTrackContinuation.continueTracks(
+                    tracks = result.tracks + result.unassignedTracks,
+                    pointsByTrackId = updatedPoints,
+                    pairMatches = pairMatchesForContinuation,
+                    poses = poses,
+                    intrinsics = projectionIntrinsics
+                )
+                val continuedPointTracks = continuedAfterCreate.tracks.filter { it.id in pointTrackIds }
+                val continuedUnassignedTracks = continuedAfterCreate.tracks.filterNot { it.id in pointTrackIds }
+                val continuedPointTracksById = continuedPointTracks.associateBy { it.id }
+                val updatedLandmarks = result.landmarks.map { landmark ->
+                    val point = updatedPoints[landmark.trackId] ?: return@map landmark
+                    val track = continuedPointTracksById[landmark.trackId] ?: return@map landmark
+                    val errors = track.observations.mapNotNull { observation ->
+                        val pose = poseByFrame[observation.frameIndex] ?: return@mapNotNull null
+                        reprojectionError(projectionIntrinsics, pose, point, observation)
+                    }
+                    if (errors.isEmpty()) landmark else landmark.copy(
+                        position = Point3(point[0], point[1], point[2]),
+                        observationCount = errors.size,
+                        meanReprojectionErrorPx = errors.average()
+                    )
+                }
+                reconstructionTracks = continuedPointTracks
+                unassignedTracks = continuedUnassignedTracks
+                finalPointsForLandmarks = updatedPoints.filterKeys { it in pointTrackIds }
+                val updatedStats = result.stats.copy(
+                    meanReprojectionErrorPx = updatedLandmarks.map { it.meanReprojectionErrorPx }
+                        .takeIf { it.isNotEmpty() }?.average() ?: 0.0
+                )
+                return result.copy(
+                    tracks = continuedPointTracks,
+                    landmarks = updatedLandmarks,
+                    stats = updatedStats,
+                    unassignedTracks = continuedUnassignedTracks
+                )
             }
             var triangulated = triangulateWithColmapCreation()
             val featureAt: (Int, Int) -> CameraFeatureObservation? = { frame, feature ->
@@ -637,6 +682,23 @@ class GlobalReconstructionEngine(
             )
             if (retriangulation.addedObservations > 0) {
                 reconstructionTracks = retriangulation.tracks
+                val observationsAlreadyInPoints = reconstructionTracks.asSequence()
+                    .flatMap { track -> track.observations.asSequence() }
+                    .map { it.frameIndex to it.featureIndex }
+                    .toHashSet()
+                var nextUnassignedTrackId =
+                    (reconstructionTracks.maxOfOrNull { it.id }?.toLong() ?: -1L) + 1L
+                unassignedTracks = unassignedTracks.mapNotNull { track ->
+                    val residual = track.observations.filterNot {
+                        (it.frameIndex to it.featureIndex) in observationsAlreadyInPoints
+                    }
+                    if (residual.isEmpty() || nextUnassignedTrackId > Int.MAX_VALUE.toLong()) {
+                        null
+                    } else {
+                        track.copy(id = nextUnassignedTrackId.toInt(), observations = residual)
+                            .also { nextUnassignedTrackId++ }
+                    }
+                }
                 triangulationPass++
                 triangulated = triangulateWithColmapCreation()
                 val completionAfterRetriangulation = ColmapTrackCompleter.completeTracks(
