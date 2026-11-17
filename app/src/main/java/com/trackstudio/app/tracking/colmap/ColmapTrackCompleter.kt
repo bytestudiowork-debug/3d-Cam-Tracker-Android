@@ -50,16 +50,21 @@ internal object ColmapTrackCompleter {
         featureAt: (frameIndex: Int, featureIndex: Int) -> CameraFeatureObservation?,
         maximumReprojectionErrorPx: Double = DEFAULT_MAX_REPROJECTION_ERROR_PX,
         maximumTransitivity: Int = DEFAULT_MAX_TRANSITIVITY,
-        minimumPairMatches: Int = DEFAULT_MIN_PAIR_MATCHES
+        minimumPairMatches: Int = DEFAULT_MIN_PAIR_MATCHES,
+        candidateTrackIds: Set<Int>? = null,
+        completionFrameId: Int? = null
     ): Result {
         require(maximumReprojectionErrorPx.isFinite() && maximumReprojectionErrorPx > 0.0)
         require(maximumTransitivity >= 0)
         require(minimumPairMatches >= 0)
+        require(completionFrameId == null || completionFrameId >= 0)
         require(intrinsics.fx.isFinite() && intrinsics.fx > 0.0)
         require(intrinsics.fy.isFinite() && intrinsics.fy > 0.0)
         require(intrinsics.skew.isFinite() && intrinsics.cx.isFinite() && intrinsics.cy.isFinite())
 
-        if (tracks.isEmpty() || landmarks.isEmpty() || maximumTransitivity == 0) {
+        if (tracks.isEmpty() || landmarks.isEmpty() ||
+            (maximumTransitivity == 0 && completionFrameId == null)
+        ) {
             return Result(tracks, 0)
         }
 
@@ -108,6 +113,10 @@ internal object ColmapTrackCompleter {
 
         var addedTotal = 0
         val completedTracks = tracks.map { track ->
+            val isCandidateTrack = candidateTrackIds == null || track.id in candidateTrackIds
+            val isReferenceImageTrack = completionFrameId != null &&
+                track.observations.any { it.frameIndex == completionFrameId }
+            if (!isCandidateTrack && !isReferenceImageTrack) return@map track
             val point = pointByTrackId[track.id]
                 ?: return@map track
             if (point.any { !it.isFinite() }) return@map track

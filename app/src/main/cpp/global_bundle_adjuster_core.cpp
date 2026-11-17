@@ -171,7 +171,8 @@ bool RunGlobalBundleAdjustment(const std::vector<double>& initial_camera_centers
                                bool optimize_rotations,
                                bool optimize_translation,
                                bool optimize_focal_length,
-                               const std::vector<int>* point_optimization_mask) {
+                               const std::vector<int>* point_optimization_mask,
+                               ReprojectionLossType reprojection_loss_type) {
     if (result == nullptr) return false;
     *result = GlobalBundleAdjustmentResult{};
     if (initial_camera_centers.empty() ||
@@ -187,6 +188,9 @@ bool RunGlobalBundleAdjustment(const std::vector<double>& initial_camera_centers
         !AllFinite(intrinsics) || intrinsics[0] < 1e-3 || intrinsics[3] < 1e-3 ||
         intrinsics[0] > 1e8 || intrinsics[3] > 1e8 ||
         image_width < 0 || image_height < 0 ||
+        (reprojection_loss_type != ReprojectionLossType::HUBER &&
+         reprojection_loss_type != ReprojectionLossType::SOFT_L1 &&
+         reprojection_loss_type != ReprojectionLossType::TRIVIAL) ||
         (refine_principal_point && (image_width <= 0 || image_height <= 0))) {
         return false;
     }
@@ -269,7 +273,13 @@ bool RunGlobalBundleAdjustment(const std::vector<double>& initial_camera_centers
         auto* cost = new ceres::AutoDiffCostFunction<ReprojectionResidual, 2, 3, 3, 3, 2, 2>(
                 new ReprojectionResidual(image_points[i * 2],
                                          image_points[i * 2 + 1], intrinsics[1]));
-        problem.AddResidualBlock(cost, new ceres::HuberLoss(kGlobalBundleHuberDeltaPx),
+        ceres::LossFunction* loss = nullptr;
+        if (reprojection_loss_type == ReprojectionLossType::HUBER) {
+            loss = new ceres::HuberLoss(kGlobalBundleHuberDeltaPx);
+        } else if (reprojection_loss_type == ReprojectionLossType::SOFT_L1) {
+            loss = new ceres::SoftLOneLoss(1.0);
+        }
+        problem.AddResidualBlock(cost, loss,
                                  angle_axis, center, point, focal_lengths.data(),
                                  principal_point.data());
         if (problem.HasParameterBlock(point)) ordering->AddElementToGroup(point, 0);

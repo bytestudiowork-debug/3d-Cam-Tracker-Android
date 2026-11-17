@@ -39,6 +39,7 @@ class ColmapTrackMergerTest {
         )
 
         assertEquals(1, result.mergedTrackCount)
+        assertEquals(5, result.mergedObservationCount)
         assertEquals(setOf(7), result.removedTrackIds)
         assertEquals(listOf(2), result.tracks.map { it.id })
         assertEquals((0..4).toList(), result.tracks.single().observations.map { it.frameIndex })
@@ -92,10 +93,56 @@ class ColmapTrackMergerTest {
         )
 
         assertEquals(2, result.mergedTrackCount)
+        assertEquals(6, result.mergedObservationCount)
         assertEquals(setOf(5, 8), result.removedTrackIds)
         assertEquals(listOf(3), result.tracks.map { it.id })
         assertEquals(6, result.tracks.single().observations.size)
         assertEquals(0.04, result.landmarks.single().position.x, 1e-12)
+    }
+
+    @Test
+    fun variablePointCanMergeIntoAConnectedFixedPoint() {
+        val tracks = listOf(
+            track(3, listOf(0 to 0, 1 to 1), 0.0),
+            track(5, listOf(2 to 2, 3 to 3), 0.04)
+        )
+        val landmarks = listOf(landmark(3, 0.0), landmark(5, 0.04))
+
+        val result = ColmapTrackMerger.mergeTracks(
+            tracks = tracks,
+            landmarks = landmarks,
+            pairMatches = listOf(pair(1, 2, 1, 2)),
+            poses = (0..3).map(::pose),
+            intrinsics = intrinsics,
+            candidateTrackIds = setOf(5)
+        )
+
+        assertEquals(1, result.mergedTrackCount)
+        assertEquals(4, result.mergedObservationCount)
+        assertEquals(listOf(5), result.tracks.map { it.id })
+    }
+
+    @Test
+    fun doesNotInitiateMergeFromFixedPointsOutsideTheVariablePointSet() {
+        val tracks = listOf(
+            track(3, listOf(0 to 0, 1 to 1), 0.0),
+            track(5, listOf(2 to 2, 3 to 3), 0.04),
+            track(8, listOf(4 to 4, 5 to 5), 0.08)
+        )
+        val landmarks = listOf(landmark(3, 0.0), landmark(5, 0.04), landmark(8, 0.08))
+
+        val result = ColmapTrackMerger.mergeTracks(
+            tracks = tracks,
+            landmarks = landmarks,
+            pairMatches = listOf(pair(3, 4, 3, 4)),
+            poses = (0..5).map(::pose),
+            intrinsics = intrinsics,
+            candidateTrackIds = setOf(3)
+        )
+
+        assertEquals(0, result.mergedTrackCount)
+        assertEquals(tracks, result.tracks)
+        assertEquals(landmarks, result.landmarks)
     }
 
     @Test

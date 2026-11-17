@@ -16,6 +16,10 @@ struct GlobalBundleAdjustmentResult {
     int iterations = 0;
 };
 
+// SOFT_L1/TRIVIAL follow the pinned COLMAP local-refinement schedule documented
+// in ColmapIterativeLocalRefinement.kt; Huber remains the existing default.
+enum class ReprojectionLossType : int { HUBER = 0, SOFT_L1 = 1, TRIVIAL = 2 };
+
 bool IsValidRotationMatrix(const double* rotation);
 
 bool RunGlobalBundleAdjustment(const std::vector<double>& initial_camera_centers,
@@ -35,6 +39,8 @@ bool RunGlobalBundleAdjustment(const std::vector<double>& initial_camera_centers
                                bool optimize_rotations = true,
                                bool optimize_translation = true,
                                bool optimize_focal_length = true,
-                               const std::vector<int>* point_optimization_mask = nullptr);
+                               const std::vector<int>* point_optimization_mask = nullptr,
+                               ReprojectionLossType reprojection_loss_type =
+                                       ReprojectionLossType::HUBER);
 
 }  // namespace tracking

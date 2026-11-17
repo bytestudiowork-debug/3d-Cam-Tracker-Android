@@ -226,6 +226,36 @@ class FeatureTrackBuilderTest {
     }
 
     @Test
+    fun replacedMapTracksRestoreFeatureAssignmentsForTheNextFrame() {
+        val builder = FeatureTrackBuilder()
+        builder.seedPair(
+            firstFrame = 0,
+            secondFrame = 1,
+            firstKeypoints = arrayOf(keypoint(10f, 10f)),
+            secondKeypoints = arrayOf(keypoint(20f, 10f)),
+            inlierMatches = listOf(0 to 0)
+        )
+        val original = builder.build().single()
+
+        builder.replaceMapTracks(
+            replacedTrackIds = setOf(original.id),
+            updatedTracks = listOf(original),
+            removedTrackIds = emptySet(),
+            activeFrameIndex = 1
+        )
+        builder.addInlierMatches(
+            frameIndex = 2,
+            previousKeypoints = arrayOf(keypoint(20f, 10f)),
+            currentKeypoints = arrayOf(keypoint(30f, 10f)),
+            matches = listOf(0 to 0)
+        )
+
+        val updated = builder.build().single()
+        assertEquals(listOf(0, 1, 2), updated.observations.map { it.frameIndex })
+        assertEquals(listOf(0, 0, 0), updated.observations.map { it.featureIndex })
+    }
+
+    @Test
     fun progressLabelAndFractionAreBounded() {
         val progress = CameraTrackingProgress(
             frameIndex = 240,

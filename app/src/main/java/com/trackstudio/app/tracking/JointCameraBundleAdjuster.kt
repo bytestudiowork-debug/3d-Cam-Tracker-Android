@@ -4,6 +4,8 @@ import org.opencv.core.Mat
 
 /** Joint robust reprojection refinement for a connected incremental camera map. */
 internal class JointCameraBundleAdjuster {
+    enum class ReprojectionLoss { HUBER, SOFT_L1, TRIVIAL }
+
     data class Result(
         val frameCentersById: Map<Int, DoubleArray>,
         val rotationsByFrame: Map<Int, DoubleArray>,
@@ -33,7 +35,8 @@ internal class JointCameraBundleAdjuster {
         maxIterations: Int = 45,
         numThreads: Int = Runtime.getRuntime().availableProcessors().coerceIn(1, 4),
         optimizeFocalLength: Boolean = true,
-        optimizePointTrackIds: Set<Int>? = null
+        optimizePointTrackIds: Set<Int>? = null,
+        reprojectionLoss: ReprojectionLoss = ReprojectionLoss.HUBER
     ): Result? {
         require(maxIterations > 0 && numThreads > 0)
         if (cameraMatrix.empty() || cameraMatrix.rows() != 3 || cameraMatrix.cols() != 3) return null
@@ -121,7 +124,8 @@ internal class JointCameraBundleAdjuster {
         val packed = nativeSolve(
             centers, rotations, points, frameIndices, trackIndices, imagePoints,
             intrinsics, refinePrincipalPoint, imageWidth, imageHeight,
-            maxIterations, numThreads, optimizeFocalLength, null, pointOptimizationMask
+            maxIterations, numThreads, optimizeFocalLength, reprojectionLoss.ordinal,
+            null, pointOptimizationMask
         ) ?: return null
         val expectedSize = 10L + centers.size + rotations.size + points.size
         if (packed.size.toLong() != expectedSize || packed[0] != 1.0 ||
@@ -199,6 +203,7 @@ internal class JointCameraBundleAdjuster {
         maxIterations: Int,
         numThreads: Int,
         optimizeFocalLength: Boolean,
+        reprojectionLossType: Int,
         progressListener: Any?,
         pointOptimizationMask: IntArray?
     ): DoubleArray?

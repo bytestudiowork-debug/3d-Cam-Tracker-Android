@@ -30,7 +30,8 @@ internal object ColmapTrackMerger {
         val landmarks: List<CameraLandmark>,
         val mergedLandmarks: List<CameraLandmark>,
         val removedTrackIds: Set<Int>,
-        val mergedTrackCount: Int
+        val mergedTrackCount: Int,
+        val mergedObservationCount: Int = 0
     )
 
     private data class PointState(
@@ -47,7 +48,8 @@ internal object ColmapTrackMerger {
         pairMatches: List<PairMatches>,
         poses: List<CameraPose>,
         intrinsics: PinholeIntrinsics,
-        maximumReprojectionErrorPx: Double = DEFAULT_MAX_REPROJECTION_ERROR_PX
+        maximumReprojectionErrorPx: Double = DEFAULT_MAX_REPROJECTION_ERROR_PX,
+        candidateTrackIds: Set<Int>? = null
     ): Result {
         require(maximumReprojectionErrorPx.isFinite() && maximumReprojectionErrorPx > 0.0)
         require(intrinsics.fx.isFinite() && intrinsics.fx > 0.0)
@@ -106,7 +108,10 @@ internal object ColmapTrackMerger {
 
         val orderedNeighbors = neighbors.mapValues { (_, values) -> values.sorted() }
         val pending = ArrayDeque<Int>()
-        states.keys.sorted().forEach(pending::addLast)
+        states.keys.asSequence()
+            .filter { candidateTrackIds == null || it in candidateTrackIds }
+            .sorted()
+            .forEach(pending::addLast)
         val triedPairs = HashSet<Pair<Long, Long>>()
         val removedTrackIds = linkedSetOf<Int>()
         var mergedTrackCount = 0
@@ -152,8 +157,8 @@ internal object ColmapTrackMerger {
                     maximumSquaredError
                 ) ?: continue
 
-                val survivingId = minOf(sourceId, candidateId)
-                val removedId = maxOf(sourceId, candidateId)
+                val survivingId = sourceId
+                val removedId = candidateId
                 val mergedTrack = CameraFeatureTrack(survivingId, mergedObservations)
                 val mergedLandmark = CameraLandmark(
                     trackId = survivingId,
@@ -196,13 +201,17 @@ internal object ColmapTrackMerger {
             .map { it.landmark }
             .sortedBy { it.trackId }
             .toList()
+        val mergedObservationCount = states.values.asSequence()
+            .filter { it.wasMerged }
+            .sumOf { it.track.length }
 
         return Result(
             tracks = outputTracks,
             landmarks = outputLandmarks,
             mergedLandmarks = mergedLandmarks,
             removedTrackIds = removedTrackIds,
-            mergedTrackCount = mergedTrackCount
+            mergedTrackCount = mergedTrackCount,
+            mergedObservationCount = mergedObservationCount
         )
     }
 

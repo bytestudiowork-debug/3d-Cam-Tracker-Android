@@ -38,12 +38,14 @@ internal class FeatureTrackBuilder {
                 CameraFeatureObservation(
                     firstFrame,
                     firstKeypoints[firstIndex].pt.x,
-                    firstKeypoints[firstIndex].pt.y
+                    firstKeypoints[firstIndex].pt.y,
+                    firstIndex
                 ),
                 CameraFeatureObservation(
                     secondFrame,
                     secondKeypoints[secondIndex].pt.x,
-                    secondKeypoints[secondIndex].pt.y
+                    secondKeypoints[secondIndex].pt.y,
+                    secondIndex
                 )
             )
             firstAssignments[firstIndex] = id
@@ -85,12 +87,14 @@ internal class FeatureTrackBuilder {
                     CameraFeatureObservation(
                         frameIndex,
                         earlierKeypoints[earlierIndex].pt.x,
-                        earlierKeypoints[earlierIndex].pt.y
+                        earlierKeypoints[earlierIndex].pt.y,
+                        earlierIndex
                     ),
                     CameraFeatureObservation(
                         frameIndex + 1,
                         laterKeypoints[laterIndex].pt.x,
-                        laterKeypoints[laterIndex].pt.y
+                        laterKeypoints[laterIndex].pt.y,
+                        laterIndex
                     )
                 )
                 newId
@@ -103,7 +107,8 @@ internal class FeatureTrackBuilder {
                 val observation = CameraFeatureObservation(
                     frameIndex,
                     earlierKeypoints[earlierIndex].pt.x,
-                    earlierKeypoints[earlierIndex].pt.y
+                    earlierKeypoints[earlierIndex].pt.y,
+                    earlierIndex
                 )
                 val insertAt = observations.indexOfFirst { it.frameIndex > frameIndex }
                 if (insertAt < 0) observations.add(observation)
@@ -139,7 +144,8 @@ internal class FeatureTrackBuilder {
                     CameraFeatureObservation(
                         frameIndex = frameIndex - 1,
                         x = previousKeypoints[previousIndex].pt.x,
-                        y = previousKeypoints[previousIndex].pt.y
+                        y = previousKeypoints[previousIndex].pt.y,
+                        featureIndex = previousIndex
                     )
                 )
                 previousFrameAssignments[previousIndex] = newId
@@ -153,7 +159,8 @@ internal class FeatureTrackBuilder {
             observations += CameraFeatureObservation(
                 frameIndex = frameIndex,
                 x = currentKeypoints[currentIndex].pt.x,
-                y = currentKeypoints[currentIndex].pt.y
+                y = currentKeypoints[currentIndex].pt.y,
+                featureIndex = currentIndex
             )
             currentAssignments[currentIndex] = trackId
             usedPreviousIndices += previousIndex
@@ -203,7 +210,8 @@ internal class FeatureTrackBuilder {
             val observation = CameraFeatureObservation(
                 frameIndex,
                 currentKeypoints[currentIndex].pt.x,
-                currentKeypoints[currentIndex].pt.y
+                currentKeypoints[currentIndex].pt.y,
+                currentIndex
             )
             val insertAt = observations.indexOfFirst { it.frameIndex > frameIndex }
             if (insertAt < 0) observations.add(observation)
@@ -219,6 +227,38 @@ internal class FeatureTrackBuilder {
         // Do not clear the map stored in assignmentsByFrame. A recovery pass
         // may still need those keyframe-to-track IDs after continuity is lost.
         previousAssignments = mutableMapOf()
+    }
+
+    /** Replaces triangulated tracks after local COLMAP merge/completion updates. */
+    fun replaceMapTracks(
+        replacedTrackIds: Set<Int>,
+        updatedTracks: List<CameraFeatureTrack>,
+        removedTrackIds: Set<Int>,
+        activeFrameIndex: Int
+    ) {
+        require(removedTrackIds.all(replacedTrackIds::contains))
+        require(updatedTracks.map { it.id }.distinct().size == updatedTracks.size)
+        require(updatedTracks.all { it.id in replacedTrackIds })
+
+        val retainedTracks = tracks.filterKeys { it !in replacedTrackIds }
+            .mapValues { (_, observations) -> observations.toMutableList() }
+        tracks.clear()
+        tracks.putAll(retainedTracks)
+        for (track in updatedTracks) {
+            if (track.id !in removedTrackIds) {
+                tracks[track.id] = track.observations.toMutableList()
+            }
+        }
+
+        assignmentsByFrame.clear()
+        for ((trackId, observations) in tracks) {
+            for (observation in observations) {
+                if (observation.frameIndex < 0 || observation.featureIndex < 0) continue
+                assignmentsByFrame.getOrPut(observation.frameIndex) { mutableMapOf() }
+                    .putIfAbsent(observation.featureIndex, trackId)
+            }
+        }
+        previousAssignments = assignmentsByFrame[activeFrameIndex]?.toMutableMap() ?: mutableMapOf()
     }
 
     /**

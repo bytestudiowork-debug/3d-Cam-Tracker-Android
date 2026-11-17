@@ -33,6 +33,7 @@ jdoubleArray JointCameraBundleAdjusterSolve(
         jboolean optimize_rotations,
         jboolean optimize_translation,
         jboolean optimize_focal_length,
+        jint reprojection_loss_type,
         jint max_iterations,
         jint num_threads,
         jobject progress_listener,
@@ -63,7 +64,8 @@ Java_com_trackstudio_app_tracking_glomap_GlomapGlobalBundleAdjuster_nativeSolve(
             env, camera_centers_array, rotations_array, points_array,
             frame_indices_array, track_indices_array, image_points_array,
             intrinsics_array, refine_principal_point, image_width, image_height,
-            optimize_rotations, optimize_translation, JNI_TRUE, max_iterations, num_threads,
+            optimize_rotations, optimize_translation, JNI_TRUE,
+            static_cast<jint>(tracking::ReprojectionLossType::HUBER), max_iterations, num_threads,
             progress_listener, nullptr);
 }
 
@@ -84,6 +86,7 @@ jdoubleArray JointCameraBundleAdjusterSolve(
         jboolean optimize_rotations,
         jboolean optimize_translation,
         jboolean optimize_focal_length,
+        jint reprojection_loss_type,
         jint max_iterations,
         jint num_threads,
         jobject progress_listener,
@@ -110,6 +113,8 @@ jdoubleArray JointCameraBundleAdjusterSolve(
             env->GetArrayLength(intrinsics_array) != 5 ||
             (point_optimization_mask_array != nullptr &&
              env->GetArrayLength(point_optimization_mask_array) != point_values / 3) ||
+            reprojection_loss_type < static_cast<jint>(tracking::ReprojectionLossType::HUBER) ||
+            reprojection_loss_type > static_cast<jint>(tracking::ReprojectionLossType::TRIVIAL) ||
             (refine_principal_point != JNI_FALSE &&
              (image_width <= 0 || image_height <= 0)) ||
             max_iterations <= 0 || num_threads <= 0) {
@@ -166,7 +171,8 @@ jdoubleArray JointCameraBundleAdjusterSolve(
                     optimize_focal_length != JNI_FALSE,
                     point_optimization_mask_array != nullptr
                             ? &point_optimization_mask
-                            : nullptr)) {
+                            : nullptr,
+                    static_cast<tracking::ReprojectionLossType>(reprojection_loss_type))) {
             if (env->ExceptionCheck()) return nullptr;
             return EmptyResult(env);
         }
@@ -227,12 +233,14 @@ Java_com_trackstudio_app_tracking_JointCameraBundleAdjuster_nativeSolve(
         jint max_iterations,
         jint num_threads,
         jboolean optimize_focal_length,
+        jint reprojection_loss_type,
         jobject progress_listener,
         jintArray point_optimization_mask_array) {
     return JointCameraBundleAdjusterSolve(
             env, camera_centers_array, rotations_array, points_array,
             frame_indices_array, track_indices_array, image_points_array,
             intrinsics_array, refine_principal_point, image_width, image_height,
-            JNI_TRUE, JNI_TRUE, optimize_focal_length, max_iterations, num_threads,
+            JNI_TRUE, JNI_TRUE, optimize_focal_length, reprojection_loss_type,
+            max_iterations, num_threads,
             progress_listener, point_optimization_mask_array);
 }

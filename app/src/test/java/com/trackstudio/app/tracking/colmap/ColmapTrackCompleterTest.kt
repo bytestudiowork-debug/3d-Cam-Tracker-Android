@@ -110,6 +110,42 @@ class ColmapTrackCompleterTest {
         assertEquals(track, result.tracks.single())
     }
 
+    @Test
+    fun recursivelyCompletesVariableTracksAndPointsAlreadyObservedInReferenceFrame() {
+        val tracks = listOf(
+            CameraFeatureTrack(1, listOf(observation(0, 0))),
+            CameraFeatureTrack(2, listOf(observation(0, 10), observation(1, 11)))
+        )
+        val locations = (0..2).flatMap { frame ->
+            listOf(
+                (frame to frame) to observation(frame, frame),
+                (frame to frame + 10) to observation(frame, frame + 10)
+            )
+        }.toMap()
+        val pairMatches = listOf(
+            ColmapTrackCompleter.PairMatches(0, 1, listOf(0 to 1, 10 to 11)),
+            ColmapTrackCompleter.PairMatches(1, 2, listOf(1 to 2, 11 to 12))
+        )
+
+        val result = ColmapTrackCompleter.completeTracks(
+            tracks = tracks,
+            landmarks = listOf(landmark(1), landmark(2)),
+            pairMatches = pairMatches,
+            activeFrames = setOf(0, 1, 2),
+            poses = (0..2).map(::pose),
+            intrinsics = intrinsics,
+            featureAt = { frame, feature -> locations[frame to feature] },
+            minimumPairMatches = 1,
+            candidateTrackIds = setOf(1),
+            completionFrameId = 1
+        )
+
+        assertEquals(3, result.addedObservations)
+        assertEquals(listOf(3, 3), result.tracks.map { it.length })
+        assertEquals(listOf(0, 1, 2), result.tracks[0].observations.map { it.frameIndex })
+        assertEquals(listOf(0, 1, 2), result.tracks[1].observations.map { it.frameIndex })
+    }
+
     private fun observation(
         frame: Int,
         feature: Int,
