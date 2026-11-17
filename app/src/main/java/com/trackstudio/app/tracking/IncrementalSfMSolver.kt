@@ -1749,7 +1749,9 @@ internal class IncrementalSfMSolver(
                 totalInliers = totalInliers,
                 inlierRatio = (totalInliers.toDouble() / allCorrespondences).coerceIn(0.0, 1.0),
                 isCameraMotionEstimated = registeredFrames >= 2,
-                featureTracks = currentFeatureTracks().filter { it.id in finalLandmarkTrackIds },
+                featureTracks = finalTriangulation.inlierTracks.filter {
+                    it.id in finalLandmarkTrackIds
+                },
                 landmarks = finalLandmarks,
                 triangulationStats = finalStats,
                 initialPairFrames = selected.firstFrame to selected.secondFrame,

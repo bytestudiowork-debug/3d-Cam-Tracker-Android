@@ -19,9 +19,6 @@ internal object SfMTriangulator {
         require(cameraMatrix.rows() == 3 && cameraMatrix.cols() == 3 && !cameraMatrix.empty()) {
             "Camera matrix must be a non-empty 3x3 matrix."
         }
-        require(maximumReprojectionErrorPx.isFinite() && maximumReprojectionErrorPx > 0.0)
-        require(minimumParallaxDegrees.isFinite() && minimumParallaxDegrees >= 1e-3)
-        require(minimumObservationInlierRatio.isFinite() && minimumObservationInlierRatio in 0.0..1.0)
         val intrinsics = PinholeIntrinsics(
             fx = cameraMatrix.get(0, 0)?.firstOrNull() ?: Double.NaN,
             skew = cameraMatrix.get(0, 1)?.firstOrNull() ?: Double.NaN,
@@ -29,6 +26,29 @@ internal object SfMTriangulator {
             fy = cameraMatrix.get(1, 1)?.firstOrNull() ?: Double.NaN,
             cy = cameraMatrix.get(1, 2)?.firstOrNull() ?: Double.NaN
         )
+        return triangulate(
+            featureTracks,
+            poses,
+            intrinsics,
+            maximumReprojectionErrorPx,
+            minimumParallaxDegrees,
+            minimumObservationInlierRatio,
+            onProgress
+        )
+    }
+
+    fun triangulate(
+        featureTracks: List<CameraFeatureTrack>,
+        poses: List<CameraPose>,
+        intrinsics: PinholeIntrinsics,
+        maximumReprojectionErrorPx: Double = 4.0,
+        minimumParallaxDegrees: Double = 1.5,
+        minimumObservationInlierRatio: Double = 0.70,
+        onProgress: (Int, Int) -> Unit = { _, _ -> }
+    ): TriangulationResult {
+        require(maximumReprojectionErrorPx.isFinite() && maximumReprojectionErrorPx > 0.0)
+        require(minimumParallaxDegrees.isFinite() && minimumParallaxDegrees >= 1e-3)
+        require(minimumObservationInlierRatio.isFinite() && minimumObservationInlierRatio in 0.0..1.0)
         require(intrinsics.fx.isFinite() && intrinsics.fx > 0.0 &&
             intrinsics.fy.isFinite() && intrinsics.fy > 0.0 &&
             intrinsics.skew.isFinite() && intrinsics.cx.isFinite() && intrinsics.cy.isFinite()
@@ -36,6 +56,7 @@ internal object SfMTriangulator {
 
         val poseByFrame = poses.associateBy { it.frameIndex }
         val landmarks = mutableListOf<CameraLandmark>()
+        val inlierTracks = mutableListOf<CameraFeatureTrack>()
         var rejectedShort = 0
         var rejectedMissingPose = 0
         var rejectedGeometry = 0
@@ -79,6 +100,7 @@ internal object SfMTriangulator {
 
             val point = robustEstimate.pointWorld
             val inlierErrors = mutableListOf<Double>()
+            val inlierObservations = mutableListOf<CameraFeatureObservation>()
             val robustInlierIndices = robustEstimate.inlierIndices.toHashSet()
             for ((index, pair) in validObservations.withIndex()) {
                 if (index !in robustInlierIndices) continue
@@ -87,7 +109,10 @@ internal object SfMTriangulator {
                 // Behind-camera views are not reprojection inliers and remain in the ratio denominator.
                 if (cameraPoint[2] <= 1e-6) continue
                 val error = reprojectionError(cameraPoint, observation, intrinsics)
-                if (error.isFinite() && error <= maximumReprojectionErrorPx) inlierErrors += error
+                if (error.isFinite() && error <= maximumReprojectionErrorPx) {
+                    inlierErrors += error
+                    inlierObservations += observation
+                }
             }
             val inlierRatio = inlierErrors.size.toDouble() / validObservations.size
             if (inlierErrors.size < 2 || inlierRatio < minimumObservationInlierRatio) {
@@ -107,10 +132,12 @@ internal object SfMTriangulator {
                 meanReprojectionErrorPx = meanInlierError,
                 triangulationAngleDegrees = robustEstimate.triangulationAngleDegrees
             )
+            inlierTracks += track.copy(observations = inlierObservations)
         }
 
         return TriangulationResult(
             landmarks = landmarks,
+            inlierTracks = inlierTracks,
             stats = TriangulationStats(
                 inputTracks = featureTracks.size,
                 triangulatedLandmarks = landmarks.size,
@@ -150,6 +177,7 @@ internal object SfMTriangulator {
 
 internal data class TriangulationResult(
     val landmarks: List<CameraLandmark>,
+    val inlierTracks: List<CameraFeatureTrack>,
     val stats: TriangulationStats
 )
 
