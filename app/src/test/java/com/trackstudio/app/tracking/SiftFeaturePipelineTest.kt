@@ -2,7 +2,11 @@ package com.trackstudio.app.tracking
 
 import org.junit.Assert.assertArrayEquals
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertTrue
 import org.junit.Test
+import kotlin.math.cos
+import kotlin.math.roundToInt
+import kotlin.math.sin
 import kotlin.math.sqrt
 
 class SiftFeaturePipelineTest {
@@ -29,16 +33,16 @@ class SiftFeaturePipelineTest {
     @Test
     fun appliesRatioDistanceAndReciprocalMatchRules() {
         val forward = listOf(
-            row(0, 0, 100.0, 1, 200.0),
-            row(1, 1, 80.0, 0, 300.0),
-            row(2, 2, 300.0, 3, 350.0),
-            row(3, 3, 360.0, 2, 600.0)
+            row(0, 0, 0.10, 1, 0.20),
+            row(1, 1, 0.08, 0, 0.30),
+            row(2, 2, 0.30, 3, 0.35),
+            row(3, 3, 0.36, 2, 0.60)
         )
         val reverse = listOf(
-            row(0, 0, 110.0, 1, 250.0),
-            row(1, 1, 85.0, 0, 280.0),
-            row(2, 2, 100.0, 3, 250.0),
-            row(3, 3, 100.0, 2, 250.0)
+            row(0, 0, 0.11, 1, 0.25),
+            row(1, 1, 0.085, 0, 0.28),
+            row(2, 2, 0.10, 3, 0.25),
+            row(3, 3, 0.10, 2, 0.25)
         )
 
         assertEquals(
@@ -49,7 +53,7 @@ class SiftFeaturePipelineTest {
 
     @Test
     fun acceptsReciprocalSingletonRowsWithoutASecondNeighbor() {
-        val onlyCandidate = listOf(RankedDescriptorMatch(0, 0, 100.0))
+        val onlyCandidate = listOf(RankedDescriptorMatch(0, 0, 0.10))
 
         assertEquals(
             listOf(0 to 0),
@@ -58,16 +62,15 @@ class SiftFeaturePipelineTest {
     }
 
     @Test
-    fun appliesMaximumDescriptorDistanceAtThe512ScaleBoundary() {
-        val maximumDistance = SiftMatchPolicy.DEFAULT_MAX_DISTANCE *
-            RootSiftDescriptorMath.DESCRIPTOR_NORM
-        val atBoundary = row(0, 0, maximumDistance, 1, 500.0)
+    fun appliesMaximumAngularDistanceAtThe07RadianBoundary() {
+        val maximumDistance = SiftMatchPolicy.DEFAULT_MAX_DISTANCE
+        val atBoundary = row(0, 0, maximumDistance, 1, 1.0)
         assertEquals(
             listOf(0 to 0),
             SiftMatchPolicy.selectMutualMatches(listOf(atBoundary), listOf(atBoundary))
         )
 
-        val aboveBoundary = row(0, 0, maximumDistance + 1e-4, 1, 500.0)
+        val aboveBoundary = row(0, 0, maximumDistance + 1e-4, 1, 1.0)
         assertEquals(
             emptyList<Pair<Int, Int>>(),
             SiftMatchPolicy.selectMutualMatches(listOf(aboveBoundary), listOf(aboveBoundary))
@@ -77,12 +80,12 @@ class SiftFeaturePipelineTest {
     @Test
     fun rejectsNonReciprocalMatchesAndRatioBoundary() {
         val forward = listOf(
-            row(0, 0, 80.0, 1, 100.0),
-            row(1, 0, 70.0, 1, 200.0)
+            row(0, 0, 0.08, 1, 0.10),
+            row(1, 0, 0.07, 1, 0.20)
         )
         val reverse = listOf(
-            row(0, 0, 70.0, 1, 200.0),
-            row(1, 1, 80.0, 0, 100.0)
+            row(0, 0, 0.07, 1, 0.20),
+            row(1, 1, 0.08, 0, 0.10)
         )
 
         assertEquals(emptyList<Pair<Int, Int>>(), SiftMatchPolicy.selectMutualMatches(forward, reverse))
@@ -91,14 +94,14 @@ class SiftFeaturePipelineTest {
     @Test
     fun capsMatchesInQueryIndexOrder() {
         val forward = listOf(
-            row(2, 2, 50.0, 0, 200.0),
-            row(0, 0, 50.0, 2, 200.0),
-            row(1, 1, 50.0, 0, 200.0)
+            row(2, 2, 0.05, 0, 0.20),
+            row(0, 0, 0.05, 2, 0.20),
+            row(1, 1, 0.05, 0, 0.20)
         )
         val reverse = listOf(
-            row(0, 0, 50.0, 1, 200.0),
-            row(1, 1, 50.0, 2, 200.0),
-            row(2, 2, 50.0, 0, 200.0)
+            row(0, 0, 0.05, 1, 0.20),
+            row(1, 1, 0.05, 2, 0.20),
+            row(2, 2, 0.05, 0, 0.20)
         )
 
         assertEquals(
@@ -110,17 +113,62 @@ class SiftFeaturePipelineTest {
     @Test
     fun duplicateQueryRowsWithEqualDistancesChooseTheLowerTrainIndex() {
         val forward = listOf(
-            row(0, 1, 10.0, 2, 30.0),
-            row(0, 0, 10.0, 2, 30.0)
+            row(0, 1, 0.01, 2, 0.03),
+            row(0, 0, 0.01, 2, 0.03)
         )
         val reverse = listOf(
-            row(0, 0, 10.0, 1, 30.0),
-            row(1, 0, 10.0, 1, 30.0)
+            row(0, 0, 0.01, 1, 0.03),
+            row(1, 0, 0.01, 1, 0.03)
         )
 
         assertEquals(
             listOf(0 to 0),
             SiftMatchPolicy.selectMutualMatches(forward, reverse)
+        )
+    }
+
+    @Test
+    fun quantizedDescriptorRatioUsesColmapAngularDistanceRatherThanL2() {
+        val query = ByteArray(RootSiftDescriptorMath.DESCRIPTOR_LENGTH) { index ->
+            if (index < 64) 64 else 0
+        }
+        fun candidate(angle: Double): ByteArray = ByteArray(query.size) { index ->
+            val base = if (index < 64) 64.0 else 0.0
+            val signedOrthogonal = when (index) {
+                in 0 until 32 -> 64.0
+                in 32 until 64 -> -64.0
+                else -> 0.0
+            }
+            (base * cos(angle) + signedOrthogonal * sin(angle)).roundToInt().toByte()
+        }
+
+        val closer = candidate(0.54)
+        val second = candidate(0.68)
+        val closerAngle = RootSiftDescriptorMath.angularDistance(query, 0, closer, 0)
+        val secondAngle = RootSiftDescriptorMath.angularDistance(query, 0, second, 0)
+        fun l2(candidate: ByteArray) = sqrt(query.indices.sumOf { index ->
+            val difference = (query[index].toInt() and 0xff) -
+                (candidate[index].toInt() and 0xff)
+            difference.toDouble() * difference
+        })
+
+        assertTrue(closerAngle < SiftMatchPolicy.DEFAULT_MAX_DISTANCE)
+        assertTrue(closerAngle < SiftMatchPolicy.DEFAULT_RATIO * secondAngle)
+        assertTrue(l2(closer) >= SiftMatchPolicy.DEFAULT_RATIO * l2(second))
+        assertEquals(
+            listOf(0 to 0),
+            SiftMatchPolicy.selectMutualMatches(
+                forwardRows = listOf(
+                    listOf(
+                        RankedDescriptorMatch(0, 0, closerAngle),
+                        RankedDescriptorMatch(0, 1, secondAngle)
+                    )
+                ),
+                reverseRows = listOf(
+                    listOf(RankedDescriptorMatch(0, 0, closerAngle)),
+                    listOf(RankedDescriptorMatch(1, 0, secondAngle))
+                )
+            )
         )
     }
 

@@ -7,6 +7,7 @@ import org.opencv.core.MatOfDMatch
 import org.opencv.core.MatOfKeyPoint
 import org.opencv.features2d.BFMatcher
 import org.opencv.core.KeyPoint
+import kotlin.math.acos
 import kotlin.math.floor
 import kotlin.math.sqrt
 
@@ -103,6 +104,7 @@ internal class AndroidSiftFeatureExtractor(private val maxFeatures: Int) {
 
 internal object RootSiftDescriptorMath {
     const val DESCRIPTOR_NORM = 512.0
+    const val DESCRIPTOR_LENGTH = 128
 
     fun normalizeDescriptor(values: FloatArray): FloatArray {
         val normalized = values.copyOf()
@@ -121,6 +123,37 @@ internal object RootSiftDescriptorMath {
         for (index in values.indices) {
             values[index] = (sqrt(values[index].toDouble() / l1Norm) * DESCRIPTOR_NORM).toFloat()
         }
+    }
+
+    fun angularDistance(first: FloatArray, second: FloatArray): Double {
+        require(first.size == second.size && first.isNotEmpty())
+        require(first.all { it.isFinite() && it >= 0f })
+        require(second.all { it.isFinite() && it >= 0f })
+        val dotProduct = first.indices.sumOf { first[it].toDouble() * second[it] }
+        return angularDistanceFromDotProduct(dotProduct)
+    }
+
+    fun angularDistance(
+        first: ByteArray,
+        firstOffset: Int,
+        second: ByteArray,
+        secondOffset: Int
+    ): Double {
+        require(firstOffset >= 0 && firstOffset + DESCRIPTOR_LENGTH <= first.size)
+        require(secondOffset >= 0 && secondOffset + DESCRIPTOR_LENGTH <= second.size)
+        var dotProduct = 0.0
+        for (index in 0 until DESCRIPTOR_LENGTH) {
+            val firstValue = first[firstOffset + index].toInt() and 0xff
+            val secondValue = second[secondOffset + index].toInt() and 0xff
+            dotProduct += firstValue.toDouble() * secondValue
+        }
+        return angularDistanceFromDotProduct(dotProduct)
+    }
+
+    private fun angularDistanceFromDotProduct(dotProduct: Double): Double {
+        // COLMAP SIFT matching uses the fixed 512-scale dot product, not actual row norms.
+        val cosine = (dotProduct / (DESCRIPTOR_NORM * DESCRIPTOR_NORM)).coerceIn(-1.0, 1.0)
+        return acos(cosine)
     }
 
     fun normalizeAndQuantizeInPlace(descriptors: Mat) {
@@ -145,7 +178,7 @@ internal object RootSiftDescriptorMath {
 internal data class RankedDescriptorMatch(
     val queryIndex: Int,
     val trainIndex: Int,
-    val distance: Double
+    val angularDistanceRadians: Double
 )
 
 internal object SiftMatchPolicy {
@@ -181,24 +214,27 @@ internal object SiftMatchPolicy {
         maxDistance: Double
     ): Map<Int, RankedDescriptorMatch> {
         val accepted = HashMap<Int, RankedDescriptorMatch>()
-        val maximumDistanceInDescriptorUnits = maxDistance * RootSiftDescriptorMath.DESCRIPTOR_NORM
         for (row in rows) {
             val candidates = row.asSequence()
                 .filter {
                     it.queryIndex >= 0 && it.trainIndex >= 0 &&
-                        it.distance.isFinite() && it.distance >= 0.0
+                        it.angularDistanceRadians.isFinite() && it.angularDistanceRadians >= 0.0
                 }
-                .sortedWith(compareBy<RankedDescriptorMatch> { it.distance }.thenBy { it.trainIndex })
+                .sortedWith(
+                    compareBy<RankedDescriptorMatch> { it.angularDistanceRadians }
+                        .thenBy { it.trainIndex }
+                )
                 .take(2)
                 .toList()
             if (candidates.isEmpty()) continue
             val best = candidates[0]
-            val secondBestDistance = candidates.getOrNull(1)?.distance ?: Double.MAX_VALUE
-            if (best.distance > maximumDistanceInDescriptorUnits) continue
-            if (best.distance >= maxRatio * secondBestDistance) continue
+            val secondBestDistance = candidates.getOrNull(1)?.angularDistanceRadians ?: Double.MAX_VALUE
+            if (best.angularDistanceRadians > maxDistance) continue
+            if (best.angularDistanceRadians >= maxRatio * secondBestDistance) continue
             val previous = accepted[best.queryIndex]
-            if (previous == null || best.distance < previous.distance ||
-                (best.distance == previous.distance && best.trainIndex < previous.trainIndex)
+            if (previous == null || best.angularDistanceRadians < previous.angularDistanceRadians ||
+                (best.angularDistanceRadians == previous.angularDistanceRadians &&
+                    best.trainIndex < previous.trainIndex)
             ) {
                 accepted[best.queryIndex] = best
             }
@@ -226,8 +262,10 @@ internal class SiftDescriptorMatcher(
         if (firstDescriptors.empty() || secondDescriptors.empty() || maximumMatches <= 0) {
             return emptyList()
         }
-        val forward = knnRows(firstDescriptors, secondDescriptors)
-        val reverse = knnRows(secondDescriptors, firstDescriptors)
+        val firstValues = quantizedDescriptorValues(firstDescriptors)
+        val secondValues = quantizedDescriptorValues(secondDescriptors)
+        val forward = knnRows(firstDescriptors, secondDescriptors, firstValues, secondValues)
+        val reverse = knnRows(secondDescriptors, firstDescriptors, secondValues, firstValues)
         return SiftMatchPolicy.selectMutualMatches(
             forwardRows = forward,
             reverseRows = reverse,
@@ -241,22 +279,48 @@ internal class SiftDescriptorMatcher(
 
     private fun knnRows(
         queryDescriptors: Mat,
-        trainDescriptors: Mat
+        trainDescriptors: Mat,
+        queryValues: ByteArray,
+        trainValues: ByteArray
     ): List<List<RankedDescriptorMatch>> {
         val rows = mutableListOf<MatOfDMatch>()
         return try {
+            // OpenCV supplies the two-candidate L2 shortlist; policy decisions are angular.
             matcher.knnMatch(queryDescriptors, trainDescriptors, rows, 2)
             rows.map { row ->
-                row.toArray().map { match ->
+                row.toArray().mapNotNull { match ->
+                    if (match.queryIdx !in 0 until queryDescriptors.rows() ||
+                        match.trainIdx !in 0 until trainDescriptors.rows()
+                    ) return@mapNotNull null
                     RankedDescriptorMatch(
                         queryIndex = match.queryIdx,
                         trainIndex = match.trainIdx,
-                        distance = match.distance.toDouble()
+                        angularDistanceRadians = RootSiftDescriptorMath.angularDistance(
+                            first = queryValues,
+                            firstOffset = match.queryIdx * RootSiftDescriptorMath.DESCRIPTOR_LENGTH,
+                            second = trainValues,
+                            secondOffset = match.trainIdx * RootSiftDescriptorMath.DESCRIPTOR_LENGTH
+                        )
                     )
                 }
             }
         } finally {
             rows.forEach { it.release() }
+        }
+    }
+
+    private fun quantizedDescriptorValues(descriptors: Mat): ByteArray {
+        require(descriptors.type() == CvType.CV_8UC1 &&
+            descriptors.cols() == RootSiftDescriptorMath.DESCRIPTOR_LENGTH
+        ) { "SIFT matching requires quantized 128-dimensional single-channel descriptors." }
+        val valueCount = descriptors.rows().toLong() * descriptors.cols()
+        require(valueCount in 1..Int.MAX_VALUE.toLong()) {
+            "The quantized SIFT descriptor matrix is too large to match."
+        }
+        return ByteArray(valueCount.toInt()).also { values ->
+            check(descriptors.get(0, 0, values) == values.size) {
+                "Could not read the quantized SIFT descriptor matrix."
+            }
         }
     }
 }
