@@ -7,7 +7,6 @@ import com.trackstudio.app.tracking.CameraPose
 import com.trackstudio.app.tracking.CameraPoseStatus
 import com.trackstudio.app.tracking.PinholeIntrinsics
 import kotlin.math.acos
-import kotlin.math.abs
 import kotlin.math.sqrt
 
 /**
@@ -156,7 +155,7 @@ internal object ColmapObservationFilter {
         val cameraY = r[3] * point[0] + r[4] * point[1] + r[5] * point[2] + t[1]
         val cameraZ = r[6] * point[0] + r[7] * point[1] + r[8] * point[2] + t[2]
         if (!cameraX.isFinite() || !cameraY.isFinite() || !cameraZ.isFinite() ||
-            abs(cameraZ) <= 1e-12
+            cameraZ <= 1e-12
         ) return Double.POSITIVE_INFINITY
 
         val dx = (intrinsics.fx * cameraX + intrinsics.skew * cameraY) / cameraZ +

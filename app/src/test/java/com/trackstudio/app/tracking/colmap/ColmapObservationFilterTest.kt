@@ -131,6 +131,58 @@ class ColmapObservationFilterTest {
         assertTrue(result.deletedTrackIds.contains(30))
     }
 
+    @Test
+    fun rejectsBehindCameraObservationEvenWhenItsProjectionMatchesPixel() {
+        fun pose(frameIndex: Int, xTranslation: Double, zTranslation: Double) = CameraPose(
+            frameIndex = frameIndex,
+            rotation = doubleArrayOf(
+                1.0, 0.0, 0.0,
+                0.0, 1.0, 0.0,
+                0.0, 0.0, 1.0
+            ),
+            translation = doubleArrayOf(xTranslation, 0.0, zTranslation),
+            status = CameraPoseStatus.PNP_REGISTERED
+        )
+
+        val poses = mapOf(
+            0 to pose(0, xTranslation = 0.0, zTranslation = 0.0),
+            1 to pose(1, xTranslation = 0.0, zTranslation = 20.0),
+            2 to pose(2, xTranslation = -1.0, zTranslation = 20.0)
+        )
+        val cameraPointsByFrame = listOf(
+            0 to doubleArrayOf(0.0, 0.0, -10.0),
+            1 to doubleArrayOf(0.0, 0.0, 10.0),
+            2 to doubleArrayOf(-1.0, 0.0, 10.0)
+        )
+        val track = CameraFeatureTrack(
+            40,
+            cameraPointsByFrame.map { (frameIndex, cameraPoint) ->
+                val pixel = CameraProjectionMath.project(cameraPoint, intrinsics)
+                CameraFeatureObservation(frameIndex, pixel[0], pixel[1])
+            }
+        )
+
+        val result = ColmapObservationFilter.filter(
+            tracksById = mapOf(track.id to track),
+            landmarksByTrackId = mapOf(
+                track.id to CameraLandmark(
+                    trackId = track.id,
+                    position = Point3(0.0, 0.0, -10.0),
+                    observationCount = track.length,
+                    meanReprojectionErrorPx = 0.0
+                )
+            ),
+            posesByFrame = poses,
+            intrinsics = intrinsics,
+            affectedFrameIds = setOf(0)
+        )
+
+        assertEquals(listOf(1, 2), result.tracksById.getValue(40).observations.map { it.frameIndex })
+        assertEquals(listOf(0), result.removedObservationsByTrack.getValue(40).map { it.frameIndex })
+        assertEquals(2, result.landmarksByTrackId.getValue(40).observationCount)
+        assertFalse(result.deletedTrackIds.contains(40))
+    }
+
     private fun filter(
         scene: Scene,
         track: CameraFeatureTrack,
