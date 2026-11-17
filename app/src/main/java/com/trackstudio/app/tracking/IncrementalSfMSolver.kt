@@ -14,6 +14,7 @@ import org.opencv.imgproc.Imgproc
 import org.opencv.core.Point3
 import com.trackstudio.app.tracking.colmap.ColmapLocalBundleSelector
 import com.trackstudio.app.tracking.colmap.ColmapNextImageSelector
+import com.trackstudio.app.tracking.colmap.ColmapRegistrationTrialLedger
 import com.trackstudio.app.tracking.colmap.ColmapIterativeLocalRefinement
 import com.trackstudio.app.tracking.colmap.ColmapTrackCompleter
 import com.trackstudio.app.tracking.colmap.ColmapTrackMerger
@@ -659,7 +660,7 @@ internal class IncrementalSfMSolver(
                 geometry.matches.size, geometry.inlierCount, "Initial pair reconstructed"
             )
 
-            val registrationTrialsByFrame = IntArray(frameCount)
+            val registrationTrials = ColmapRegistrationTrialLedger(frameCount)
             val failedRegistrationFrames = linkedSetOf<Int>()
 
             fun registerMapFrame(
@@ -711,7 +712,7 @@ internal class IncrementalSfMSolver(
                 // already entered the persistent track graph; it does not cache all frames.
                 failedRegistrationFrames.removeAll { frameIndex ->
                     poseByFrame[frameIndex] != null ||
-                        registrationTrialsByFrame[frameIndex] >=
+                        registrationTrials[frameIndex] >=
                         ColmapNextImageSelector.DEFAULT_MAX_REGISTRATION_TRIALS
                 }
                 if (failedRegistrationFrames.isEmpty()) return
@@ -740,7 +741,7 @@ internal class IncrementalSfMSolver(
                         frameIndex = frameIndex,
                         visibleObservations = visibleObservationsByFrame[frameIndex].orEmpty(),
                         totalObservations = observationCountsByFrame[frameIndex] ?: 0,
-                        registrationTrials = registrationTrialsByFrame[frameIndex]
+                        registrationTrials = registrationTrials[frameIndex]
                     )
                 }
                 val rankedCandidates = ColmapNextImageSelector.rank(
@@ -755,7 +756,11 @@ internal class IncrementalSfMSolver(
                 for (candidate in rankedCandidates) {
                     currentCoroutineContext().ensureActive()
                     val candidateFrame = candidate.frameIndex
-                    registrationTrialsByFrame[candidateFrame]++
+                    val registrationTrial = registrationTrials.beginTrial(candidateFrame)
+                    if (registrationTrial == null) {
+                        failedRegistrationFrames.remove(candidateFrame)
+                        continue
+                    }
                     val registration = registerMapFrame(
                         frameIndex = candidateFrame,
                         frameWidth = imageWidth,
@@ -782,10 +787,10 @@ internal class IncrementalSfMSolver(
                     }
                     diagnostics[candidateFrame] = previousDiagnostic.copy(
                         inlierFeatures = registration.inlierCount,
-                        status = "Map-based retry ${registrationTrialsByFrame[candidateFrame]}/" +
+                        status = "Map-based retry $registrationTrial/" +
                             "${ColmapNextImageSelector.DEFAULT_MAX_REGISTRATION_TRIALS}: ${registration.reason}"
                     )
-                    if (registrationTrialsByFrame[candidateFrame] >=
+                    if (registrationTrial >=
                         ColmapNextImageSelector.DEFAULT_MAX_REGISTRATION_TRIALS
                     ) failedRegistrationFrames.remove(candidateFrame)
                 }
@@ -845,7 +850,9 @@ internal class IncrementalSfMSolver(
                             )
                         }
 
-                        registrationTrialsByFrame[frameIndex]++
+                        checkNotNull(registrationTrials.beginTrial(frameIndex)) {
+                            "Forward frame exceeded its registration trial limit before its first attempt"
+                        }
                         var registration = registerMapFrame(
                             frameIndex = frameIndex,
                             frameWidth = source.cols(),
@@ -868,7 +875,9 @@ internal class IncrementalSfMSolver(
                                 selected.secondFrame, frameIndex,
                                 secondFrame.keypoints, currentKeypoints, anchorMatches
                             )
-                            if (anchorMatches.isNotEmpty()) {
+                            if (anchorMatches.isNotEmpty() &&
+                                registrationTrials.beginTrial(frameIndex) != null
+                            ) {
                                 trackBuilder.addInlierMatchesFromFrame(
                                     selected.secondFrame, frameIndex,
                                     secondFrame.keypoints, currentKeypoints, anchorMatches
@@ -900,7 +909,9 @@ internal class IncrementalSfMSolver(
                                 selected.firstFrame, frameIndex,
                                 firstFrame.keypoints, currentKeypoints, firstAnchorMatches
                             )
-                            if (firstAnchorMatches.isNotEmpty()) {
+                            if (firstAnchorMatches.isNotEmpty() &&
+                                registrationTrials.beginTrial(frameIndex) != null
+                            ) {
                                 trackBuilder.addInlierMatchesFromFrame(
                                     selected.firstFrame, frameIndex,
                                     firstFrame.keypoints, currentKeypoints, firstAnchorMatches
@@ -1057,7 +1068,9 @@ internal class IncrementalSfMSolver(
                                 matches.size, "Initialization reference"
                             )
                         } else {
-                            registrationTrialsByFrame[frameIndex]++
+                            checkNotNull(registrationTrials.beginTrial(frameIndex)) {
+                                "Backward frame exceeded its registration trial limit before its first attempt"
+                            }
                             var registration = registerMapFrame(
                                 frameIndex = frameIndex,
                                 frameWidth = source.cols(),
@@ -1079,7 +1092,9 @@ internal class IncrementalSfMSolver(
                                     selected.secondFrame, frameIndex,
                                     secondFrame.keypoints, currentKeypoints, anchorMatches
                                 )
-                                if (anchorMatches.isNotEmpty()) {
+                                if (anchorMatches.isNotEmpty() &&
+                                    registrationTrials.beginTrial(frameIndex) != null
+                                ) {
                                     trackBuilder.addInlierMatchesFromFrame(
                                         selected.secondFrame, frameIndex,
                                         secondFrame.keypoints, currentKeypoints, anchorMatches
@@ -1111,7 +1126,9 @@ internal class IncrementalSfMSolver(
                                     selected.firstFrame, frameIndex,
                                     firstFrame.keypoints, currentKeypoints, firstAnchorMatches
                                 )
-                                if (firstAnchorMatches.isNotEmpty()) {
+                                if (firstAnchorMatches.isNotEmpty() &&
+                                    registrationTrials.beginTrial(frameIndex) != null
+                                ) {
                                     trackBuilder.addInlierMatchesFromFrame(
                                         selected.firstFrame, frameIndex,
                                         firstFrame.keypoints, currentKeypoints, firstAnchorMatches
