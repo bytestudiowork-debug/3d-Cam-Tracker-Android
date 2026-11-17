@@ -21,6 +21,23 @@ internal object EpipolarGeometryMath {
         return DoubleArray(9) { fundamental[it] / scale }
     }
 
+    fun essentialFromFundamental(
+        fundamental: DoubleArray,
+        firstCameraMatrix: DoubleArray,
+        secondCameraMatrix: DoubleArray
+    ): DoubleArray? {
+        if (fundamental.size != 9 || firstCameraMatrix.size != 9 || secondCameraMatrix.size != 9 ||
+            fundamental.any { !it.isFinite() } ||
+            firstCameraMatrix.any { !it.isFinite() } || secondCameraMatrix.any { !it.isFinite() }
+        ) return null
+        val essential = multiply3x3(
+            transpose(secondCameraMatrix), multiply3x3(fundamental, firstCameraMatrix)
+        )
+        val scale = essential.maxOf { abs(it) }
+        if (!scale.isFinite() || scale <= 1e-15) return null
+        return DoubleArray(9) { essential[it] / scale }
+    }
+
     fun symmetricEpipolarError(
         fundamental: DoubleArray,
         firstX: Double,

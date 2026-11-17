@@ -75,7 +75,7 @@ internal object InitialPairSelector {
             !candidate.essentialToFundamentalInlierRatio.isFinite() ||
                 candidate.essentialToFundamentalInlierRatio < 0.0 ->
                 "Invalid calibrated-model agreement metric"
-            candidate.essentialToFundamentalInlierRatio <=
+            !candidate.fundamentalPoseRecovered && candidate.essentialToFundamentalInlierRatio <=
                 policy.minimumEssentialToFundamentalInlierRatio ->
                 "Essential geometry is inconsistent with the fundamental model"
             !candidate.forwardMotionRatio.isFinite() ||
@@ -276,7 +276,9 @@ internal data class InitialPairCandidate(
     /** Verified keypoint index pairs from this exact geometry estimate. */
     val verifiedMatches: List<Pair<Int, Int>> = emptyList(),
     /** Essential support divided by fundamental support; values above one are valid. */
-    val essentialToFundamentalInlierRatio: Double = 1.0
+    val essentialToFundamentalInlierRatio: Double = 1.0,
+    /** True only when COLMAP-style F-to-E conversion supplied the recovered pose. */
+    val fundamentalPoseRecovered: Boolean = false
 ) {
     val frameGap: Int
         get() = secondFrame - firstFrame
@@ -299,7 +301,7 @@ internal data class InitialPairPolicy(
     val minimumCheiralityRatio: Double = 0.55,
     val maximumForwardMotionRatio: Double = 0.95,
     val minimumEssentialToFundamentalInlierRatio: Double = 0.95,
-    /** Homography inlier support divided by essential-matrix inlier support. */
+    /** Homography support divided by the epipolar model's inlier support. */
     val planarDominanceRatio: Double = 0.8,
     val inlierCountSaturation: Int = 500
 ) {

@@ -68,6 +68,7 @@ internal object OpenCvInitialPairEvaluator {
         val homographyMask = Mat()
         val rotation = Mat()
         val translation = Mat()
+        var fundamentalForPose: Mat? = null
 
         try {
             points1.fromList(matchedFirst)
@@ -97,8 +98,12 @@ internal object OpenCvInitialPairEvaluator {
                     ransacThresholdPx, 0.999, 10000, fundamentalMask
                 )
                 val fundamentalSucceeded = try {
-                    !estimatedFundamental.empty() && estimatedFundamental.cols() == 3 &&
+                    val succeeded = !estimatedFundamental.empty() && estimatedFundamental.cols() == 3 &&
                         estimatedFundamental.rows() >= 3 && estimatedFundamental.rows() % 3 == 0
+                    if (succeeded) {
+                        fundamentalForPose = estimatedFundamental.rowRange(0, 3).clone()
+                    }
+                    succeeded
                 } finally {
                     estimatedFundamental.release()
                 }
@@ -140,7 +145,9 @@ internal object OpenCvInitialPairEvaluator {
                     maximumHomographyRatio = policy.planarDominanceRatio
                 )
                 if (modelDecision.configuration !=
-                    ColmapTwoViewModelArbitrator.Configuration.CALIBRATED
+                    ColmapTwoViewModelArbitrator.Configuration.CALIBRATED &&
+                    modelDecision.configuration !=
+                    ColmapTwoViewModelArbitrator.Configuration.UNCALIBRATED
                 ) {
                     return rejected(
                         firstFrame,
@@ -160,14 +167,43 @@ internal object OpenCvInitialPairEvaluator {
                     return rejected(firstFrame, secondFrame, "Invalid COLMAP-selected inlier mask", matchCount)
                 }
 
+                val fundamentalPoseEssential = if (modelDecision.configuration ==
+                    ColmapTwoViewModelArbitrator.Configuration.UNCALIBRATED
+                ) {
+                    val fundamental = fundamentalForPose
+                        ?: return rejected(firstFrame, secondFrame, "Missing COLMAP fundamental model", matchCount)
+                    val fundamentalValues = OpenCvMatrixReadback.readCv64F(fundamental, 3, 3)
+                        ?: return rejected(firstFrame, secondFrame, "Invalid fundamental matrix readback", matchCount)
+                    val cameraValues = OpenCvMatrixReadback.readCv64F(cameraMatrix, 3, 3)
+                        ?: return rejected(firstFrame, secondFrame, "Invalid camera matrix readback", matchCount)
+                    val essentialValues = EpipolarGeometryMath.essentialFromFundamental(
+                        fundamentalValues, cameraValues, cameraValues
+                    ) ?: return rejected(firstFrame, secondFrame, "Could not convert F to E", matchCount)
+                    Mat(3, 3, CvType.CV_64F).apply {
+                        if (put(0, 0, *essentialValues) !=
+                            essentialValues.size * java.lang.Double.BYTES
+                        ) {
+                            release()
+                            return rejected(firstFrame, secondFrame, "Could not store F-derived E", matchCount)
+                        }
+                    }
+                } else {
+                    null
+                }
+
                 var bestPoseInliers = 0
                 var bestPoseMask: Mat? = null
                 var bestRotation: Mat? = null
                 var bestTranslation: Mat? = null
                 var bestEssential: Mat? = null
                 try {
-                    for (candidateIndex in 0 until essentialEstimate.rows() / 3) {
-                        val candidate = essentialEstimate
+                    val poseCandidateCount = if (fundamentalPoseEssential != null) {
+                        1
+                    } else {
+                        essentialEstimate.rows() / 3
+                    }
+                    for (candidateIndex in 0 until poseCandidateCount) {
+                        val candidate = fundamentalPoseEssential?.clone() ?: essentialEstimate
                             .rowRange(candidateIndex * 3, candidateIndex * 3 + 3)
                             .clone()
                         val mask = selectedModelMask.clone()
@@ -259,6 +295,7 @@ internal object OpenCvInitialPairEvaluator {
                     bestRotation?.release()
                     bestTranslation?.release()
                     bestEssential?.release()
+                    fundamentalPoseEssential?.release()
                 }
 
                 val inlierIndices = (0 until matchCount).filter { index ->
@@ -281,8 +318,15 @@ internal object OpenCvInitialPairEvaluator {
                 } else {
                     essentialInlierCount.toDouble() / fundamentalInlierCount
                 }
+                val homographyReferenceInliers = if (modelDecision.configuration ==
+                    ColmapTwoViewModelArbitrator.Configuration.UNCALIBRATED
+                ) {
+                    modelDecision.inlierCount
+                } else {
+                    essentialInlierCount
+                }
                 val homographyRatio =
-                    homographyInlierCount.toDouble() / essentialInlierCount.coerceAtLeast(1)
+                    homographyInlierCount.toDouble() / homographyReferenceInliers.coerceAtLeast(1)
                 val coverage = occupiedGridCells(
                     inlierIndices.map { matchedFirst[it] }, frameWidth, frameHeight
                 )
@@ -320,11 +364,14 @@ internal object OpenCvInitialPairEvaluator {
                     relativeRotation = relativeRotation,
                     relativeTranslationDirection = relativeTranslationDirection,
                     verifiedMatches = inlierIndices.map { matched[it] },
-                    essentialToFundamentalInlierRatio = essentialToFundamentalRatio
+                    essentialToFundamentalInlierRatio = essentialToFundamentalRatio,
+                    fundamentalPoseRecovered = modelDecision.configuration ==
+                        ColmapTwoViewModelArbitrator.Configuration.UNCALIBRATED
                 )
                 return InitialPairSelector.evaluate(candidate, policy)
             } finally {
                 essentialEstimate.release()
+                fundamentalForPose?.release()
             }
         } finally {
             points1.release()

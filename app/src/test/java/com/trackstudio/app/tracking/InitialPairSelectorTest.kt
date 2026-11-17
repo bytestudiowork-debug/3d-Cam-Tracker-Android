@@ -201,6 +201,27 @@ class InitialPairSelectorTest {
     }
 
     @Test
+    fun fundamentalPoseRecoveryBypassesOnlyTheCalibratedModelAgreementGate() {
+        val recoveredFromFundamental = candidate().copy(
+            essentialToFundamentalInlierRatio = 0.90,
+            fundamentalPoseRecovered = true
+        )
+        val valid = InitialPairSelector.evaluate(recoveredFromFundamental)
+        val insufficientParallax = InitialPairSelector.evaluate(
+            recoveredFromFundamental.copy(medianParallaxDegrees = 0.99)
+        )
+
+        assertTrue(valid.accepted)
+        assertFalse(insufficientParallax.accepted)
+        assertTrue(insufficientParallax.reason.contains("parallax"))
+        assertFalse(
+            InitialPairSelector.evaluate(
+                recoveredFromFundamental.copy(fundamentalPoseRecovered = false)
+            ).accepted
+        )
+    }
+
+    @Test
     fun rejectsForwardMotionAtTheReferenceMaximumBoundary() {
         val boundary = candidate(medianParallax = 20.0, upperParallax = 25.0)
             .copy(forwardMotionRatio = 0.95)
