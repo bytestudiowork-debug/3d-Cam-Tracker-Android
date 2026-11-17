@@ -18,6 +18,7 @@ import com.trackstudio.app.tracking.glomap.GlomapCovisibilityPruner
 import com.trackstudio.app.tracking.glomap.GlomapTrackQuotaSelector
 import com.trackstudio.app.tracking.glomap.GlomapImagePairInlierScorer
 import com.trackstudio.app.tracking.glomap.GlomapRelativePoseEstimator
+import com.trackstudio.app.tracking.glomap.GlomapRotationGraphReducer
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.async
 import kotlinx.coroutines.awaitAll
@@ -307,13 +308,21 @@ class GlobalReconstructionEngine(
                 frameIndices = verifiedPairs.flatMap { listOf(it.first, it.second) }.distinct(),
                 edges = rotationEdges
             ) ?: throw IllegalStateException("The verified view graph is disconnected or has insufficient rotation constraints.")
+            val firstFilteredGraph = GlomapRotationGraphReducer.keepLargestConnectedComponent(
+                registeredFrameIds = firstRotationPass.rotationsByFrame.keys,
+                validEdges = firstRotationPass.acceptedEdges
+            ) ?: throw IllegalStateException("No connected cameras remain after first rotation filtering.")
             val rotationPass = GlobalRotationAverager.solve(
-                frameIndices = firstRotationPass.rotationsByFrame.keys.toList(),
-                edges = firstRotationPass.acceptedEdges
+                frameIndices = firstFilteredGraph.frameIds,
+                edges = firstFilteredGraph.edges
             ) ?: throw IllegalStateException("Global rotation refinement failed.")
-            val rotations = rotationPass.rotationsByFrame
-            val activeFrames = rotations.keys.sorted()
-            val acceptedPairKeys = rotationPass.acceptedEdges.mapTo(HashSet()) {
+            val finalFilteredGraph = GlomapRotationGraphReducer.keepLargestConnectedComponent(
+                registeredFrameIds = rotationPass.rotationsByFrame.keys,
+                validEdges = rotationPass.acceptedEdges
+            ) ?: throw IllegalStateException("No connected cameras remain after final rotation filtering.")
+            val activeFrames = finalFilteredGraph.frameIds
+            val rotations = activeFrames.associateWith { rotationPass.rotationsByFrame.getValue(it) }
+            val acceptedPairKeys = finalFilteredGraph.edges.mapTo(HashSet()) {
                 (it.firstFrame.toLong() shl 32) xor (it.secondFrame.toLong() and 0xffffffffL)
             }
             val activePairs = verifiedPairs.filter {
