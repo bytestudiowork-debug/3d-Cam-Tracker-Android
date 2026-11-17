@@ -17,6 +17,7 @@ import com.trackstudio.app.tracking.glomap.GlomapReconstructionNormalizer
 import com.trackstudio.app.tracking.glomap.GlomapCovisibilityPruner
 import com.trackstudio.app.tracking.glomap.GlomapTrackQuotaSelector
 import com.trackstudio.app.tracking.glomap.GlomapImagePairInlierScorer
+import com.trackstudio.app.tracking.glomap.GlomapRelativePoseEstimator
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.async
 import kotlinx.coroutines.awaitAll
@@ -1174,144 +1175,69 @@ class GlobalReconstructionEngine(
             pair.allMatches.clear()
             return null
         }
-        val matched = pair.fundamentalInlierIndices.map { pair.allMatches[it] }
-        if (matched.size < 30) {
+        if (pair.fundamentalInlierIndices.size < 30) {
             pair.allMatches.clear()
             return null
         }
 
-        val points1 = MatOfPoint2f()
-        val points2 = MatOfPoint2f()
-        val essentialMask = Mat()
-        val bestMask = Mat()
-        val bestRotation = Mat()
-        val bestTranslation = Mat()
-        val bestEssential = Mat()
         return try {
-            points1.fromList(matched.map { first.keypoints[it.first].pt })
-            points2.fromList(matched.map { second.keypoints[it.second].pt })
-            val essential = Calib3d.findEssentialMat(
-                points1, points2, cameraMatrix, Calib3d.RANSAC,
-                0.999, 1.0, 900, essentialMask
+            val cameraMatrixValues = OpenCvMatrixReadback.readCv64F(cameraMatrix, 3, 3) ?: return null
+            val pinholeIntrinsics = PinholeIntrinsics(
+                fx = cameraMatrixValues[0],
+                fy = cameraMatrixValues[4],
+                skew = cameraMatrixValues[1],
+                cx = cameraMatrixValues[2],
+                cy = cameraMatrixValues[5]
             )
-            try {
-                if (essential.empty() || essential.cols() != 3 ||
-                    essential.rows() < 3 || essential.rows() % 3 != 0
-                ) return null
-
-                var bestInliers = 0
-                for (candidateIndex in 0 until essential.rows() / 3) {
-                    val candidate = essential.rowRange(candidateIndex * 3, candidateIndex * 3 + 3).clone()
-                    val mask = essentialMask.clone()
-                    val rotation = Mat()
-                    val translation = Mat()
-                    try {
-                        val inliers = Calib3d.recoverPose(
-                            candidate, points1, points2, cameraMatrix,
-                            rotation, translation, mask
-                        )
-                        if (inliers > bestInliers) {
-                            bestInliers = inliers
-                            mask.copyTo(bestMask)
-                            rotation.copyTo(bestRotation)
-                            translation.copyTo(bestTranslation)
-                            candidate.copyTo(bestEssential)
-                        }
-                    } finally {
-                        candidate.release()
-                        mask.release()
-                        rotation.release()
-                        translation.release()
-                    }
-                }
-                if (bestInliers > 0 && !bestEssential.empty()) {
-                    val initialEssential = DoubleArray(9)
-                    if (bestEssential.get(0, 0, initialEssential) ==
-                        initialEssential.size * java.lang.Double.BYTES
-                    ) {
-                        val polished = OpenCvTwoViewLocalOptimizer.refine(
-                            matched.map { first.keypoints[it.first].pt }.toTypedArray(),
-                            matched.map { second.keypoints[it.second].pt }.toTypedArray(),
-                            cameraMatrix,
-                            initialEssential,
-                            OpenCvTwoViewLocalOptimizer.inliersFromMask(bestMask, matched.size),
-                            1.0,
-                            0.999,
-                            900
-                        )
-                        if (polished != null && polished.inlierIndices.size >= bestInliers) {
-                            val polishedMask = OpenCvTwoViewLocalOptimizer.maskFromIndices(
-                                polished.inlierIndices, matched.size
-                            )
-                            val polishedRotation = Mat(3, 3, CvType.CV_64F)
-                            val polishedTranslation = Mat(3, 1, CvType.CV_64F)
-                            try {
-                                if (polishedRotation.put(0, 0, *polished.rotation) == polished.rotation.size &&
-                                    polishedTranslation.put(0, 0, *polished.translation) == polished.translation.size
-                                ) {
-                                    polishedMask.copyTo(bestMask)
-                                    polishedRotation.copyTo(bestRotation)
-                                    polishedTranslation.copyTo(bestTranslation)
-                                    bestInliers = polished.inlierIndices.size
-                                }
-                            } finally {
-                                polishedMask.release()
-                                polishedRotation.release()
-                                polishedTranslation.release()
-                            }
-                        }
-                    }
-                }
-                if (bestInliers < 30 || bestRotation.empty() || bestTranslation.empty()) return null
-                val rotationValues = OpenCvMatrixReadback.readCv64F(bestRotation, 3, 3) ?: return null
-                val translationValues = OpenCvMatrixReadback.readCv64F(bestTranslation, 3, 1) ?: return null
-                val translationNorm = sqrt(translationValues.sumOf { it * it })
-                if (!translationNorm.isFinite() || translationNorm < 1e-9) return null
-                for (i in translationValues.indices) translationValues[i] /= translationNorm
-
-                if (pair.allMatches.size != pair.matchCount) return null
-                val cameraMatrixValues = OpenCvMatrixReadback.readCv64F(cameraMatrix, 3, 3) ?: return null
-                val pinholeIntrinsics = PinholeIntrinsics(
-                    fx = cameraMatrixValues[0],
-                    fy = cameraMatrixValues[4],
-                    skew = cameraMatrixValues[1],
-                    cx = cameraMatrixValues[2],
-                    cy = cameraMatrixValues[5]
-                )
-                val rescored = GlomapImagePairInlierScorer.scoreEssential(
-                    firstPixels = pair.allMatches.map { match ->
-                        val point = first.keypoints[match.first].pt
-                        point.x to point.y
-                    },
-                    secondPixels = pair.allMatches.map { match ->
-                        val point = second.keypoints[match.second].pt
-                        point.x to point.y
-                    },
-                    firstIntrinsics = pinholeIntrinsics,
-                    secondIntrinsics = pinholeIntrinsics,
-                    rotation = rotationValues,
-                    translation = translationValues
-                ) ?: return null
-                val inlierMatches = rescored.inlierIndices.map { pair.allMatches[it] }
-                if (inlierMatches.size < GlomapImagePairInlierScorer.MINIMUM_INLIERS ||
-                    inlierMatches.size.toDouble() / pair.matchCount <
-                    GlomapImagePairInlierScorer.MINIMUM_INLIER_RATIO
-                ) return null
-                VerifiedPair(
-                    pair.first, pair.second, rotationValues,
-                    translationValues, inlierMatches, pair.matchCount
-                )
-            } finally {
-                essential.release()
+            val firstPixels = DoubleArray(pair.allMatches.size * 2)
+            val secondPixels = DoubleArray(pair.allMatches.size * 2)
+            pair.allMatches.forEachIndexed { index, match ->
+                val firstPoint = first.keypoints[match.first].pt
+                val secondPoint = second.keypoints[match.second].pt
+                firstPixels[index * 2] = firstPoint.x
+                firstPixels[index * 2 + 1] = firstPoint.y
+                secondPixels[index * 2] = secondPoint.x
+                secondPixels[index * 2 + 1] = secondPoint.y
             }
+            // GLOMAP estimates from the full pair match set; the prior
+            // fundamental inliers remain a pair-quality gate for this adapter.
+            val estimate = GlomapRelativePoseEstimator.estimate(
+                firstPixelsXY = firstPixels,
+                secondPixelsXY = secondPixels,
+                firstWidth = first.width,
+                firstHeight = first.height,
+                secondWidth = second.width,
+                secondHeight = second.height,
+                firstIntrinsics = pinholeIntrinsics,
+                secondIntrinsics = pinholeIntrinsics,
+                maxIterations = GlomapRelativePoseEstimator.ANDROID_MAX_ITERATIONS
+            ) ?: return null
+            val rotationValues = estimate.rotation
+            val translationValues = estimate.translation
+            val rescored = GlomapImagePairInlierScorer.scoreEssential(
+                firstPixels = pair.allMatches.map { match ->
+                    val point = first.keypoints[match.first].pt
+                    point.x to point.y
+                },
+                secondPixels = pair.allMatches.map { match ->
+                    val point = second.keypoints[match.second].pt
+                    point.x to point.y
+                },
+                firstIntrinsics = pinholeIntrinsics,
+                secondIntrinsics = pinholeIntrinsics,
+                rotation = rotationValues,
+                translation = translationValues
+            ) ?: return null
+            val inlierMatches = rescored.inlierIndices.map { pair.allMatches[it] }
+            if (inlierMatches.size < GlomapImagePairInlierScorer.MINIMUM_INLIERS ||
+                inlierMatches.size.toDouble() / pair.matchCount <
+                GlomapImagePairInlierScorer.MINIMUM_INLIER_RATIO
+            ) return null
+            VerifiedPair(
+                pair.first, pair.second, rotationValues,
+                translationValues, inlierMatches, pair.matchCount
+            )
         } finally {
-            points1.release()
-            points2.release()
-            essentialMask.release()
-            bestMask.release()
-            bestRotation.release()
-            bestTranslation.release()
-            bestEssential.release()
             pair.allMatches.clear()
         }
     }

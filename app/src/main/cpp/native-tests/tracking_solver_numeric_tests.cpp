@@ -8,6 +8,7 @@
 #include "global_positioning_core.h"
 #include "positioning_direction_residual.h"
 #include "view_graph_calibration_core.h"
+#include "glomap_relative_pose_estimator_core.h"
 
 #include <ceres/loss_function.h>
 #include <ceres/rotation.h>
@@ -1186,6 +1187,92 @@ void TestAbsolutePoseLORansacFinitePopulationAndOutlierRecovery() {
             "fixed-seed LO-RANSAC changed its result across repeated runs");
 }
 
+void TestGlomapRelativePoseEstimatorWithPinnedPoseLib() {
+    const tracking::GlomapRelativePoseCamera camera{
+            780.0, 805.0, 3.5, 640.0, 360.0, 1280, 720};
+    const Eigen::Vector3d axis(0.3, -0.5, 0.8);
+    const Eigen::Matrix3d truth_rotation =
+            Eigen::AngleAxisd(0.12, axis.normalized()).toRotationMatrix();
+    const Eigen::Vector3d truth_translation(0.42, -0.12, 0.08);
+    std::vector<double> first_pixels;
+    std::vector<double> second_pixels;
+    constexpr int kNumInliers = 100;
+    constexpr int kNumOutliers = 40;
+
+    const auto project = [&camera](const Eigen::Vector3d& point) {
+        const double x = point.x() / point.z();
+        const double y = point.y() / point.z();
+        return Eigen::Vector2d(camera.fx * x + camera.skew * y + camera.cx,
+                               camera.fy * y + camera.cy);
+    };
+    for (int index = 0; index < kNumInliers + kNumOutliers; ++index) {
+        const Eigen::Vector3d first_point(
+                1.7 * std::sin(0.17 * index),
+                1.3 * std::cos(0.11 * index),
+                4.0 + 0.025 * index + 0.5 * std::sin(0.07 * index));
+        const Eigen::Vector3d second_point =
+                truth_rotation * first_point + truth_translation;
+        Require(first_point.z() > 0.0 && second_point.z() > 0.0,
+                "relative-pose synthetic scene contains a point behind a camera");
+        Eigen::Vector2d first_pixel = project(first_point);
+        Eigen::Vector2d second_pixel = project(second_point);
+        if (index < kNumInliers) {
+            first_pixel.x() += 0.15 * std::sin(0.31 * index);
+            first_pixel.y() += 0.12 * std::cos(0.23 * index);
+            second_pixel.x() += 0.15 * std::cos(0.29 * index);
+            second_pixel.y() += 0.12 * std::sin(0.19 * index);
+        } else {
+            second_pixel.x() += 95.0 + 4.0 * (index % 13);
+            second_pixel.y() -= 120.0 + 3.0 * (index % 17);
+        }
+        first_pixels.push_back(first_pixel.x());
+        first_pixels.push_back(first_pixel.y());
+        second_pixels.push_back(second_pixel.x());
+        second_pixels.push_back(second_pixel.y());
+    }
+
+    const tracking::GlomapRelativePoseOptions pinned_defaults;
+    Require(pinned_defaults.max_iterations == 50000,
+            "GLOMAP's pinned PoseLib iteration default changed");
+    tracking::GlomapRelativePoseOptions options;
+    options.max_iterations = 30000;
+    tracking::GlomapRelativePoseResult result;
+    Require(tracking::EstimateGlomapRelativePose(
+                    first_pixels.data(), second_pixels.data(),
+                    first_pixels.size() / 2, camera, camera, options, &result),
+            "pinned PoseLib relative-pose estimation failed on the synthetic pair");
+    Require(result.iterations > 0 && result.iterations <= options.max_iterations,
+            "PoseLib exceeded the explicit Android RANSAC iteration cap");
+    Require(result.inlier_indices.size() >= 95 &&
+                    result.inlier_indices.size() <= kNumInliers &&
+                    result.inlier_ratio >= 0.25,
+            "PoseLib did not recover the calibrated pair consensus");
+    for (int index : result.inlier_indices) {
+        Require(index >= 0 && index < kNumInliers,
+                "PoseLib accepted an adversarial correspondence");
+    }
+    const double rotation_error = Eigen::AngleAxisd(
+            result.rotation * truth_rotation.transpose()).angle();
+    const double translation_error = std::acos(std::clamp(
+            result.translation.dot(truth_translation.normalized()), -1.0, 1.0));
+    Require(rotation_error < std::acos(-1.0) / 180.0 &&
+                    translation_error < 2.0 * std::acos(-1.0) / 180.0,
+            "PoseLib relative pose deviated from the synthetic camera transform");
+    Require(std::abs(result.translation.norm() - 1.0) < 1e-12,
+            "PoseLib relative translation was not returned as a unit direction");
+
+    tracking::GlomapRelativePoseResult repeated;
+    Require(tracking::EstimateGlomapRelativePose(
+                    first_pixels.data(), second_pixels.data(),
+                    first_pixels.size() / 2, camera, camera, options, &repeated),
+            "fixed-seed PoseLib relative-pose repeat failed");
+    Require(result.inlier_indices == repeated.inlier_indices &&
+                    result.iterations == repeated.iterations &&
+                    (result.rotation - repeated.rotation).norm() < 1e-12 &&
+                    (result.translation - repeated.translation).norm() < 1e-12,
+            "pinned PoseLib relative-pose output changed for identical inputs");
+}
+
 void TestMalformedRotationIsRejected() {
     double scaled_identity[9] = {2, 0, 0, 0, 2, 0, 0, 0, 2};
     Require(!tracking::IsValidRotationMatrix(scaled_identity),
@@ -1218,6 +1305,7 @@ int main() {
         TestP3PCandidateRecoveryAcrossInputPermutations();
         TestP3PRejectsDegenerateTriples();
         TestAbsolutePoseLORansacFinitePopulationAndOutlierRecovery();
+        TestGlomapRelativePoseEstimatorWithPinnedPoseLib();
         TestMalformedRotationIsRejected();
         std::cout << "Native numerical regression tests passed.\n";
         return 0;

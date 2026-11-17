@@ -11,18 +11,33 @@ find_package(Ceres REQUIRED)
 
 enable_testing()
 
+include(FetchContent)
+set(BUILD_TESTS OFF CACHE BOOL "Do not build PoseLib tests" FORCE)
+set(WITH_BENCHMARK OFF CACHE BOOL "Do not build PoseLib benchmarks" FORCE)
+set(PYTHON_PACKAGE OFF CACHE BOOL "Do not build PoseLib Python bindings" FORCE)
+set(MARCH_NATIVE OFF CACHE BOOL "Use portable instruction sets" FORCE)
+set(BUILD_SHARED_LIBS OFF CACHE BOOL "Build PoseLib statically" FORCE)
+FetchContent_Declare(
+        PoseLib
+        GIT_REPOSITORY https://github.com/PoseLib/PoseLib.git
+        GIT_TAG 7e9f5f53372e43f89655040d4dfc4a00e5ace11c
+)
+FetchContent_MakeAvailable(PoseLib)
+target_compile_options(PoseLib PRIVATE -Wno-error)
+
 add_executable(tracking_solver_numeric_tests
         tracking_solver_numeric_tests.cpp
         ../absolute_pose_loransac_core.cpp
         ../camera_pose_refiner_core.cpp
         ../epnp_pose_estimator_core.cpp
         ../p3p_pose_estimator_core.cpp
+        ../glomap_relative_pose_estimator_core.cpp
         ../global_positioning_core.cpp
         ../global_bundle_adjuster_core.cpp
         ../view_graph_calibration_core.cpp
         ../least_absolute_deviations_core.cpp)
 target_include_directories(tracking_solver_numeric_tests PRIVATE ..)
-target_link_libraries(tracking_solver_numeric_tests PRIVATE Ceres::ceres)
+target_link_libraries(tracking_solver_numeric_tests PRIVATE Ceres::ceres PoseLib)
 target_compile_options(tracking_solver_numeric_tests PRIVATE -O2 -fno-fast-math)
 add_test(NAME tracking_solver_numeric_tests COMMAND tracking_solver_numeric_tests)
 

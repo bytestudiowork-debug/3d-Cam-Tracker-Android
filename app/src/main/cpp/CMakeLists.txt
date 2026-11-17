@@ -55,6 +55,22 @@ file(WRITE "${Eigen3_DIR}/Eigen3ConfigVersion.cmake"
 "endif()\n"
 )
 
+# PoseLib 2.0.5 is pinned by GLOMAP at 7e9f5f53372e43f89655040d4dfc4a00e5ace11c.
+set(BUILD_TESTS OFF CACHE BOOL "Do not build PoseLib tests" FORCE)
+set(WITH_BENCHMARK OFF CACHE BOOL "Do not build PoseLib benchmarks" FORCE)
+set(PYTHON_PACKAGE OFF CACHE BOOL "Do not build PoseLib Python bindings" FORCE)
+set(MARCH_NATIVE OFF CACHE BOOL "Use portable Android instruction sets" FORCE)
+set(BUILD_SHARED_LIBS OFF CACHE BOOL "Build PoseLib statically" FORCE)
+FetchContent_Declare(
+        PoseLib
+        GIT_REPOSITORY https://github.com/PoseLib/PoseLib.git
+        GIT_TAG 7e9f5f53372e43f89655040d4dfc4a00e5ace11c
+)
+FetchContent_MakeAvailable(PoseLib)
+# PoseLib adds -Werror unconditionally; keep its warnings visible but non-fatal.
+target_compile_options(PoseLib PRIVATE -Wno-error)
+set(BUILD_SHARED_LIBS ON CACHE BOOL "Build Android dependencies as shared libraries" FORCE)
+
 # Avoid duplicate uninstall target creation between dependencies.
 set(PROVIDE_UNINSTALL_TARGET OFF CACHE BOOL "Do not add Ceres uninstall target" FORCE)
 
@@ -76,11 +92,13 @@ find_library(jnigraphics-lib jnigraphics)
 add_library(trackstudio_reconstruction SHARED
         glomap_positioner.cpp
         global_positioning_core.cpp
+        glomap_relative_pose_estimator_core.cpp
+        glomap_relative_pose_estimator_jni.cpp
         glomap_view_graph_calibrator.cpp
         view_graph_calibration_core.cpp
         glomap_bundle_adjuster.cpp
         global_bundle_adjuster_core.cpp)
-target_link_libraries(trackstudio_reconstruction PRIVATE Ceres::ceres ${log-lib})
+target_link_libraries(trackstudio_reconstruction PRIVATE Ceres::ceres PoseLib ${log-lib})
 target_compile_options(trackstudio_reconstruction PRIVATE -O3 -fno-fast-math)
 
 add_library(trackstudio_camera SHARED
