@@ -1,6 +1,6 @@
 This notice covers the source-derived focal-unknown absolute-pose P4PF/RANSAC path and joint pose/focal refinement adapted into the Android tracking engine from the pinned COLMAP sources below.
 
-Adapted sources: src/colmap/estimators/pose.h, src/colmap/estimators/pose.cc, src/colmap/estimators/absolute_pose.h, src/colmap/estimators/absolute_pose.cc, src/colmap/optim/ransac.h, and src/colmap/optim/support_measurement.h
+Adapted sources: src/colmap/estimators/pose.h, src/colmap/estimators/pose.cc, src/colmap/estimators/absolute_pose.h, src/colmap/estimators/absolute_pose.cc, src/colmap/optim/ransac.h, src/colmap/optim/random_sampler.h, src/colmap/optim/random_sampler.cc, src/colmap/optim/sampler.h, src/colmap/optim/support_measurement.h, src/colmap/math/random.h, and src/colmap/math/random.cc
 COLMAP commit: c5f9cefc87e5dd596b638e4cee0ff543c7d14755
 
 Copyright (c), ETH Zurich and UNC Chapel Hill. All rights reserved.

@@ -11,6 +11,7 @@
 #include <cstdint>
 #include <limits>
 #include <memory>
+#include <numeric>
 #include <random>
 #include <utility>
 
@@ -54,6 +55,7 @@ bool IsValidInput(const std::vector<Eigen::Vector2d>& image_points,
                   const P4pfAbsolutePoseOptions& options) {
     if (image_points.size() != world_points.size() ||
         image_points.size() < kMinimalSampleSize ||
+        image_points.size() > static_cast<size_t>(std::numeric_limits<uint32_t>::max()) ||
         !std::isfinite(intrinsics.fx) || intrinsics.fx <= 0.0 ||
         !std::isfinite(intrinsics.fy) || intrinsics.fy <= 0.0 ||
         !std::isfinite(intrinsics.skew) || std::abs(intrinsics.skew) > 1e-9 ||
@@ -306,6 +308,10 @@ bool EstimateAbsolutePoseP4PF(const std::vector<Eigen::Vector2d>& image_points,
         std::seed_seq seed{random_device(), random_device(), random_device(), random_device()};
         generator.seed(seed);
     }
+    // COLMAP RandomSampler initializes [0..N) once, then applies a prefix
+    // Fisher–Yates shuffle for each sample. Keep the permutation across trials.
+    std::vector<size_t> sample_indices(image_points.size());
+    std::iota(sample_indices.begin(), sample_indices.end(), size_t{0});
 
     Model best_model;
     Support best_support;
@@ -314,15 +320,12 @@ bool EstimateAbsolutePoseP4PF(const std::vector<Eigen::Vector2d>& image_points,
     bool have_model = false;
 
     for (size_t trial = 0; trial < max_trials; ++trial) {
-        std::array<size_t, kMinimalSampleSize> sample_indices{};
-        std::uniform_int_distribution<size_t> sample_distribution(0, image_points.size() - 1);
+        const uint32_t last_index = static_cast<uint32_t>(sample_indices.size() - 1);
         for (size_t index = 0; index < kMinimalSampleSize; ++index) {
-            size_t selected = 0;
-            do {
-                selected = sample_distribution(generator);
-            } while (std::find(sample_indices.begin(), sample_indices.begin() + index,
-                                selected) != sample_indices.begin() + index);
-            sample_indices[index] = selected;
+            std::uniform_int_distribution<uint32_t> distribution(
+                    static_cast<uint32_t>(index), last_index);
+            const uint32_t selected = distribution(generator);
+            std::swap(sample_indices[index], sample_indices[selected]);
         }
 
         std::vector<Eigen::Vector2d> sample_image_points(kMinimalSampleSize);
