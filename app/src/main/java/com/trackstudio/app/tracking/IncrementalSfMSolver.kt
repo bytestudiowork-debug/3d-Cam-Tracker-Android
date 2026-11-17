@@ -481,8 +481,8 @@ internal class IncrementalSfMSolver(
 
             fun registerMapFrame(
                 frameIndex: Int,
-                imageWidth: Int,
-                imageHeight: Int,
+                frameWidth: Int,
+                frameHeight: Int,
                 featureTracks: List<CameraFeatureTrack>,
                 landmarks: Collection<CameraLandmark>,
                 cameraMatrix: Mat
@@ -490,8 +490,8 @@ internal class IncrementalSfMSolver(
                 val shouldEstimateFocalLength = !focalLengthHasBeenEstimated
                 val registration = IncrementalCameraRegistrar.register(
                     frameIndex = frameIndex,
-                    frameWidth = imageWidth,
-                    frameHeight = imageHeight,
+                    frameWidth = frameWidth,
+                    frameHeight = frameHeight,
                     featureTracks = featureTracks,
                     landmarks = landmarks,
                     cameraMatrix = cameraMatrix,
