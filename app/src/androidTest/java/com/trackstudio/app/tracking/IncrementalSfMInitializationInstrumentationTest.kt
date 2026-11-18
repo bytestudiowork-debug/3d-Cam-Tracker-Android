@@ -118,9 +118,151 @@ class IncrementalSfMInitializationInstrumentationTest {
         }
     }
 
+    @Test
+    fun homographySeedRegistersThirdCameraFromMapAndPreservesThreeViewTracks() {
+        val fixture = SyntheticSeedScene.render(
+            SceneKind.PLANAR_HIGH,
+            includeThirdCamera = true
+        )
+        val cameraMatrix = cameraMatrix()
+        try {
+            val oracle = inspectSeedPair(fixture, cameraMatrix, cameraFocalLengthHasPrior = true)
+            assertEquals(SourceFaithfulTwoViewEstimator.PoseSource.HOMOGRAPHY, oracle.geometry.poseSource)
+            assertTrue(oracle.geometry.passesInitialPairGates)
+
+            val result = solvePublicEngine(
+                fixture,
+                cameraMatrix,
+                cameraFocalLengthHasPrior = true
+            )
+            assertConsistentSeedResult(result, oracle, expectedRegisteredCameraCount = 3)
+            assertEquals(FIRST_FRAME to SECOND_FRAME, result.initialPairFrames)
+            assertEquals(fixture.frames.size, result.poses.size)
+            assertEquals(CameraPoseStatus.PNP_REGISTERED, result.poses[THIRD_FRAME].status)
+            assertTrue(result.diagnostics[THIRD_FRAME].status.contains("PnP"))
+
+            val expectedSeedPairs = oracle.evaluation.candidate.verifiedMatches.toSet()
+            val keypointsByFrame = mapOf(
+                FIRST_FRAME to oracle.firstKeypoints,
+                SECOND_FRAME to oracle.secondKeypoints,
+                THIRD_FRAME to detectKeypoints(fixture.frames[THIRD_FRAME])
+            )
+            val threeViewTracks = result.featureTracks.filter { track ->
+                listOf(FIRST_FRAME, SECOND_FRAME, THIRD_FRAME).all { frameIndex ->
+                    track.observations.any { it.frameIndex == frameIndex }
+                }
+            }
+            assertTrue("Only ${threeViewTracks.size} tracks retained all three registered views",
+                threeViewTracks.size >= 30)
+            threeViewTracks.forEach { track ->
+                val observations = track.observations.associateBy { it.frameIndex }
+                assertEquals(listOf(FIRST_FRAME, SECOND_FRAME, THIRD_FRAME),
+                    observations.keys.sorted())
+                val seedPair = observations.getValue(FIRST_FRAME).featureIndex to
+                    observations.getValue(SECOND_FRAME).featureIndex
+                assertTrue("A three-view track lost its ordered H-seed correspondence", seedPair in expectedSeedPairs)
+                val patchIds = observations.values.map { observation ->
+                    val keypoint = keypointsByFrame.getValue(observation.frameIndex)
+                        .getOrNull(observation.featureIndex)
+                    assertNotNull("Feature index is invalid in frame ${observation.frameIndex}", keypoint)
+                    val observedKeypoint = requireNotNull(keypoint)
+                    assertEquals(observedKeypoint.pt.x, observation.x, 1e-9)
+                    assertEquals(observedKeypoint.pt.y, observation.y, 1e-9)
+                    fixture.patchIndex(observation.frameIndex, observation)
+                }
+                assertTrue("A track joined different synthetic patches: $patchIds",
+                    patchIds.all { it != null } && patchIds.distinct().size == 1)
+            }
+            for (frameIndex in listOf(FIRST_FRAME, SECOND_FRAME, THIRD_FRAME)) {
+                val indices = threeViewTracks.map { track ->
+                    track.observations.single { it.frameIndex == frameIndex }.featureIndex
+                }
+                assertEquals("Frame $frameIndex feature was assigned to multiple tracks",
+                    indices.size, indices.toSet().size)
+            }
+
+            val tracksById = result.featureTracks.associateBy { it.id }
+            val landmarksById = result.landmarks.associateBy { it.trackId }
+            assertEquals(tracksById.keys, landmarksById.keys)
+            assertTrue(result.landmarks.isNotEmpty())
+            val fx = CAMERA_VALUES[0]
+            val fy = CAMERA_VALUES[4]
+            val cx = CAMERA_VALUES[2]
+            val cy = CAMERA_VALUES[5]
+            for ((trackId, track) in tracksById) {
+                val landmark = landmarksById.getValue(trackId)
+                assertEquals("Landmark observation count diverged for track $trackId",
+                    track.observations.size, landmark.observationCount)
+                val point = doubleArrayOf(
+                    landmark.position.x, landmark.position.y, landmark.position.z
+                )
+                for (observation in track.observations) {
+                    val cameraPoint = transform(result.poses[observation.frameIndex], point)
+                    assertTrue("Track $trackId is behind frame ${observation.frameIndex}",
+                        cameraPoint[2] > 0.0)
+                    val dx = fx * cameraPoint[0] / cameraPoint[2] + cx - observation.x
+                    val dy = fy * cameraPoint[1] / cameraPoint[2] + cy - observation.y
+                    assertTrue("Track $trackId reprojection error exceeds tolerance",
+                        hypot(dx, dy) <= 4.25)
+                }
+                assertTrue("Track $trackId landmark error exceeds triangulation policy",
+                    landmark.meanReprojectionErrorPx <= 4.0)
+            }
+
+            val seedCenter = cameraCenter(result.poses[SECOND_FRAME])
+            val thirdCenter = cameraCenter(result.poses[THIRD_FRAME])
+            val seedNorm = sqrt(seedCenter.sumOf { it * it })
+            val thirdNorm = sqrt(thirdCenter.sumOf { it * it })
+            val centerRatio = thirdNorm / seedNorm
+            val expectedRatio = SyntheticSeedScene.THIRD_CAMERA_CENTER_X /
+                SyntheticSeedScene.HIGH_BASELINE
+            assertEquals("Third camera changed the seed map's scale gauge",
+                expectedRatio, centerRatio, 0.18)
+            val centerError = sqrt(seedCenter.indices.sumOf { index ->
+                val difference = thirdCenter[index] - expectedRatio * seedCenter[index]
+                difference * difference
+            })
+            assertTrue("Third pose left the seed baseline direction or scale: error=$centerError",
+                centerError / seedNorm < 0.18)
+        } finally {
+            fixture.release()
+            cameraMatrix.release()
+        }
+    }
+
+    @Test
+    fun poorOverlapThirdCameraRemainsHeldWithoutCorruptingTheSeedMap() {
+        val fixture = SyntheticSeedScene.render(
+            SceneKind.PLANAR_HIGH,
+            includeThirdCamera = true,
+            thirdCameraHasTexture = false
+        )
+        val cameraMatrix = cameraMatrix()
+        try {
+            val oracle = inspectSeedPair(fixture, cameraMatrix, cameraFocalLengthHasPrior = true)
+            val result = solvePublicEngine(
+                fixture,
+                cameraMatrix,
+                cameraFocalLengthHasPrior = true
+            )
+            assertConsistentSeedResult(result, oracle)
+            assertEquals(CameraPoseStatus.HELD_LAST_VALID, result.poses[THIRD_FRAME].status)
+            assertTrue(result.featureTracks.none { track ->
+                track.observations.any { it.frameIndex == THIRD_FRAME }
+            })
+            assertTrue("Third frame should report a failed registration attempt",
+                result.diagnostics[THIRD_FRAME].status.isNotBlank() &&
+                    !result.diagnostics[THIRD_FRAME].status.contains("PnP registered"))
+        } finally {
+            fixture.release()
+            cameraMatrix.release()
+        }
+    }
+
     private fun inspectSeedPair(
         fixture: SyntheticSeedScene.Fixture,
-        cameraMatrix: Mat
+        cameraMatrix: Mat,
+        cameraFocalLengthHasPrior: Boolean = false
     ): PairOracle {
         assertTrue("OpenCV runtime is unavailable", OpenCvRuntime.ensureLoaded())
         val extractor = AndroidSiftFeatureExtractor(MAX_FEATURES)
@@ -149,7 +291,7 @@ class IncrementalSfMInitializationInstrumentationTest {
                     firstPixelsXY = firstPixels,
                     secondPixelsXY = secondPixels,
                     cameraMatrixRowMajor = CAMERA_VALUES,
-                    bothCamerasHaveFocalPriors = false,
+                    bothCamerasHaveFocalPriors = cameraFocalLengthHasPrior,
                     maxErrorPixels = RANSAC_THRESHOLD_PX,
                     minimumEssentialToFundamentalRatio =
                         InitialPairPolicy.initialization().minimumEssentialToFundamentalInlierRatio,
@@ -168,7 +310,7 @@ class IncrementalSfMInitializationInstrumentationTest {
                 frameWidth = SyntheticSeedScene.WIDTH,
                 frameHeight = SyntheticSeedScene.HEIGHT,
                 policy = InitialPairPolicy.initialization(),
-                cameraFocalLengthHasPrior = false,
+                cameraFocalLengthHasPrior = cameraFocalLengthHasPrior,
                 ransacThresholdPx = RANSAC_THRESHOLD_PX
             )
             if (evaluation.accepted) {
@@ -199,23 +341,28 @@ class IncrementalSfMInitializationInstrumentationTest {
 
     private fun solvePublicEngine(
         fixture: SyntheticSeedScene.Fixture,
-        cameraMatrix: Mat
+        cameraMatrix: Mat,
+        cameraFocalLengthHasPrior: Boolean = false
     ): CameraTrackingResult = runBlocking {
         CameraTrackingEngine(
             maxFeatures = MAX_FEATURES,
             ratioThreshold = RATIO_THRESHOLD,
-            cameraFocalLengthHasPrior = false
+            cameraFocalLengthHasPrior = cameraFocalLengthHasPrior
         ).solve(
-            frameCount = SyntheticSeedScene.FRAME_COUNT,
+            frameCount = fixture.frames.size,
             cameraMatrix = cameraMatrix,
             frameProvider = { index -> fixture.frames[index].clone() },
             onProgress = {}
         )
     }
 
-    private fun assertConsistentSeedResult(result: CameraTrackingResult, oracle: PairOracle) {
+    private fun assertConsistentSeedResult(
+        result: CameraTrackingResult,
+        oracle: PairOracle,
+        expectedRegisteredCameraCount: Int = 2
+    ) {
         assertEquals(FIRST_FRAME to SECOND_FRAME, result.initialPairFrames)
-        assertEquals(2, result.registeredCameraCount)
+        assertEquals(expectedRegisteredCameraCount, result.registeredCameraCount)
         assertEquals(CameraPoseStatus.REFERENCE, result.poses[FIRST_FRAME].status)
         assertTrue(
             "Seed camera was not returned as registered: ${result.poses[SECOND_FRAME].status}",
@@ -293,6 +440,43 @@ class IncrementalSfMInitializationInstrumentationTest {
             }
         }
 
+    private fun detectKeypoints(frame: Mat): Array<KeyPoint> {
+        assertTrue("OpenCV runtime is unavailable", OpenCvRuntime.ensureLoaded())
+        val extractor = AndroidSiftFeatureExtractor(MAX_FEATURES)
+        val keypointMat = MatOfKeyPoint()
+        val descriptors = Mat()
+        val emptyMask = Mat()
+        try {
+            extractor.detectAndCompute(frame, emptyMask, keypointMat, descriptors)
+            return keypointMat.toArray()
+        } finally {
+            extractor.clear()
+            keypointMat.release()
+            descriptors.release()
+            emptyMask.release()
+        }
+    }
+
+    private fun cameraCenter(pose: CameraPose): DoubleArray {
+        val rotation = pose.rotation
+        val translation = pose.translation
+        return doubleArrayOf(
+            -(rotation[0] * translation[0] + rotation[3] * translation[1] + rotation[6] * translation[2]),
+            -(rotation[1] * translation[0] + rotation[4] * translation[1] + rotation[7] * translation[2]),
+            -(rotation[2] * translation[0] + rotation[5] * translation[1] + rotation[8] * translation[2])
+        )
+    }
+
+    private fun transform(pose: CameraPose, point: DoubleArray): DoubleArray {
+        val rotation = pose.rotation
+        val translation = pose.translation
+        return doubleArrayOf(
+            rotation[0] * point[0] + rotation[1] * point[1] + rotation[2] * point[2] + translation[0],
+            rotation[3] * point[0] + rotation[4] * point[1] + rotation[5] * point[2] + translation[1],
+            rotation[6] * point[0] + rotation[7] * point[1] + rotation[8] * point[2] + translation[2]
+        )
+    }
+
     private data class PairOracle(
         val evaluation: InitialPairEvaluation,
         val geometry: SourceFaithfulTwoViewEstimator.InitialPairEstimate,
@@ -310,16 +494,17 @@ class IncrementalSfMInitializationInstrumentationTest {
     private object SyntheticSeedScene {
         const val WIDTH = 1280
         const val HEIGHT = 720
-        const val FRAME_COUNT = 3
         private const val FIRST_FRAME = 0
         private const val SECOND_FRAME = 2
+        const val THIRD_FRAME = 3
 
         private const val PATCH_SIZE = 32
         private const val FX = 800.0
         private const val FY = 800.0
         private const val CX = 640.0
         private const val CY = 360.0
-        private const val HIGH_BASELINE = 1.5
+        const val HIGH_BASELINE = 1.5
+        const val THIRD_CAMERA_CENTER_X = 1.0
         private const val LOW_BASELINE = 0.65
         private const val PLANE_DEPTH = 4.5
         private const val PLANAR_FEATURE_COUNT = 100
@@ -329,6 +514,7 @@ class IncrementalSfMInitializationInstrumentationTest {
             val frames: List<Mat>,
             val patchCentersFirst: List<Point>,
             val patchCentersSecond: List<Point>,
+            val patchCentersThird: List<Point>,
             val nonPlanarFeatureStart: Int
         ) {
             val firstFrame: Mat get() = frames[FIRST_FRAME]
@@ -340,6 +526,16 @@ class IncrementalSfMInitializationInstrumentationTest {
                 val firstPatch = nearestPatch(first.x, first.y, patchCentersFirst) ?: return false
                 val secondPatch = nearestPatch(second.x, second.y, patchCentersSecond) ?: return false
                 return firstPatch == secondPatch && firstPatch >= nonPlanarFeatureStart
+            }
+
+            fun patchIndex(frameIndex: Int, observation: CameraFeatureObservation): Int? {
+                val centers = when (frameIndex) {
+                    FIRST_FRAME -> patchCentersFirst
+                    SECOND_FRAME -> patchCentersSecond
+                    THIRD_FRAME -> patchCentersThird
+                    else -> return null
+                }
+                return nearestPatch(observation.x, observation.y, centers)
             }
 
             fun release() = frames.forEach(Mat::release)
@@ -356,7 +552,11 @@ class IncrementalSfMInitializationInstrumentationTest {
             }
         }
 
-        fun render(kind: SceneKind): Fixture {
+        fun render(
+            kind: SceneKind,
+            includeThirdCamera: Boolean = false,
+            thirdCameraHasTexture: Boolean = true
+        ): Fixture {
             check(OpenCvRuntime.ensureLoaded()) { "OpenCV could not be loaded in the emulator" }
             val baseline = if (kind == SceneKind.PLANAR_LOW_ANGLE) LOW_BASELINE else HIGH_BASELINE
             val patches = (0 until FEATURE_COUNT).map { index ->
@@ -382,18 +582,34 @@ class IncrementalSfMInitializationInstrumentationTest {
             }
             val first = renderView(patches, cameraCenterX = 0.0)
             val second = renderView(patches, cameraCenterX = baseline)
-            val blank = Mat(HEIGHT, WIDTH, CvType.CV_8UC1).also { image ->
-                val pixels = ByteArray(WIDTH * HEIGHT) { 127.toByte() }
-                check(image.put(0, 0, pixels) == pixels.size)
+            val blank = blankView()
+            val third = if (includeThirdCamera) {
+                if (thirdCameraHasTexture) renderView(patches, THIRD_CAMERA_CENTER_X)
+                else blankView()
+            } else {
+                null
             }
             val firstCenters = patches.map { project(it, 0.0) }
             val secondCenters = patches.map { project(it, baseline) }
+            val thirdCenters = if (third != null && thirdCameraHasTexture) {
+                patches.map { project(it, THIRD_CAMERA_CENTER_X) }
+            } else {
+                emptyList()
+            }
             return Fixture(
-                frames = listOf(first, blank, second),
+                frames = listOfNotNull(first, blank, second, third),
                 patchCentersFirst = firstCenters,
                 patchCentersSecond = secondCenters,
+                patchCentersThird = thirdCenters,
                 nonPlanarFeatureStart = if (kind == SceneKind.MIXED_HIGH) PLANAR_FEATURE_COUNT else FEATURE_COUNT
             )
+        }
+
+        private fun blankView(): Mat {
+            val pixels = ByteArray(WIDTH * HEIGHT) { 127.toByte() }
+            return Mat(HEIGHT, WIDTH, CvType.CV_8UC1).also { image ->
+                check(image.put(0, 0, pixels) == pixels.size)
+            }
         }
 
         private data class Patch(
@@ -458,6 +674,7 @@ class IncrementalSfMInitializationInstrumentationTest {
     private companion object {
         const val FIRST_FRAME = 0
         const val SECOND_FRAME = 2
+        const val THIRD_FRAME = 3
         const val MAX_FEATURES = 1400
         const val RATIO_THRESHOLD = 0.8f
         const val RANSAC_THRESHOLD_PX = 4.0
