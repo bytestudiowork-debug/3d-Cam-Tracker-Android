@@ -4,6 +4,8 @@ import com.trackstudio.app.tracking.CameraFeatureObservation
 import com.trackstudio.app.tracking.CameraFeatureTrack
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
+import org.junit.Assert.assertNotNull
+import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
 
@@ -38,6 +40,22 @@ class ColmapLocalBundleTrackSelectorTest {
         )
         assertFalse(
             ColmapLocalBundleTrackSelector.meetsBundleAdjustmentMinimum(localFrameIds, localTracks.dropLast(1))
+        )
+    }
+
+    @Test
+    fun closingBundleSelectionKeepsTwoViewTracksForThirtyTracksInTwoFrames() {
+        val localFrameIds = setOf(4, 5)
+        val tracks = (0 until 30).map { id -> track(id, 4, 5, 9) }
+
+        val selected = ColmapLocalBundleTrackSelector.selectBundle(tracks, localFrameIds)
+
+        assertNotNull(selected)
+        assertEquals(localFrameIds, selected!!.frameIds)
+        assertEquals(30, selected.tracks.size)
+        assertEquals(60, selected.localObservationCount)
+        assertNull(
+            ColmapLocalBundleTrackSelector.selectBundle(tracks.dropLast(1), localFrameIds)
         )
     }
 

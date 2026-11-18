@@ -1500,26 +1500,21 @@ internal class IncrementalSfMSolver(
             } else {
                 null
             }
-            val localFrameIds = localBundleSelection?.frameIds?.toSet().orEmpty()
-            val localBundleTracks = if (localBundleSelection != null) {
-                jointTracks.filter { track ->
-                    track.observations.count { it.frameIndex in localFrameIds } >= 3
-                }
-            } else {
-                emptyList()
+            // Reuse COLMAP's two-observation/two-frame local-bundle policy in the closing pass.
+            val closingLocalBundle = localBundleSelection?.let { selection ->
+                ColmapLocalBundleTrackSelector.selectBundle(
+                    tracks = jointTracks,
+                    localFrameIds = selection.frameIds.toSet()
+                )
             }
+            val localFrameIds = closingLocalBundle?.frameIds.orEmpty()
+            val localBundleTracks = closingLocalBundle?.tracks.orEmpty()
             val localTrackIds = localBundleTracks.map { it.id }.toSet()
             val localVariablePointTrackIds = localBundleTracks.asSequence()
                 .filter { it.length <= 15 }
                 .map { it.id }
                 .toSet()
-            val localObservationCount = localBundleTracks.sumOf { track ->
-                track.observations.count { it.frameIndex in localFrameIds }
-            }
-            val useLocalBundle = localBundleSelection != null &&
-                localBundleSelection.frameIds.size >= 3 &&
-                localBundleTracks.size >= 20 &&
-                localObservationCount >= 60
+            val useLocalBundle = closingLocalBundle != null
             val bundleFrameCenters = if (useLocalBundle) {
                 jointCenters.filterKeys { it in localFrameIds }
             } else {
