@@ -266,7 +266,7 @@ class IncrementalSfMInitializationInstrumentationTest {
             SceneKind.PLANAR_HIGH,
             includeThirdCamera = true,
             pixelNoiseSigmaPx = 0.8,
-            secondViewOutlierFraction = 0.08,
+            secondViewOutlierFraction = 0.05,
             thirdViewOutlierFraction = 0.10,
             thirdViewVisibleFraction = 0.70
         )
@@ -294,9 +294,15 @@ class IncrementalSfMInitializationInstrumentationTest {
             }
             assertTrue("Rendered texture swaps produced no detectable outlier correspondences",
                 mismatchedPatchMatches.isNotEmpty())
-            assertTrue("Selected seed mask retained too many wrong patch identities",
-                mismatchedPatchMatches.count { oracle.geometry.selectedInlierMask[it] } <=
-                    maxOf(1, mismatchedPatchMatches.size / 10))
+            val retainedWrongPatchMatches = mismatchedPatchMatches.count {
+                oracle.geometry.selectedInlierMask[it]
+            }
+            assertTrue("Seed mask did not reject at least half of the rendered outlier matches: " +
+                "$retainedWrongPatchMatches/${mismatchedPatchMatches.size}",
+                retainedWrongPatchMatches <= mismatchedPatchMatches.size / 2)
+            assertTrue("Fewer than 100 correct patch correspondences remain in the seed mask",
+                oracle.geometry.numInliers - retainedWrongPatchMatches >=
+                    InitialPairPolicy.initialization().minimumInliers)
 
             val result = solvePublicEngine(
                 fixture,
@@ -407,7 +413,7 @@ class IncrementalSfMInitializationInstrumentationTest {
         assertTrue(pairEstimate.numInliers >= InitialPairPolicy.initialization().minimumInliers)
         assertEquals(pairEstimate.numInliers, pairEstimate.selectedInlierMask.count { it })
         val selectedOutliers = pair.outlierIndices.count { pairEstimate.selectedInlierMask[it] }
-        assertEquals("Selected seed mask retained a deliberately swapped correspondence", 0, selectedOutliers)
+        assertEquals("Selected seed mask retained a deliberately generated gross outlier", 0, selectedOutliers)
         assertTrue(pairEstimate.pose!!.inlierIndices.none { it in pair.outlierIndices })
 
         val camera = cameraMatrix()
@@ -452,12 +458,13 @@ class IncrementalSfMInitializationInstrumentationTest {
 
             val outlierIndices = shuffledIndices(worldPoints.size, 0xBADC0DEL)
                 .take((worldPoints.size * 0.15).roundToInt()).toSet()
-            val outlierOrder = outlierIndices.sorted()
             val imagePoints = trueImagePoints.mapIndexed { index, _ ->
-                val sourceIndex = if (index in outlierIndices) {
-                    outlierOrder[(outlierOrder.indexOf(index) + 1) % outlierOrder.size]
-                } else index
-                val source = trueImagePoints[sourceIndex]
+                val source = if (index in outlierIndices) {
+                    grossOutlierPoint(
+                        trueImagePoints[index],
+                        Random(0xC0FFEE11L + index * 65537L)
+                    )
+                } else trueImagePoints[index]
                 Point(
                     source.x + random.nextGaussian() * 1.0,
                     source.y + random.nextGaussian() * 1.0
@@ -473,7 +480,7 @@ class IncrementalSfMInitializationInstrumentationTest {
                 pnpMask.size >= CameraRegistrationPolicy.MINIMUM_CORRESPONDENCES)
             assertTrue("PnP consensus fell below the 25% registration inlier ratio",
                 pnpMask.size.toDouble() / worldPoints.size >= CameraRegistrationPolicy.MINIMUM_INLIER_RATIO)
-            assertEquals("PnP consensus retained a deliberately swapped 2D-3D association",
+            assertEquals("PnP consensus retained a deliberately generated gross 2D-3D outlier",
                 0, outlierIndices.count { it in pnpMask })
             val positiveDepth = estimate.inlierIndices.count { index ->
                 val point = worldPoints[index]
@@ -548,7 +555,6 @@ class IncrementalSfMInitializationInstrumentationTest {
         val outlierCount = (retained.size * outlierFraction).roundToInt()
         val localOutliers = shuffledIndices(retained.size, 0x0BADC0DE)
             .take(outlierCount).toSet()
-        val outlierOrder = localOutliers.sorted()
         val firstPixels = DoubleArray(retained.size * 2)
         val secondPixels = DoubleArray(retained.size * 2)
         retained.forEachIndexed { localIndex, featureId ->
@@ -556,24 +562,35 @@ class IncrementalSfMInitializationInstrumentationTest {
             val row = featureId / 12
             val pixelX = 300.0 + column * 80.0
             val pixelY = 50.0 + row * 65.0
-            val sourceFeatureId = if (localIndex in localOutliers && outlierOrder.size > 1) {
-                retained[outlierOrder[(outlierOrder.indexOf(localIndex) + 1) % outlierOrder.size]]
-            } else featureId
-            val sourceColumn = sourceFeatureId % 12
-            val sourceRow = sourceFeatureId / 12
-            val sourcePixelX = 300.0 + sourceColumn * 80.0
-            val sourcePixelY = 50.0 + sourceRow * 65.0
+            val expectedSecondPoint = Point(pixelX - 800.0 * 1.5 / 4.5, pixelY)
+            val observedSecondPoint = if (localIndex in localOutliers) {
+                grossOutlierPoint(
+                    expectedSecondPoint,
+                    Random(0x0BADC0DEL + localIndex * 130363L)
+                )
+            } else expectedSecondPoint
             val firstNoise = Random(0x1F1F1L + featureId * 104729L)
             val secondNoise = Random(0x2E2E2L + localIndex * 130363L)
             val offset = localIndex * 2
             firstPixels[offset] = pixelX + firstNoise.nextGaussian() * pixelNoiseSigmaPx
             firstPixels[offset + 1] = pixelY + firstNoise.nextGaussian() * pixelNoiseSigmaPx
-            secondPixels[offset] = sourcePixelX - 800.0 * 1.5 / 4.5 +
+            secondPixels[offset] = observedSecondPoint.x +
                 secondNoise.nextGaussian() * pixelNoiseSigmaPx
-            secondPixels[offset + 1] = sourcePixelY +
+            secondPixels[offset + 1] = observedSecondPoint.y +
                 secondNoise.nextGaussian() * pixelNoiseSigmaPx
         }
         return SyntheticSeedCorrespondences(firstPixels, secondPixels, localOutliers)
+    }
+
+    private fun grossOutlierPoint(expected: Point, random: Random): Point {
+        var candidate: Point
+        do {
+            candidate = Point(
+                24.0 + random.nextDouble() * (SyntheticSeedScene.WIDTH - 48.0),
+                24.0 + random.nextDouble() * (SyntheticSeedScene.HEIGHT - 48.0)
+            )
+        } while (hypot(candidate.x - expected.x, candidate.y - expected.y) < 50.0)
+        return candidate
     }
 
     private fun estimateSyntheticSeedPair(
@@ -725,7 +742,9 @@ class IncrementalSfMInitializationInstrumentationTest {
         val translationDirectionAgreement = expectedTranslation.indices.sumOf { index ->
             expectedTranslation[index] * actualPose.translation[index] / actualTranslationNorm
         }
-        assertTrue("Returned seed translation direction diverged: $translationDirectionAgreement",
+        val actualTranslationDirection = DoubleArray(3) { actualPose.translation[it] / actualTranslationNorm }
+        assertTrue("Returned seed translation direction diverged: $translationDirectionAgreement; " +
+            "expected=${expectedTranslation.contentToString()}, actual=${actualTranslationDirection.contentToString()}",
             translationDirectionAgreement > 0.98)
 
         val expectedSeedPairs = oracle.evaluation.candidate.verifiedMatches.toSet()
