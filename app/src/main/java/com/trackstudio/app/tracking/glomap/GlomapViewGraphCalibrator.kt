@@ -47,7 +47,8 @@ internal class GlomapViewGraphCalibrator {
         fundamentals: List<DoubleArray>,
         initialIntrinsics: CameraIntrinsics,
         maxIterations: Int = 100,
-        numThreads: Int = Runtime.getRuntime().availableProcessors().coerceIn(1, 4)
+        numThreads: Int = Runtime.getRuntime().availableProcessors().coerceIn(1, 4),
+        hasPriorFocalLength: Boolean = false
     ): Result? {
         require(maxIterations > 0 && numThreads > 0)
         if (fundamentals.size < MINIMUM_PAIR_COUNT) return null
@@ -59,6 +60,40 @@ internal class GlomapViewGraphCalibrator {
 
         val focal = 0.5 * (initialIntrinsics.fx + initialIntrinsics.fy)
         if (!focal.isFinite() || focal <= 0.0) return null
+        if (hasPriorFocalLength) {
+            val fixedPriorResult = calibrateMultiCamera(
+                pairs = fundamentals.map { fundamental ->
+                    FundamentalPair(
+                        fundamental = fundamental,
+                        firstCameraId = SHARED_CAMERA_ID,
+                        secondCameraId = SHARED_CAMERA_ID
+                    )
+                },
+                cameras = listOf(
+                    CameraInput(
+                        cameraId = SHARED_CAMERA_ID,
+                        intrinsics = initialIntrinsics,
+                        hasPriorFocalLength = true
+                    )
+                ),
+                maxIterations = maxIterations,
+                numThreads = numThreads
+            ) ?: return null
+            val estimatedFocal = fixedPriorResult.estimatedFocalLengthsByCameraId
+                .getValue(SHARED_CAMERA_ID)
+            return Result(
+                intrinsics = fixedPriorResult.intrinsicsByCameraId.getValue(SHARED_CAMERA_ID),
+                initialFocalLength = focal,
+                estimatedFocalLength = estimatedFocal,
+                focalLengthUpdated =
+                    SHARED_CAMERA_ID in fixedPriorResult.focalLengthUpdatedCameraIds,
+                initialCost = fixedPriorResult.initialCost,
+                finalCost = fixedPriorResult.finalCost,
+                iterations = fixedPriorResult.iterations,
+                acceptedPairIndices = fixedPriorResult.acceptedPairIndices,
+                rejectedPairIndices = fixedPriorResult.rejectedPairIndices
+            )
+        }
         val packedFundamentals = DoubleArray(fundamentals.size * 9)
         fundamentals.forEachIndexed { index, matrix ->
             System.arraycopy(matrix, 0, packedFundamentals, index * 9, 9)
@@ -253,6 +288,7 @@ internal class GlomapViewGraphCalibrator {
         private const val MULTI_RESULT_HEADER_SIZE = 6
         private const val MINIMUM_PAIR_COUNT = 1
         private const val MAX_TWO_VIEW_ERROR = 2.0
+        private const val SHARED_CAMERA_ID = 0
         private const val MIN_FOCAL_RATIO = 0.1
         private const val MAX_FOCAL_RATIO = 10.0
         private const val FOCAL_UPDATE_EPSILON = 1e-12

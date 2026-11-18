@@ -3,6 +3,7 @@ package com.trackstudio.app.tracking.glomap
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import com.trackstudio.app.tracking.CameraIntrinsics
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
 import org.junit.Test
 import org.junit.runner.RunWith
@@ -31,6 +32,7 @@ class GlomapViewGraphCalibratorInstrumentationTest {
                 fy = trueFocal * 0.75,
                 cy = principalY
             ),
+            hasPriorFocalLength = false,
             maxIterations = 100,
             numThreads = 1
         ) ?: throw AssertionError("Native view-graph focal calibration returned no result")
@@ -40,6 +42,39 @@ class GlomapViewGraphCalibratorInstrumentationTest {
         assertEquals(10, result.acceptedPairIndices.size)
         assertTrue(result.rejectedPairIndices.contains(10))
         assertTrue(result.finalCost < result.initialCost)
+    }
+
+    @Test
+    fun calibratedSharedCameraKeepsTheSuppliedFocalPrior() {
+        val sceneFocal = 1200.0
+        val priorFocal = 900.0
+        val principalX = 640.0
+        val principalY = 360.0
+        val fundamentals = (0 until 10).map { pairIndex ->
+            syntheticFundamental(sceneFocal, principalX, principalY, pairIndex)
+        }
+
+        val result = GlomapViewGraphCalibrator().calibrate(
+            fundamentals = fundamentals,
+            initialIntrinsics = CameraIntrinsics(
+                fx = priorFocal,
+                skew = 0.0,
+                cx = principalX,
+                fy = priorFocal,
+                cy = principalY
+            ),
+            hasPriorFocalLength = true,
+            maxIterations = 100,
+            numThreads = 1
+        ) ?: throw AssertionError("Fixed-prior shared-camera calibration returned no result")
+
+        assertEquals(priorFocal, result.intrinsics.fx, 0.0)
+        assertEquals(priorFocal, result.intrinsics.fy, 0.0)
+        assertEquals(priorFocal, result.estimatedFocalLength, 0.0)
+        assertFalse(result.focalLengthUpdated)
+        assertEquals(0, result.iterations)
+        assertEquals(fundamentals.indices.toSet(), result.acceptedPairIndices)
+        assertTrue(result.rejectedPairIndices.isEmpty())
     }
 
     @Test

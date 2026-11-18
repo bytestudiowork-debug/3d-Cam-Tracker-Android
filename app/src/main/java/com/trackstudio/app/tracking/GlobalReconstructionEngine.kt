@@ -101,6 +101,25 @@ class GlobalReconstructionEngine(
         cameraMatrix: Mat,
         frameProvider: suspend (Int) -> Mat?,
         onProgress: suspend (CameraTrackingProgress) -> Unit
+    ): CameraTrackingResult = solveInternal(
+        frameCount, cameraMatrix, frameProvider, onProgress, hasPriorFocalLength = false
+    )
+
+    override suspend fun solveWithKnownCameraIntrinsics(
+        frameCount: Int,
+        cameraMatrix: Mat,
+        frameProvider: suspend (Int) -> Mat?,
+        onProgress: suspend (CameraTrackingProgress) -> Unit
+    ): CameraTrackingResult = solveInternal(
+        frameCount, cameraMatrix, frameProvider, onProgress, hasPriorFocalLength = true
+    )
+
+    private suspend fun solveInternal(
+        frameCount: Int,
+        cameraMatrix: Mat,
+        frameProvider: suspend (Int) -> Mat?,
+        onProgress: suspend (CameraTrackingProgress) -> Unit,
+        hasPriorFocalLength: Boolean
     ): CameraTrackingResult = withContext(Dispatchers.Default) {
         require(frameCount >= 3) { "Global reconstruction needs at least three frames." }
         require(!cameraMatrix.empty() && cameraMatrix.rows() == 3 && cameraMatrix.cols() == 3) {
@@ -251,7 +270,8 @@ class GlobalReconstructionEngine(
                         fundamentals = calibrationPairIndices.mapNotNull { index ->
                             pairCandidates[index].fundamentalMatrix
                         },
-                        initialIntrinsics = initialIntrinsics
+                        initialIntrinsics = initialIntrinsics,
+                        hasPriorFocalLength = hasPriorFocalLength
                     )
                 }
             } catch (_: LinkageError) {
@@ -1055,6 +1075,7 @@ class GlobalReconstructionEngine(
                 globalViewGraphCalibrationStatus = when {
                     calibrationResult == null -> "Unavailable; retained input focal length"
                     calibrationResult.focalLengthUpdated -> "Applied"
+                    hasPriorFocalLength -> "Input focal prior retained; calibration skipped"
                     else -> "Pairs filtered; retained input focal length"
                 },
                 refinedCameraIntrinsics = refinedIntrinsics
