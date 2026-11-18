@@ -46,8 +46,14 @@ add_test(NAME tracking_solver_numeric_tests COMMAND tracking_solver_numeric_test
 add_executable(colmap_initial_pair_differential_tests
         colmap_initial_pair_differential_tests.cpp
         colmap_initial_pair_differential.cpp
-        colmap_five_point_differential.cpp)
+        colmap_five_point_differential.cpp
+        fundamental_matrix_solver_differential.cpp
+        ../two_view_epipolar_estimator_core.cpp
+        ../two_view_epipolar_geometry_utils.cpp
+        ../two_view_essential_five_point.cpp
+        ../two_view_fundamental_solvers.cpp)
 target_link_libraries(colmap_initial_pair_differential_tests PRIVATE Eigen3::Eigen)
+target_include_directories(colmap_initial_pair_differential_tests PRIVATE ..)
 target_compile_options(colmap_initial_pair_differential_tests PRIVATE -O2 -fno-fast-math)
 add_test(NAME colmap_initial_pair_differential_tests
         COMMAND colmap_initial_pair_differential_tests)

@@ -1,21 +1,20 @@
 package com.trackstudio.app.tracking
 
 import org.opencv.calib3d.Calib3d
+import org.opencv.core.CvException
+import org.opencv.core.CvType
 import org.opencv.core.Mat
 import org.opencv.core.MatOfPoint2f
 import org.opencv.core.KeyPoint
-import org.opencv.core.CvType
-import org.opencv.core.CvException
 import kotlin.math.sqrt
 
 /**
- * OpenCV-backed two-view geometry evaluator for initialization candidates.
+ * Two-view geometry evaluator for initialization candidates.
  *
- * Descriptor matching proposes correspondences; Essential-matrix RANSAC
- * verifies calibrated epipolar geometry; recoverPose applies cheirality.
- * A competing homography estimates how much of the pair can be explained
- * by a single plane / pure-rotation model. The pure Kotlin selector then
- * decides whether the measurements are suitable for 3D initialization.
+ * The native E/F path uses the pinned source-faithful minimal solvers,
+ * normalized-ray/pixel Sampson residuals, LO-RANSAC, and four-way essential
+ * pose cheirality selection. OpenCV remains responsible only for the competing
+ * homography model. The pure Kotlin selector decides seed suitability.
  *
  * Inputs remain caller-owned. All OpenCV objects created here are released
  * before returning, so candidate evaluation does not retain native memory.
@@ -47,384 +46,234 @@ internal object OpenCvInitialPairEvaluator {
             return rejected(firstFrame, secondFrame, "Missing descriptors or keypoints")
         }
 
-        val matched = matcher.match(firstDescriptors, secondDescriptors, maximumMatches.coerceAtLeast(1))
-            .filter { (query, train) ->
-                query in firstKeypoints.indices && train in secondKeypoints.indices
+        val matched = matcher.match(
+            firstDescriptors,
+            secondDescriptors,
+            maximumMatches.coerceIn(1, SourceFaithfulTwoViewEstimator.MAX_INPUT_MATCHES)
+        ).filter { (query, train) ->
+            query in firstKeypoints.indices && train in secondKeypoints.indices
         }
         val matchedFirst = matched.map { firstKeypoints[it.first].pt }
         val matchedSecond = matched.map { secondKeypoints[it.second].pt }
-
         val matchCount = matchedFirst.size
-        if (matchCount < policy.minimumInliers) {
+        if (matchCount < maxOf(policy.minimumInliers, SourceFaithfulTwoViewEstimator.MINIMUM_MATCHES)) {
             return rejected(firstFrame, secondFrame, "Insufficient descriptor matches", matchCount)
         }
 
+        val cameraValues = readCameraMatrix(cameraMatrix)
+            ?: return rejected(firstFrame, secondFrame, "Invalid camera matrix readback", matchCount)
+        val firstPixelsXY = DoubleArray(matchCount * 2)
+        val secondPixelsXY = DoubleArray(matchCount * 2)
+        for (index in 0 until matchCount) {
+            firstPixelsXY[2 * index] = matchedFirst[index].x
+            firstPixelsXY[2 * index + 1] = matchedFirst[index].y
+            secondPixelsXY[2 * index] = matchedSecond[index].x
+            secondPixelsXY[2 * index + 1] = matchedSecond[index].y
+        }
+        val epipolarEstimate = SourceFaithfulTwoViewEstimator.estimate(
+            firstPixelsXY, secondPixelsXY, cameraValues, ransacThresholdPx
+        ) ?: return rejected(firstFrame, secondFrame, "Native source-faithful E/F estimation failed", matchCount)
+
         val points1 = MatOfPoint2f()
         val points2 = MatOfPoint2f()
-        val essentialMask = Mat()
-        val fundamentalMask = Mat()
-        val cheiralityMask = Mat()
         val homographyMask = Mat()
-        val rotation = Mat()
-        val translation = Mat()
-        var fundamentalForPose: Mat? = null
-
         try {
             points1.fromList(matchedFirst)
             points2.fromList(matchedSecond)
 
-            val essentialEstimate = Calib3d.findEssentialMat(
-                points1,
-                points2,
-                cameraMatrix,
-                Calib3d.RANSAC,
-                0.999,
-                ransacThresholdPx,
-                10000,
-                essentialMask
-            )
+            val essentialSucceeded = epipolarEstimate.essential.success
+            val essentialInlierCount = epipolarEstimate.essential.inlierCount
+            val fundamentalSucceeded = epipolarEstimate.fundamental.success
+            val fundamentalInlierCount = epipolarEstimate.fundamental.inlierCount
+            var homographySucceeded = false
+            var homographyInlierCount = 0
             try {
-                val essentialSucceeded = !essentialEstimate.empty() && essentialEstimate.cols() == 3 &&
-                    essentialEstimate.rows() >= 3 && essentialEstimate.rows() % 3 == 0
-                val essentialInlierCount = if (essentialSucceeded) {
-                    countMaskInliers(essentialMask, matchCount)
-                } else {
-                    0
-                }
-
-                val estimatedFundamental = Calib3d.findFundamentalMat(
-                    points1, points2, Calib3d.FM_RANSAC,
-                    ransacThresholdPx, 0.999, 10000, fundamentalMask
+                val estimatedHomography = Calib3d.findHomography(
+                    points1, points2, Calib3d.RANSAC, HOMOGRAPHY_THRESHOLD_PX,
+                    homographyMask, 10000, 0.999
                 )
-                val fundamentalSucceeded = try {
-                    val succeeded = !estimatedFundamental.empty() && estimatedFundamental.cols() == 3 &&
-                        estimatedFundamental.rows() >= 3 && estimatedFundamental.rows() % 3 == 0
-                    if (succeeded) {
-                        fundamentalForPose = estimatedFundamental.rowRange(0, 3).clone()
-                    }
-                    succeeded
-                } finally {
-                    estimatedFundamental.release()
-                }
-                val fundamentalInlierCount = if (fundamentalSucceeded) {
-                    countMaskInliers(fundamentalMask, matchCount)
-                } else {
-                    0
-                }
-                var homographySucceeded = false
-                var homographyInlierCount = 0
                 try {
-                    val estimatedHomography = Calib3d.findHomography(
-                        points1, points2, Calib3d.RANSAC, HOMOGRAPHY_THRESHOLD_PX,
-                        homographyMask, 10000, 0.999
-                    )
-                    try {
-                        homographySucceeded = estimatedHomography.rows() == 3 &&
-                            estimatedHomography.cols() == 3
-                        if (homographySucceeded) {
-                            val rawSupport = countMaskInliers(homographyMask, matchCount)
-                            val homographyValues = OpenCvMatrixReadback.readCv64F(
-                                estimatedHomography, 3, 3
-                            )
-                            homographyInlierCount = if (homographyValues == null) {
-                                rawSupport
-                            } else {
-                                conservativeHomographySupportCount(
-                                    matchedFirst.toTypedArray(),
-                                    matchedSecond.toTypedArray(),
-                                    homographyValues,
-                                    OpenCvTwoViewLocalOptimizer.inliersFromMask(
-                                        homographyMask, matchCount
-                                    ),
-                                    rawSupport,
-                                    HOMOGRAPHY_THRESHOLD_PX
-                                )
-                            }
-                        }
-                    } finally {
-                        estimatedHomography.release()
-                    }
-                } catch (_: CvException) {
-                    homographySucceeded = false
-                    homographyInlierCount = 0
-                }
-
-                val modelDecision = ColmapTwoViewModelArbitrator.arbitrate(
-                    essentialSucceeded = essentialSucceeded,
-                    essentialInliers = essentialInlierCount,
-                    fundamentalSucceeded = fundamentalSucceeded,
-                    fundamentalInliers = fundamentalInlierCount,
-                    homographySucceeded = homographySucceeded,
-                    homographyInliers = homographyInlierCount,
-                    minimumEssentialToFundamentalRatio =
-                        policy.minimumEssentialToFundamentalInlierRatio,
-                    maximumHomographyRatio = policy.planarDominanceRatio
-                )
-                if (modelDecision.configuration !=
-                    ColmapTwoViewModelArbitrator.Configuration.CALIBRATED &&
-                    modelDecision.configuration !=
-                    ColmapTwoViewModelArbitrator.Configuration.UNCALIBRATED
-                ) {
-                    return rejected(
-                        firstFrame,
-                        secondFrame,
-                        "COLMAP E/F/H arbitration classified the pair as ${modelDecision.configuration}",
-                        matchCount
-                    )
-                }
-                val selectedModelMask = when (modelDecision.inlierModel) {
-                    ColmapTwoViewModelArbitrator.InlierModel.ESSENTIAL -> essentialMask
-                    ColmapTwoViewModelArbitrator.InlierModel.FUNDAMENTAL -> fundamentalMask
-                    ColmapTwoViewModelArbitrator.InlierModel.HOMOGRAPHY,
-                    ColmapTwoViewModelArbitrator.InlierModel.NONE ->
-                        return rejected(firstFrame, secondFrame, "No calibrated epipolar inlier mask", matchCount)
-                }
-                if (countMaskInliers(selectedModelMask, matchCount) != modelDecision.inlierCount) {
-                    return rejected(firstFrame, secondFrame, "Invalid COLMAP-selected inlier mask", matchCount)
-                }
-
-                val fundamentalPoseEssential = if (modelDecision.configuration ==
-                    ColmapTwoViewModelArbitrator.Configuration.UNCALIBRATED
-                ) {
-                    val fundamental = fundamentalForPose
-                        ?: return rejected(firstFrame, secondFrame, "Missing COLMAP fundamental model", matchCount)
-                    val fundamentalValues = OpenCvMatrixReadback.readCv64F(fundamental, 3, 3)
-                        ?: return rejected(firstFrame, secondFrame, "Invalid fundamental matrix readback", matchCount)
-                    val cameraValues = OpenCvMatrixReadback.readCv64F(cameraMatrix, 3, 3)
-                        ?: return rejected(firstFrame, secondFrame, "Invalid camera matrix readback", matchCount)
-                    val essentialValues = EpipolarGeometryMath.essentialFromFundamental(
-                        fundamentalValues, cameraValues, cameraValues
-                    ) ?: return rejected(firstFrame, secondFrame, "Could not convert F to E", matchCount)
-                    Mat(3, 3, CvType.CV_64F).apply {
-                        if (put(0, 0, *essentialValues) != essentialValues.size) {
-                            release()
-                            return rejected(firstFrame, secondFrame, "Could not store F-derived E", matchCount)
-                        }
-                    }
-                } else {
-                    null
-                }
-
-                var bestPoseInliers = 0
-                var bestPoseMask: Mat? = null
-                var bestRotation: Mat? = null
-                var bestTranslation: Mat? = null
-                var bestEssential: Mat? = null
-                try {
-                    val poseCandidateCount = if (fundamentalPoseEssential != null) {
-                        1
-                    } else {
-                        essentialEstimate.rows() / 3
-                    }
-                    for (candidateIndex in 0 until poseCandidateCount) {
-                        val candidate = fundamentalPoseEssential?.clone() ?: essentialEstimate
-                            .rowRange(candidateIndex * 3, candidateIndex * 3 + 3)
-                            .clone()
-                        val mask = selectedModelMask.clone()
-                        val candidateRotation = Mat()
-                        val candidateTranslation = Mat()
-                        try {
-                            val inliers = OpenCvTwoViewPoseRecovery.recover(
-                                candidate, points1, points2, cameraMatrix,
-                                candidateRotation, candidateTranslation, mask
-                            )
-                            if (inliers > bestPoseInliers) {
-                                bestPoseMask?.release()
-                                bestRotation?.release()
-                                bestTranslation?.release()
-                                bestPoseInliers = inliers
-                                bestPoseMask = mask.clone()
-                                bestRotation = candidateRotation.clone()
-                                bestTranslation = candidateTranslation.clone()
-                                bestEssential?.release()
-                                bestEssential = candidate.clone()
-                            }
-                        } finally {
-                            candidate.release()
-                            mask.release()
-                            candidateRotation.release()
-                            candidateTranslation.release()
-                        }
-                    }
-
-                    val selectedEssential = bestEssential
-                    if (selectedEssential != null) {
-                        val initialEssential = DoubleArray(9)
-                        if (selectedEssential.get(0, 0, initialEssential) ==
-                            initialEssential.size * java.lang.Double.BYTES
-                        ) {
-                            val polished = OpenCvTwoViewLocalOptimizer.refine(
+                    homographySucceeded = estimatedHomography.rows() == 3 &&
+                        estimatedHomography.cols() == 3
+                    if (homographySucceeded) {
+                        val rawSupport = countMaskInliers(homographyMask, matchCount)
+                        val homographyValues = OpenCvMatrixReadback.readCv64F(
+                            estimatedHomography, 3, 3
+                        )
+                        homographyInlierCount = if (homographyValues == null) {
+                            rawSupport
+                        } else {
+                            conservativeHomographySupportCount(
                                 matchedFirst.toTypedArray(),
                                 matchedSecond.toTypedArray(),
-                                cameraMatrix,
-                                initialEssential,
-                                bestPoseMask?.let {
-                                    OpenCvTwoViewLocalOptimizer.inliersFromMask(it, matchCount)
-                                }.orEmpty(),
-                                ransacThresholdPx,
-                                0.999,
-                                10000
+                                homographyValues,
+                                OpenCvTwoViewLocalOptimizer.inliersFromMask(
+                                    homographyMask, matchCount
+                                ),
+                                rawSupport,
+                                HOMOGRAPHY_THRESHOLD_PX
                             )
-                            if (polished != null && polished.inlierIndices.size >= bestPoseInliers) {
-                                val polishedMask = OpenCvTwoViewLocalOptimizer.maskFromIndices(
-                                    polished.inlierIndices, matchCount
-                                )
-                                val polishedRotation = Mat(3, 3, CvType.CV_64F)
-                                val polishedTranslation = Mat(3, 1, CvType.CV_64F)
-                                var retained = false
-                                try {
-                                    if (polishedRotation.put(0, 0, *polished.rotation) == polished.rotation.size &&
-                                        polishedTranslation.put(0, 0, *polished.translation) == polished.translation.size
-                                    ) {
-                                        bestPoseMask?.release()
-                                        bestRotation?.release()
-                                        bestTranslation?.release()
-                                        bestPoseMask = polishedMask
-                                        bestRotation = polishedRotation
-                                        bestTranslation = polishedTranslation
-                                        bestPoseInliers = polished.inlierIndices.size
-                                        retained = true
-                                    }
-                                } finally {
-                                    if (!retained) {
-                                        polishedMask.release()
-                                        polishedRotation.release()
-                                        polishedTranslation.release()
-                                    }
-                                }
-                            }
                         }
                     }
-
-                    if (bestPoseInliers == 0 || bestPoseMask == null ||
-                        bestRotation == null || bestTranslation == null
-                    ) {
-                        return rejected(firstFrame, secondFrame, "Cheirality check failed", matchCount)
-                    }
-                    bestPoseMask.copyTo(cheiralityMask)
-                    bestRotation.copyTo(rotation)
-                    bestTranslation.copyTo(translation)
                 } finally {
-                    bestPoseMask?.release()
-                    bestRotation?.release()
-                    bestTranslation?.release()
-                    bestEssential?.release()
-                    fundamentalPoseEssential?.release()
+                    estimatedHomography.release()
                 }
-
-                val inlierIndices = (0 until matchCount).filter { index ->
-                    maskValue(cheiralityMask, index, matchCount)
-                }
-                if (inlierIndices.size != bestPoseInliers) {
-                    return rejected(firstFrame, secondFrame, "Invalid cheirality inlier mask", matchCount)
-                }
-                val inlierCount = inlierIndices.size
-                val t = OpenCvMatrixReadback.readCv64F(translation, 3, 1)
-                    ?: return rejected(
-                        firstFrame, secondFrame, "Invalid relative translation readback", matchCount
-                    )
-                val relativeRotation = OpenCvMatrixReadback.readCv64F(rotation, 3, 3)
-                    ?: return rejected(
-                        firstFrame, secondFrame, "Invalid relative rotation readback", matchCount
-                    )
-                val essentialToFundamentalRatio = if (fundamentalInlierCount == 0) {
-                    Double.MAX_VALUE
-                } else {
-                    essentialInlierCount.toDouble() / fundamentalInlierCount
-                }
-                val homographyReferenceInliers = if (modelDecision.configuration ==
-                    ColmapTwoViewModelArbitrator.Configuration.UNCALIBRATED
-                ) {
-                    modelDecision.inlierCount
-                } else {
-                    essentialInlierCount
-                }
-                val homographyRatio =
-                    homographyInlierCount.toDouble() / homographyReferenceInliers.coerceAtLeast(1)
-                val coverage = occupiedGridCells(
-                    inlierIndices.map { matchedFirst[it] }, frameWidth, frameHeight
-                )
-                val fx = cameraMatrix.get(0, 0)[0]
-                val fy = cameraMatrix.get(1, 1)[0]
-                val skew = cameraMatrix.get(0, 1)[0]
-                val cx = cameraMatrix.get(0, 2)[0]
-                val cy = cameraMatrix.get(1, 2)[0]
-                val intrinsics = PinholeIntrinsics(fx, fy, skew, cx, cy)
-                val firstPose = CameraPose(
-                    frameIndex = firstFrame,
-                    rotation = doubleArrayOf(
-                        1.0, 0.0, 0.0,
-                        0.0, 1.0, 0.0,
-                        0.0, 0.0, 1.0
-                    ),
-                    translation = doubleArrayOf(0.0, 0.0, 0.0),
-                    status = CameraPoseStatus.REFERENCE
-                )
-                val secondPose = CameraPose(
-                    frameIndex = secondFrame,
-                    rotation = relativeRotation,
-                    translation = t,
-                    status = CameraPoseStatus.RELATIVE_ESTIMATE
-                )
-                val parallax = inlierIndices.mapNotNull { index ->
-                    MultiViewTriangulationMath.triangulationAngleDegrees(
-                        first = TriangulationView(
-                            matchedFirst[index].x, matchedFirst[index].y, firstPose
-                        ),
-                        second = TriangulationView(
-                            matchedSecond[index].x, matchedSecond[index].y, secondPose
-                        ),
-                        intrinsics = intrinsics
-                    )
-                }.filter { it.isFinite() }.sorted()
-
-                if (parallax.isEmpty()) {
-                    return rejected(
-                        firstFrame, secondFrame, "No valid triangulation-angle measurements", matchCount
-                    )
-                }
-                val medianParallax = percentile(parallax, 0.50)
-                val upperQuartileParallax = percentile(parallax, 0.75)
-
-                val translationNorm = sqrt(t.sumOf { it * it })
-                if (!translationNorm.isFinite() || translationNorm <= 1e-12 || t.any { !it.isFinite() }) {
-                    return rejected(firstFrame, secondFrame, "Invalid relative translation", matchCount)
-                }
-                val forwardMotionRatio = (kotlin.math.abs(t[2]) / translationNorm).coerceIn(0.0, 1.0)
-
-                val relativeTranslationDirection = DoubleArray(3) { t[it] / translationNorm }
-                val candidate = InitialPairCandidate(
-                    firstFrame = firstFrame,
-                    secondFrame = secondFrame,
-                    matchedCount = matchCount,
-                    inlierCount = inlierCount,
-                    coveredGridCells = coverage,
-                    medianParallaxDegrees = medianParallax,
-                    upperQuartileParallaxDegrees = upperQuartileParallax,
-                    cheiralityRatio = inlierCount.toDouble() / modelDecision.inlierCount.coerceAtLeast(1),
-                    homographyInlierRatio = homographyRatio,
-                    forwardMotionRatio = forwardMotionRatio,
-                    relativeRotation = relativeRotation,
-                    relativeTranslationDirection = relativeTranslationDirection,
-                    verifiedMatches = inlierIndices.map { matched[it] },
-                    essentialToFundamentalInlierRatio = essentialToFundamentalRatio,
-                    fundamentalPoseRecovered = modelDecision.configuration ==
-                        ColmapTwoViewModelArbitrator.Configuration.UNCALIBRATED
-                )
-                return InitialPairSelector.evaluate(candidate, policy)
-            } finally {
-                essentialEstimate.release()
-                fundamentalForPose?.release()
+            } catch (_: CvException) {
+                homographySucceeded = false
+                homographyInlierCount = 0
             }
+
+            val modelDecision = ColmapTwoViewModelArbitrator.arbitrate(
+                essentialSucceeded = essentialSucceeded,
+                essentialInliers = essentialInlierCount,
+                fundamentalSucceeded = fundamentalSucceeded,
+                fundamentalInliers = fundamentalInlierCount,
+                homographySucceeded = homographySucceeded,
+                homographyInliers = homographyInlierCount,
+                minimumEssentialToFundamentalRatio =
+                    policy.minimumEssentialToFundamentalInlierRatio,
+                maximumHomographyRatio = policy.planarDominanceRatio
+            )
+            if (modelDecision.configuration !=
+                ColmapTwoViewModelArbitrator.Configuration.CALIBRATED &&
+                modelDecision.configuration !=
+                ColmapTwoViewModelArbitrator.Configuration.UNCALIBRATED
+            ) {
+                return rejected(
+                    firstFrame,
+                    secondFrame,
+                    "E/F/H arbitration classified the pair as ${modelDecision.configuration}",
+                    matchCount
+                )
+            }
+            val selectedModelMask = when (modelDecision.inlierModel) {
+                ColmapTwoViewModelArbitrator.InlierModel.ESSENTIAL ->
+                    epipolarEstimate.essential.inlierMask
+                ColmapTwoViewModelArbitrator.InlierModel.FUNDAMENTAL ->
+                    epipolarEstimate.fundamental.inlierMask
+                ColmapTwoViewModelArbitrator.InlierModel.HOMOGRAPHY,
+                ColmapTwoViewModelArbitrator.InlierModel.NONE ->
+                    return rejected(firstFrame, secondFrame, "No calibrated epipolar inlier mask", matchCount)
+            }
+            if (selectedModelMask.count { it } != modelDecision.inlierCount) {
+                return rejected(firstFrame, secondFrame, "Invalid selected inlier mask", matchCount)
+            }
+
+            val poseEssential = if (modelDecision.configuration ==
+                ColmapTwoViewModelArbitrator.Configuration.UNCALIBRATED
+            ) {
+                val fundamental = epipolarEstimate.fundamental.modelRowMajor
+                    ?: return rejected(firstFrame, secondFrame, "Missing fundamental model", matchCount)
+                EpipolarGeometryMath.essentialFromFundamental(
+                    fundamental, cameraValues, cameraValues
+                ) ?: return rejected(firstFrame, secondFrame, "Could not convert F to E", matchCount)
+            } else {
+                epipolarEstimate.essential.modelRowMajor
+                    ?: return rejected(firstFrame, secondFrame, "Missing essential model", matchCount)
+            }
+            val pose = SourceFaithfulTwoViewEstimator.recoverPose(
+                poseEssential,
+                firstPixelsXY,
+                secondPixelsXY,
+                cameraValues,
+                selectedModelMask
+            ) ?: return rejected(firstFrame, secondFrame, "Cheirality check failed", matchCount)
+
+            val inlierIndices = pose.inlierIndices
+            val inlierCount = inlierIndices.size
+            if (inlierCount != pose.cheiralityMask.count { it } || inlierCount == 0) {
+                return rejected(firstFrame, secondFrame, "Invalid cheirality inlier mask", matchCount)
+            }
+            val t = pose.translation
+            val relativeRotation = pose.rotationRowMajor
+            val essentialToFundamentalRatio = if (fundamentalInlierCount == 0) {
+                Double.MAX_VALUE
+            } else {
+                essentialInlierCount.toDouble() / fundamentalInlierCount
+            }
+            val homographyReferenceInliers = if (modelDecision.configuration ==
+                ColmapTwoViewModelArbitrator.Configuration.UNCALIBRATED
+            ) {
+                modelDecision.inlierCount
+            } else {
+                essentialInlierCount
+            }
+            val homographyRatio =
+                homographyInlierCount.toDouble() / homographyReferenceInliers.coerceAtLeast(1)
+            val coverage = occupiedGridCells(
+                inlierIndices.map { matchedFirst[it] }, frameWidth, frameHeight
+            )
+            val fx = cameraValues[0]
+            val skew = cameraValues[1]
+            val cx = cameraValues[2]
+            val fy = cameraValues[4]
+            val cy = cameraValues[5]
+            val intrinsics = PinholeIntrinsics(fx, fy, skew, cx, cy)
+            val firstPose = CameraPose(
+                frameIndex = firstFrame,
+                rotation = doubleArrayOf(
+                    1.0, 0.0, 0.0,
+                    0.0, 1.0, 0.0,
+                    0.0, 0.0, 1.0
+                ),
+                translation = doubleArrayOf(0.0, 0.0, 0.0),
+                status = CameraPoseStatus.REFERENCE
+            )
+            val secondPose = CameraPose(
+                frameIndex = secondFrame,
+                rotation = relativeRotation,
+                translation = t,
+                status = CameraPoseStatus.RELATIVE_ESTIMATE
+            )
+            val parallax = inlierIndices.mapNotNull { index ->
+                MultiViewTriangulationMath.triangulationAngleDegrees(
+                    first = TriangulationView(
+                        matchedFirst[index].x, matchedFirst[index].y, firstPose
+                    ),
+                    second = TriangulationView(
+                        matchedSecond[index].x, matchedSecond[index].y, secondPose
+                    ),
+                    intrinsics = intrinsics
+                )
+            }.filter { it.isFinite() }.sorted()
+
+            if (parallax.isEmpty()) {
+                return rejected(
+                    firstFrame, secondFrame, "No valid triangulation-angle measurements", matchCount
+                )
+            }
+            val medianParallax = percentile(parallax, 0.50)
+            val upperQuartileParallax = percentile(parallax, 0.75)
+
+            val translationNorm = sqrt(t.sumOf { it * it })
+            if (!translationNorm.isFinite() || translationNorm <= 1e-12 || t.any { !it.isFinite() }) {
+                return rejected(firstFrame, secondFrame, "Invalid relative translation", matchCount)
+            }
+            val forwardMotionRatio = (kotlin.math.abs(t[2]) / translationNorm).coerceIn(0.0, 1.0)
+            val relativeTranslationDirection = DoubleArray(3) { t[it] / translationNorm }
+            val candidate = InitialPairCandidate(
+                firstFrame = firstFrame,
+                secondFrame = secondFrame,
+                matchedCount = matchCount,
+                inlierCount = inlierCount,
+                coveredGridCells = coverage,
+                medianParallaxDegrees = medianParallax,
+                upperQuartileParallaxDegrees = upperQuartileParallax,
+                cheiralityRatio = inlierCount.toDouble() / modelDecision.inlierCount.coerceAtLeast(1),
+                homographyInlierRatio = homographyRatio,
+                forwardMotionRatio = forwardMotionRatio,
+                relativeRotation = relativeRotation,
+                relativeTranslationDirection = relativeTranslationDirection,
+                verifiedMatches = inlierIndices.map { matched[it] },
+                essentialToFundamentalInlierRatio = essentialToFundamentalRatio,
+                fundamentalPoseRecovered = modelDecision.configuration ==
+                    ColmapTwoViewModelArbitrator.Configuration.UNCALIBRATED
+            )
+            return InitialPairSelector.evaluate(candidate, policy)
         } finally {
             points1.release()
             points2.release()
-            essentialMask.release()
-            fundamentalMask.release()
-            cheiralityMask.release()
             homographyMask.release()
-            rotation.release()
-            translation.release()
         }
     }
 
@@ -457,7 +306,6 @@ internal object OpenCvInitialPairEvaluator {
         )
         return maxOf(rawSupport, refined?.inlierIndices?.size ?: 0)
     }
-
 
     private fun rejected(
         first: Int,
@@ -502,6 +350,19 @@ internal object OpenCvInitialPairEvaluator {
     }
 
     private const val HOMOGRAPHY_THRESHOLD_PX = 4.0
+
+    private fun readCameraMatrix(cameraMatrix: Mat): DoubleArray? {
+        if (cameraMatrix.type() == CvType.CV_64F && cameraMatrix.channels() == 1) {
+            return OpenCvMatrixReadback.readCv64F(cameraMatrix, 3, 3)
+        }
+        val converted = Mat()
+        return try {
+            cameraMatrix.convertTo(converted, CvType.CV_64F)
+            OpenCvMatrixReadback.readCv64F(converted, 3, 3)
+        } finally {
+            converted.release()
+        }
+    }
 
     private fun countMaskInliers(mask: Mat, expectedSize: Int): Int {
         if (mask.empty() || mask.channels() != 1 || mask.total().toInt() != expectedSize) return 0

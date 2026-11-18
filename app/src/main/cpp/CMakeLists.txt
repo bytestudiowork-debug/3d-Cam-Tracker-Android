@@ -108,6 +108,11 @@ add_library(trackstudio_camera SHARED
         absolute_pose_loransac_jni.cpp
         camera_pose_refiner.cpp
         camera_pose_refiner_core.cpp
+        two_view_epipolar_estimator_core.cpp
+        two_view_epipolar_geometry_utils.cpp
+        two_view_essential_five_point.cpp
+        two_view_fundamental_solvers.cpp
+        two_view_epipolar_estimator_jni.cpp
         epnp_pose_estimator_jni.cpp
         epnp_pose_estimator_core.cpp
         p3p_pose_estimator_core.cpp
@@ -121,6 +126,9 @@ add_library(trackstudio_camera SHARED
         sift_core/generic.c
         sift_core/host.c
         sift_core/random.c)
+target_include_directories(trackstudio_camera PRIVATE
+        ${CMAKE_CURRENT_SOURCE_DIR}
+        ${eigen_SOURCE_DIR})
 set(SIFT_PORTABLE_C_SOURCES
         sift_core/sift.c
         sift_core/imopv.c

@@ -86,6 +86,7 @@ struct RelativePoseHypothesis {
     Eigen::Matrix3d rotation = Eigen::Matrix3d::Identity();
     Eigen::Vector3d translation = Eigen::Vector3d::Zero();
     std::size_t positive_depth_count = 0;
+    std::vector<char> positive_depth_mask;
 };
 
 struct EssentialPoseHypotheses {

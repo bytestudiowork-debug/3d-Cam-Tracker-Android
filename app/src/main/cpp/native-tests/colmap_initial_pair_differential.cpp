@@ -143,14 +143,16 @@ bool TriangulateMidpoint(const Eigen::Matrix3d& cam2_from_cam1_rotation,
     return true;
 }
 
-std::size_t CountCheiralPoints(const RelativePoseHypothesis& pose,
+std::size_t CountCheiralPoints(RelativePoseHypothesis* pose,
                                const std::vector<Eigen::Vector3d>& rays1,
                                const std::vector<Eigen::Vector3d>& rays2) {
+    pose->positive_depth_mask.assign(rays1.size(), 0);
     std::size_t count = 0;
     for (std::size_t i = 0; i < rays1.size(); ++i) {
         Eigen::Vector3d point3d_in_cam1;
-        if (TriangulateMidpoint(pose.rotation, pose.translation,
+        if (TriangulateMidpoint(pose->rotation, pose->translation,
                                 rays1[i], rays2[i], &point3d_in_cam1)) {
+            pose->positive_depth_mask[i] = 1;
             ++count;
         }
     }
@@ -192,7 +194,7 @@ std::optional<EssentialPoseHypotheses> RecoverEssentialPoseHypotheses(
         {rotation2, -translation, 0}};
     for (std::size_t i = 0; i < result.candidates.size(); ++i) {
         result.candidates[i].positive_depth_count =
-                CountCheiralPoints(result.candidates[i], rays1, rays2);
+                CountCheiralPoints(&result.candidates[i], rays1, rays2);
         // COLMAP uses >=, so a later candidate wins an exact tie.
         if (result.candidates[i].positive_depth_count >=
             result.candidates[result.selected_index].positive_depth_count) {

@@ -27,11 +27,12 @@
 // ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE
 // POSSIBILITY OF SUCH DAMAGE.
 //
-// Differential fixtures for COLMAP c5f9cefc87e5dd596b638e4cee0ff543c7d14755.
-// These tests intentionally do not invoke or modify production estimator code.
+// Differential fixtures and deterministic synthetic production-path comparison.
 #include "colmap_initial_pair_differential.h"
 #include "colmap_five_point_differential.h"
 #include "colmap_five_point_pinned_expectations.h"
+#include "fundamental_matrix_solver_differential.h"
+#include "../two_view_epipolar_estimator_core.h"
 
 #include <chrono>
 #include <cmath>
@@ -536,6 +537,313 @@ void RunFivePointHostBenchmark(const std::size_t observation_count,
               << " host_elapsed_ms=" << milliseconds << '\n';
 }
 
+struct SyntheticEpipolarFixture {
+    Eigen::Matrix3d camera_matrix = Eigen::Matrix3d::Identity();
+    Eigen::Matrix3d rotation = Eigen::Matrix3d::Identity();
+    Eigen::Vector3d translation = Eigen::Vector3d::Zero();
+    std::vector<Eigen::Vector2d> pixels1;
+    std::vector<Eigen::Vector2d> pixels2;
+    std::vector<char> true_inlier_mask;
+};
+
+SyntheticEpipolarFixture MakeSyntheticEpipolarFixture() {
+    SyntheticEpipolarFixture fixture;
+    fixture.camera_matrix << 780.0, 0.0, 640.0,
+                             0.0, 820.0, 360.0,
+                             0.0, 0.0, 1.0;
+    const Eigen::Vector3d axis(0.2, 0.6, 0.3);
+    fixture.rotation = Eigen::AngleAxisd(0.14, axis.normalized()).toRotationMatrix();
+    fixture.translation = Eigen::Vector3d(0.82, -0.16, 0.13).normalized();
+    constexpr std::size_t kInliers = 96;
+    constexpr std::size_t kOutliers = 24;
+    fixture.pixels1.reserve(kInliers + kOutliers);
+    fixture.pixels2.reserve(kInliers + kOutliers);
+    fixture.true_inlier_mask.reserve(kInliers + kOutliers);
+
+    for (std::size_t i = 0; i < kInliers; ++i) {
+        const double phase = static_cast<double>(i);
+        const Eigen::Vector3d point1(
+                -1.4 + 0.055 * phase + 0.5 * std::sin(0.31 * phase),
+                -0.8 + 0.5 * std::cos(0.27 * phase) + 0.03 * (i % 7),
+                4.8 + 0.018 * phase + 0.4 * std::sin(0.17 * phase));
+        const Eigen::Vector3d point2 =
+                fixture.rotation * point1 + fixture.translation;
+        Eigen::Vector2d pixel1(
+                fixture.camera_matrix(0, 0) * point1.x() / point1.z() +
+                        fixture.camera_matrix(0, 2),
+                fixture.camera_matrix(1, 1) * point1.y() / point1.z() +
+                        fixture.camera_matrix(1, 2));
+        Eigen::Vector2d pixel2(
+                fixture.camera_matrix(0, 0) * point2.x() / point2.z() +
+                        fixture.camera_matrix(0, 2),
+                fixture.camera_matrix(1, 1) * point2.y() / point2.z() +
+                        fixture.camera_matrix(1, 2));
+        pixel1.x() += 0.14 * std::sin(1.1 * phase);
+        pixel1.y() += 0.14 * std::cos(0.8 * phase);
+        pixel2.x() += 0.14 * std::sin(1.7 * phase);
+        pixel2.y() += 0.14 * std::cos(1.3 * phase);
+        fixture.pixels1.push_back(pixel1);
+        fixture.pixels2.push_back(pixel2);
+        fixture.true_inlier_mask.push_back(1);
+    }
+    for (std::size_t i = 0; i < kOutliers; ++i) {
+        fixture.pixels1.emplace_back(
+                40.0 + static_cast<double>((97 * i) % 1200),
+                30.0 + static_cast<double>((53 * i) % 680));
+        fixture.pixels2.emplace_back(
+                40.0 + static_cast<double>((233 * i + 401) % 1200),
+                30.0 + static_cast<double>((137 * i + 319) % 680));
+        fixture.true_inlier_mask.push_back(0);
+    }
+    return fixture;
+}
+
+void RequireSameRobustReport(
+        const tracking::source_two_view::LORansacReport<Eigen::Matrix3d>& actual,
+        const tracking::colmap_initial_pair_test::LORansacReport<Eigen::Matrix3d>& expected,
+        const std::string& label) {
+    Require(actual.success == expected.success,
+            label + " success differs from the independent source reference");
+    Require(actual.support.num_inliers == expected.support.num_inliers &&
+                    actual.inlier_mask == expected.inlier_mask &&
+                    actual.num_trials == expected.num_trials &&
+                    actual.local_optimization_trials ==
+                            expected.local_optimization_trials &&
+                    actual.accepted_local_refits == expected.accepted_local_refits &&
+                    actual.best_model_is_local == expected.best_model_is_local,
+            label + " support, adaptive trials, or local-refit report differs");
+    Require(std::abs(actual.support.residual_sum - expected.support.residual_sum) < 1e-8,
+            label + " residual sum differs from the independent source reference");
+    Require(actual.model.has_value() && expected.model.has_value(),
+            label + " did not return a model");
+    const double model_error = std::min(
+            (actual.model.value() - expected.model.value()).norm(),
+            (actual.model.value() + expected.model.value()).norm());
+    Require(model_error < 1e-8,
+            label + " model differs from the independent source reference");
+}
+
+void TestProductionEpipolarPathDifferentialAndPose() {
+    const SyntheticEpipolarFixture fixture = MakeSyntheticEpipolarFixture();
+    constexpr double kMaxErrorPixels = 3.5;
+    const Eigen::Matrix3d inverse_camera = fixture.camera_matrix.inverse();
+    std::vector<Eigen::Vector3d> rays1;
+    std::vector<Eigen::Vector3d> rays2;
+    rays1.reserve(fixture.pixels1.size());
+    rays2.reserve(fixture.pixels2.size());
+    for (std::size_t i = 0; i < fixture.pixels1.size(); ++i) {
+        rays1.push_back((inverse_camera * fixture.pixels1[i].homogeneous()).normalized());
+        rays2.push_back((inverse_camera * fixture.pixels2[i].homogeneous()).normalized());
+    }
+
+    tracking::colmap_initial_pair_test::RansacOptions reference_options;
+    reference_options.max_error =
+            kMaxErrorPixels / (0.5 * (fixture.camera_matrix(0, 0) +
+                                      fixture.camera_matrix(1, 1)));
+    tracking::colmap_initial_pair_test::RansacOptions reference_f_options =
+            reference_options;
+    reference_f_options.max_error = kMaxErrorPixels;
+
+    const auto gather_rays = [&rays1, &rays2](
+            const std::vector<std::size_t>& indices,
+            std::vector<Eigen::Vector3d>* selected1,
+            std::vector<Eigen::Vector3d>* selected2) {
+        selected1->clear();
+        selected2->clear();
+        for (const std::size_t index : indices) {
+            selected1->push_back(rays1[index]);
+            selected2->push_back(rays2[index]);
+        }
+    };
+    const auto gather_pixels = [&fixture](
+            const std::vector<std::size_t>& indices,
+            std::vector<Eigen::Vector2d>* selected1,
+            std::vector<Eigen::Vector2d>* selected2) {
+        selected1->clear();
+        selected2->clear();
+        for (const std::size_t index : indices) {
+            selected1->push_back(fixture.pixels1[index]);
+            selected2->push_back(fixture.pixels2[index]);
+        }
+    };
+    const auto estimate_reference_essential = [&gather_rays](
+            const std::vector<std::size_t>& indices,
+            std::vector<Eigen::Matrix3d>* models) {
+        std::vector<Eigen::Vector3d> selected1;
+        std::vector<Eigen::Vector3d> selected2;
+        gather_rays(indices, &selected1, &selected2);
+        tracking::colmap_initial_pair_test::EstimateEssentialFivePoint(
+                selected1, selected2, models);
+    };
+    const auto reference_essential_residual = [&rays1, &rays2](
+            const Eigen::Matrix3d& model, const std::size_t index) {
+        return SquaredSampsonError(rays1[index], rays2[index], model);
+    };
+    const auto reference_essential =
+            RunLORansac<Eigen::Matrix3d>(
+                    fixture.pixels1.size(), 5, 5, reference_options,
+                    estimate_reference_essential, estimate_reference_essential,
+                    reference_essential_residual);
+
+    const auto estimate_reference_fundamental = [&gather_pixels](
+            const std::vector<std::size_t>& indices,
+            std::vector<Eigen::Matrix3d>* models) {
+        std::vector<Eigen::Vector2d> selected1;
+        std::vector<Eigen::Vector2d> selected2;
+        gather_pixels(indices, &selected1, &selected2);
+        tracking::fundamental_solver_test::EstimateFundamentalSevenPoint(
+                selected1, selected2, models);
+    };
+    const auto local_reference_fundamental = [&gather_pixels](
+            const std::vector<std::size_t>& indices,
+            std::vector<Eigen::Matrix3d>* models) {
+        std::vector<Eigen::Vector2d> selected1;
+        std::vector<Eigen::Vector2d> selected2;
+        gather_pixels(indices, &selected1, &selected2);
+        tracking::fundamental_solver_test::EstimateFundamentalEightPoint(
+                selected1, selected2, models);
+    };
+    const auto reference_fundamental_residual = [&fixture](
+            const Eigen::Matrix3d& model, const std::size_t index) {
+        return SquaredSampsonError(fixture.pixels1[index].homogeneous(),
+                                   fixture.pixels2[index].homogeneous(), model);
+    };
+    const auto reference_fundamental =
+            RunLORansac<Eigen::Matrix3d>(
+                    fixture.pixels1.size(), 7, 8, reference_f_options,
+                    estimate_reference_fundamental, local_reference_fundamental,
+                    reference_fundamental_residual);
+
+    tracking::source_two_view::RansacOptions production_options;
+    production_options.max_num_trials =
+            tracking::source_two_view::kAndroidTrialLimit;
+    tracking::source_two_view::EpipolarGeometryReport production;
+    Require(tracking::source_two_view::EstimateTwoViewEpipolarGeometry(
+                    fixture.pixels1, fixture.pixels2, fixture.camera_matrix,
+                    kMaxErrorPixels, &production, production_options),
+            "production source-faithful E/F path rejected a valid bounded fixture");
+    Require(production.essential.success && production.fundamental.success,
+            "production E/F estimator failed the synthetic two-view fixture");
+    RequireSameRobustReport(production.essential, reference_essential, "essential");
+    RequireSameRobustReport(production.fundamental, reference_fundamental,
+                            "fundamental");
+    Require(production.essential.support.num_inliers >= 90 &&
+                    production.fundamental.support.num_inliers >= 90,
+            "production E/F support is unexpectedly low on the synthetic fixture");
+    std::size_t essential_true_positives = 0;
+    std::size_t fundamental_true_positives = 0;
+    std::size_t essential_false_positives = 0;
+    std::size_t fundamental_false_positives = 0;
+    for (std::size_t i = 0; i < fixture.true_inlier_mask.size(); ++i) {
+        if (fixture.true_inlier_mask[i] != 0) {
+            essential_true_positives += production.essential.inlier_mask[i] != 0;
+            fundamental_true_positives += production.fundamental.inlier_mask[i] != 0;
+        } else {
+            essential_false_positives += production.essential.inlier_mask[i] != 0;
+            fundamental_false_positives += production.fundamental.inlier_mask[i] != 0;
+        }
+    }
+    Require(essential_true_positives >= 90 && fundamental_true_positives >= 90 &&
+                    essential_false_positives <= 10 &&
+                    fundamental_false_positives <= 10,
+            "production E/F consensus differs unexpectedly from the known synthetic scene");
+
+    tracking::source_two_view::EssentialPoseResult production_pose;
+    Require(tracking::source_two_view::RecoverEssentialPoseFromPixels(
+                    *production.essential.model, fixture.pixels1, fixture.pixels2,
+                    fixture.camera_matrix, production.essential.inlier_mask,
+                    &production_pose),
+            "production essential pose recovery failed the synthetic fixture");
+    std::vector<Eigen::Vector3d> inlier_rays1;
+    std::vector<Eigen::Vector3d> inlier_rays2;
+    for (std::size_t i = 0; i < production.essential.inlier_mask.size(); ++i) {
+        if (production.essential.inlier_mask[i]) {
+            inlier_rays1.push_back(rays1[i]);
+            inlier_rays2.push_back(rays2[i]);
+        }
+    }
+    const auto reference_hypotheses = RecoverEssentialPoseHypotheses(
+            *reference_essential.model, inlier_rays1, inlier_rays2);
+    Require(reference_hypotheses.has_value() &&
+                    production_pose.selected_candidate ==
+                            reference_hypotheses->selected_index,
+            "production pose selection differs from the four-way reference");
+    const auto& reference_pose = reference_hypotheses->candidates[
+            reference_hypotheses->selected_index];
+    Require(production_pose.positive_depth_count ==
+                    reference_pose.positive_depth_count &&
+                    (production_pose.rotation - reference_pose.rotation).norm() < 1e-8 &&
+                    production_pose.translation.dot(reference_pose.translation) >
+                            1.0 - 1e-8,
+            "production pose or cheirality count differs from the reference");
+    std::size_t packed_cheiral_count = 0;
+    std::size_t source_local_index = 0;
+    for (std::size_t i = 0; i < fixture.pixels1.size(); ++i) {
+        if (production.essential.inlier_mask[i]) {
+            Require(source_local_index < reference_pose.positive_depth_mask.size(),
+                    "reference cheirality mask is shorter than E support");
+            const bool expected_cheiral =
+                    reference_pose.positive_depth_mask[source_local_index] != 0;
+            Require((production_pose.cheirality_mask[i] != 0) == expected_cheiral,
+                    "production pose inlier mask differs from the reference");
+            ++source_local_index;
+        } else {
+            Require(production_pose.cheirality_mask[i] == 0,
+                    "production pose mask included an epipolar outlier");
+        }
+        packed_cheiral_count += production_pose.cheirality_mask[i] != 0 ? 1 : 0;
+    }
+    Require(packed_cheiral_count == production_pose.positive_depth_count,
+            "production cheirality mask count is inconsistent");
+
+    std::vector<Eigen::Vector2d> oversized_points(
+            tracking::source_two_view::kMaxAndroidInputObservations + 1,
+            Eigen::Vector2d::Zero());
+    tracking::source_two_view::EpipolarGeometryReport oversized_report;
+    Require(!tracking::source_two_view::EstimateTwoViewEpipolarGeometry(
+                    oversized_points, oversized_points, fixture.camera_matrix,
+                    kMaxErrorPixels, &oversized_report),
+            "production estimator did not enforce its Android input cap");
+
+    tracking::source_two_view::RansacOptions unbounded_options;
+    unbounded_options.max_num_trials =
+            tracking::source_two_view::kAndroidTrialLimit + 1;
+    bool rejected_unbounded_trials = false;
+    try {
+        tracking::source_two_view::EpipolarGeometryReport ignored;
+        tracking::source_two_view::EstimateTwoViewEpipolarGeometry(
+                fixture.pixels1, fixture.pixels2, fixture.camera_matrix,
+                kMaxErrorPixels, &ignored, unbounded_options);
+    } catch (const std::invalid_argument&) {
+        rejected_unbounded_trials = true;
+    }
+    Require(rejected_unbounded_trials,
+            "production estimator did not enforce its Android trial cap");
+}
+
+void RunProductionEpipolarHostBenchmark() {
+    const SyntheticEpipolarFixture fixture = MakeSyntheticEpipolarFixture();
+    tracking::source_two_view::EpipolarGeometryReport report;
+    const auto start = std::chrono::steady_clock::now();
+    const bool succeeded = tracking::source_two_view::EstimateTwoViewEpipolarGeometry(
+            fixture.pixels1, fixture.pixels2, fixture.camera_matrix, 3.5,
+            &report);
+    const auto stop = std::chrono::steady_clock::now();
+    const double milliseconds =
+            std::chrono::duration<double, std::milli>(stop - start).count();
+    Require(succeeded && report.essential.success && report.fundamental.success &&
+                    report.essential.num_trials <=
+                            tracking::source_two_view::kAndroidTrialLimit &&
+                    report.fundamental.num_trials <=
+                            tracking::source_two_view::kAndroidTrialLimit,
+            "bounded host estimator benchmark failed or exceeded its Android caps");
+    std::cout << "host_bounded_epipolar_estimator observations="
+              << fixture.pixels1.size()
+              << " essential_trials=" << report.essential.num_trials
+              << " fundamental_trials=" << report.fundamental.num_trials
+              << " host_elapsed_ms=" << milliseconds << '\n';
+}
+
 void RunAllTests() {
     TestSquaredSampsonResidualAndPixelPathDivergence();
     TestSquaredSampsonSupportMaskAndRanking();
@@ -543,6 +851,7 @@ void RunAllTests() {
     TestEssentialPoseHypothesesAndCheirality();
     TestFivePointSolverCandidatesAndResiduals();
     TestFivePointSolverInvalidInputsAndDegeneracy();
+    TestProductionEpipolarPathDifferentialAndPose();
 }
 
 }  // namespace
@@ -555,6 +864,7 @@ int main(const int argc, char** argv) {
             RunBenchmarkCase(4096);
             RunFivePointHostBenchmark(5, 8);
             RunFivePointHostBenchmark(8, 8);
+            RunProductionEpipolarHostBenchmark();
         }
         std::cout << "COLMAP initial-pair differential fixtures passed\n";
         return 0;
