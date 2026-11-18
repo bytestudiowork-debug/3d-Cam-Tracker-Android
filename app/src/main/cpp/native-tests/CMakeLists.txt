@@ -67,6 +67,23 @@ target_include_directories(homography_differential_tests PRIVATE ..)
 target_compile_options(homography_differential_tests PRIVATE -O2 -fno-fast-math)
 add_test(NAME homography_differential_tests COMMAND homography_differential_tests)
 
+add_executable(two_view_dispatch_differential_tests
+        two_view_dispatch_differential_tests.cpp
+        two_view_dispatch_differential.cpp
+        homography_differential.cpp
+        colmap_initial_pair_differential.cpp
+        colmap_five_point_differential.cpp
+        fundamental_matrix_solver_differential.cpp
+        ../two_view_epipolar_estimator_core.cpp
+        ../two_view_epipolar_geometry_utils.cpp
+        ../two_view_essential_five_point.cpp
+        ../two_view_fundamental_solvers.cpp)
+target_link_libraries(two_view_dispatch_differential_tests PRIVATE Eigen3::Eigen)
+target_include_directories(two_view_dispatch_differential_tests PRIVATE ..)
+target_compile_options(two_view_dispatch_differential_tests PRIVATE -O2 -fno-fast-math)
+add_test(NAME two_view_dispatch_differential_tests
+        COMMAND two_view_dispatch_differential_tests)
+
 add_executable(fundamental_matrix_differential_tests
         fundamental_matrix_differential_tests.cpp
         fundamental_matrix_solver_differential.cpp)
