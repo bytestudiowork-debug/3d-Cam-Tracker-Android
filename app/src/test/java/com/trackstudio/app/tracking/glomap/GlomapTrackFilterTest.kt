@@ -61,6 +61,38 @@ class GlomapTrackFilterTest {
     }
 
     @Test
+    fun postPositioningUsesUncalibratedAngleToleranceWhenThereIsNoFocalPrior() {
+        val track = track(
+            4,
+            observation(0, 100.0 * Math.tan(Math.toRadians(1.5)), 0.0),
+            observation(1, -10.0, 0.0)
+        )
+        val centers = mapOf(0 to center(0.0), 1 to center(1.0))
+        val rotations = mapOf(0 to identity, 1 to identity)
+        val points = mapOf(4 to doubleArrayOf(0.0, 0.0, 10.0))
+
+        val uncalibrated = GlomapTrackFilter.filterAfterPositioning(
+            tracks = listOf(track),
+            cameraCentersByFrame = centers,
+            rotationsByFrame = rotations,
+            pointsByTrackId = points,
+            intrinsics = intrinsics,
+            hasPriorFocalLength = false
+        )
+        val calibrated = GlomapTrackFilter.filterAfterPositioning(
+            tracks = listOf(track),
+            cameraCentersByFrame = centers,
+            rotationsByFrame = rotations,
+            pointsByTrackId = points,
+            intrinsics = intrinsics,
+            hasPriorFocalLength = true
+        )
+
+        assertEquals(listOf(0, 1), uncalibrated.single().observations.map { it.frameIndex })
+        assertTrue(calibrated.single().observations.isEmpty())
+    }
+
+    @Test
     fun triangulationAngleFilterClearsTracksWithoutAViewBaseline() {
         val tracks = listOf(
             track(1, observation(0, 0.0, 0.0), observation(1, 0.0, 0.0)),

@@ -486,7 +486,7 @@ class GlobalReconstructionEngine(
                 rotationsByFrame = rotations,
                 pointsByTrackId = rawPositionResult.pointsByTrackId,
                 intrinsics = effectiveIntrinsics,
-                hasPriorFocalLength = true
+                hasPriorFocalLength = hasPriorFocalLength
             )
             val positionNormalization = GlomapReconstructionNormalizer.normalize(
                 frameCentersById = rawPositionResult.frameCentersById,
