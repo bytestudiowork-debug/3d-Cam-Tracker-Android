@@ -186,10 +186,12 @@ class IncrementalSfMInitializationInstrumentationTest {
             val landmarksById = result.landmarks.associateBy { it.trackId }
             assertEquals(tracksById.keys, landmarksById.keys)
             assertTrue(result.landmarks.isNotEmpty())
-            val fx = CAMERA_VALUES[0]
-            val fy = CAMERA_VALUES[4]
-            val cx = CAMERA_VALUES[2]
-            val cy = CAMERA_VALUES[5]
+            val finalCameraValues = result.refinedCameraIntrinsics?.toRowMajorMatrix() ?: CAMERA_VALUES
+            val fx = finalCameraValues[0]
+            val skew = finalCameraValues[1]
+            val fy = finalCameraValues[4]
+            val cx = finalCameraValues[2]
+            val cy = finalCameraValues[5]
             for ((trackId, track) in tracksById) {
                 val landmark = landmarksById.getValue(trackId)
                 assertEquals("Landmark observation count diverged for track $trackId",
@@ -201,7 +203,8 @@ class IncrementalSfMInitializationInstrumentationTest {
                     val cameraPoint = transform(result.poses[observation.frameIndex], point)
                     assertTrue("Track $trackId is behind frame ${observation.frameIndex}",
                         cameraPoint[2] > 0.0)
-                    val dx = fx * cameraPoint[0] / cameraPoint[2] + cx - observation.x
+                    val dx = fx * cameraPoint[0] / cameraPoint[2] +
+                        skew * cameraPoint[1] / cameraPoint[2] + cx - observation.x
                     val dy = fy * cameraPoint[1] / cameraPoint[2] + cy - observation.y
                     assertTrue("Track $trackId reprojection error exceeds tolerance",
                         hypot(dx, dy) <= 4.25)
@@ -327,6 +330,8 @@ class IncrementalSfMInitializationInstrumentationTest {
             val tracksById = result.featureTracks.associateBy { it.id }
             val landmarksById = result.landmarks.associateBy { it.trackId }
             assertEquals(tracksById.keys, landmarksById.keys)
+            val reprojectionCameraValues =
+                result.refinedCameraIntrinsics?.toRowMajorMatrix() ?: CAMERA_VALUES
             for ((trackId, track) in tracksById) {
                 val landmark = landmarksById.getValue(trackId)
                 assertEquals(track.observations.size, landmark.observationCount)
@@ -336,9 +341,14 @@ class IncrementalSfMInitializationInstrumentationTest {
                 for (observation in track.observations) {
                     val cameraPoint = transform(result.poses[observation.frameIndex], point)
                     assertTrue("Track $trackId is behind frame ${observation.frameIndex}", cameraPoint[2] > 0.0)
-                    val dx = CAMERA_VALUES[0] * cameraPoint[0] / cameraPoint[2] + CAMERA_VALUES[2] - observation.x
-                    val dy = CAMERA_VALUES[4] * cameraPoint[1] / cameraPoint[2] + CAMERA_VALUES[5] - observation.y
-                    assertTrue("Track $trackId reprojection error exceeds 4.25 px", hypot(dx, dy) <= 4.25)
+                    val dx = reprojectionCameraValues[0] * cameraPoint[0] / cameraPoint[2] +
+                        reprojectionCameraValues[1] * cameraPoint[1] / cameraPoint[2] +
+                        reprojectionCameraValues[2] - observation.x
+                    val dy = reprojectionCameraValues[4] * cameraPoint[1] / cameraPoint[2] +
+                        reprojectionCameraValues[5] - observation.y
+                    val error = hypot(dx, dy)
+                    assertTrue("Track $trackId reprojection error is $error px, exceeds 4.25 px",
+                        error <= 4.25)
                 }
                 assertTrue(landmark.meanReprojectionErrorPx <= 4.0)
             }
