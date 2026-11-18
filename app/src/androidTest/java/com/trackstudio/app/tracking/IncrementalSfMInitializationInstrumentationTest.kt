@@ -261,20 +261,19 @@ class IncrementalSfMInitializationInstrumentationTest {
     }
 
     @Test
-    fun seededPixelNoiseOutliersAndPartialThirdViewOcclusionRegisterThroughPublicEngine() {
+    fun seededThirdViewOutliersAndPartialOcclusionRegisterThroughPublicEngine() {
         val fixture = SyntheticSeedScene.render(
             SceneKind.PLANAR_HIGH,
             includeThirdCamera = true,
-            pixelNoiseSigmaPx = 0.8,
             thirdViewOutlierFraction = 0.05,
             thirdViewVisibleFraction = 0.70
         )
         val cameraMatrix = cameraMatrix()
         try {
             val oracle = inspectSeedPair(fixture, cameraMatrix, cameraFocalLengthHasPrior = true)
-            assertTrue("Seed noise/outliers lost the 100-inlier initialization support: " +
+            assertTrue("Seed geometry lost the 100-inlier initialization support: " +
                 "${oracle.geometry.numInliers}", oracle.geometry.numInliers >= 100)
-            assertTrue("Seed noise/outliers crossed the source-derived initialization gates: " +
+            assertTrue("Seed geometry crossed the source-derived initialization gates: " +
                 "${oracle.evaluation.reason}", oracle.geometry.passesInitialPairGates && oracle.evaluation.accepted)
             assertEquals(oracle.geometry.selectedInlierMask.count { it }, oracle.geometry.numInliers)
 
@@ -375,7 +374,7 @@ class IncrementalSfMInitializationInstrumentationTest {
     }
 
     @Test
-    fun sourceFaithfulTwoViewAndPnpMasksRejectSeededOutliersAtExistingQualityGates() {
+    fun sourceFaithfulTwoViewAndPnpMasksHandlePixelNoiseAndSeededOutliersAtExistingGates() {
         val pair = syntheticSeedCorrespondences(
             pixelNoiseSigmaPx = 0.8,
             outlierFraction = 0.10
