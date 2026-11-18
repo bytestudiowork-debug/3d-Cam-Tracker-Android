@@ -1,14 +1,127 @@
 package com.trackstudio.app.tracking.glomap
 
 import androidx.test.ext.junit.runners.AndroidJUnit4
+import com.trackstudio.app.tracking.CameraFeatureObservation
+import com.trackstudio.app.tracking.CameraFeatureTrack
+import com.trackstudio.app.tracking.OpenCvRuntime
+import com.trackstudio.app.tracking.PrincipalPointRefinementPolicy
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertTrue
 import org.junit.Test
 import org.junit.runner.RunWith
+import org.opencv.core.CvType
+import org.opencv.core.Mat
 import kotlin.math.sqrt
 
 @RunWith(AndroidJUnit4::class)
 class GlomapNativeSolverInstrumentationTest {
+    @Test
+    fun pinnedGlobalBundleAdjustmentKeepsObservablePrincipalPointFixed() {
+        assertTrue("OpenCV runtime is unavailable", OpenCvRuntime.ensureLoaded())
+
+        val imageWidth = 1000
+        val imageHeight = 800
+        val trueFx = 800.0
+        val trueFy = 800.0
+        val trueCx = 500.0
+        val trueCy = 400.0
+        val initialCx = 470.0
+        val initialCy = 430.0
+        val frameCenters = linkedMapOf(
+            0 to doubleArrayOf(0.0, 0.0, 0.0),
+            1 to doubleArrayOf(0.1, -0.05, 0.0),
+            2 to doubleArrayOf(0.2, 0.1, 0.0),
+            3 to doubleArrayOf(0.3, -0.12, 0.02),
+            4 to doubleArrayOf(0.4, 0.08, 0.01),
+            5 to doubleArrayOf(0.5, -0.15, 0.03),
+            6 to doubleArrayOf(0.6, 0.12, 0.01),
+            7 to doubleArrayOf(0.7, -0.08, 0.02)
+        )
+        val rotationAngles = listOf(
+            doubleArrayOf(0.0, 0.0, 0.0),
+            doubleArrayOf(0.03, 0.0, 0.0),
+            doubleArrayOf(0.06, 0.02, 0.0),
+            doubleArrayOf(0.09, 0.05, 0.0),
+            doubleArrayOf(0.12, 0.08, 0.01),
+            doubleArrayOf(0.15, 0.11, 0.02),
+            doubleArrayOf(0.18, 0.14, 0.03),
+            doubleArrayOf(0.21, 0.18, 0.04)
+        )
+        val rotations = rotationAngles.mapIndexed { frame, angles ->
+            frame to rotationFromXyz(angles[0], angles[1], angles[2])
+        }.toMap()
+        val points = LinkedHashMap<Int, DoubleArray>()
+        for (trackId in 0 until 120) {
+            val depth = 6.0 + (trackId % 5) * 0.25
+            val pixelX = 70.0 + (trackId % 12) * 78.0
+            val pixelY = 60.0 + (trackId / 12) * 75.0
+            points[trackId] = doubleArrayOf(
+                (pixelX - trueCx) * depth / trueFx,
+                (pixelY - trueCy) * depth / trueFy,
+                depth
+            )
+        }
+        val tracks = points.map { (trackId, point) ->
+            CameraFeatureTrack(trackId, frameCenters.map { (frame, center) ->
+                val dx = point[0] - center[0]
+                val dy = point[1] - center[1]
+                val dz = point[2] - center[2]
+                val rotation = rotations.getValue(frame)
+                val cameraX = rotation[0] * dx + rotation[1] * dy + rotation[2] * dz
+                val cameraY = rotation[3] * dx + rotation[4] * dy + rotation[5] * dz
+                val cameraZ = rotation[6] * dx + rotation[7] * dy + rotation[8] * dz
+                CameraFeatureObservation(
+                    frameIndex = frame,
+                    x = trueFx * cameraX / cameraZ + trueCx,
+                    y = trueFy * cameraY / cameraZ + trueCy
+                )
+            })
+        }
+        val evidence = PrincipalPointRefinementPolicy.assess(
+            tracks = tracks,
+            frameCentersById = frameCenters,
+            rotationsByFrame = rotations,
+            pointsByTrackId = points,
+            imageWidth = imageWidth,
+            imageHeight = imageHeight
+        )
+        assertTrue("Synthetic fixture must satisfy the former refinement heuristic: $evidence",
+            PrincipalPointRefinementPolicy.isObservable(evidence))
+
+        val cameraMatrix = Mat(3, 3, CvType.CV_64F)
+        try {
+            cameraMatrix.put(
+                0, 0,
+                trueFx, 0.0, initialCx,
+                0.0, trueFy, initialCy,
+                0.0, 0.0, 1.0
+            )
+            val result = GlomapGlobalBundleAdjuster().solve(
+                frameCentersById = frameCenters,
+                rotationsByFrame = rotations,
+                pointsByTrackId = points,
+                tracks = tracks,
+                cameraMatrix = cameraMatrix,
+                imageWidth = imageWidth,
+                imageHeight = imageHeight,
+                optimizeRotations = false,
+                optimizeTranslation = false,
+                maxIterations = 20,
+                numThreads = 1
+            ) ?: throw AssertionError("Native GLOMAP bundle adjustment rejected the synthetic scene")
+
+            assertFalse("Pinned GLOMAP must not enable principal-point optimization",
+                result.principalPointRefinementEnabled)
+            assertEquals("cx must remain fixed at its input value", initialCx, result.intrinsics.cx, 0.0)
+            assertEquals("cy must remain fixed at its input value", initialCy, result.intrinsics.cy, 0.0)
+            assertTrue("The synthetic scene must retain positive-depth observations",
+                result.positiveDepthRatio >= 0.9)
+        } finally {
+            cameraMatrix.release()
+        }
+    }
+
     @Test
     fun syntheticOnlyPointsProblemRoundTripsThroughJni() {
         val frameIds = listOf(41, 7, 93)
@@ -103,6 +216,20 @@ class GlomapNativeSolverInstrumentationTest {
 
     private fun subtract(first: DoubleArray, second: DoubleArray) =
         DoubleArray(3) { first[it] - second[it] }
+
+    private fun rotationFromXyz(x: Double, y: Double, z: Double): DoubleArray {
+        val cx = kotlin.math.cos(x)
+        val sx = kotlin.math.sin(x)
+        val cy = kotlin.math.cos(y)
+        val sy = kotlin.math.sin(y)
+        val cz = kotlin.math.cos(z)
+        val sz = kotlin.math.sin(z)
+        return doubleArrayOf(
+            cz * cy, cz * sy * sx - sz * cx, cz * sy * cx + sz * sx,
+            sz * cy, sz * sy * sx + cz * cx, sz * sy * cx - cz * sx,
+            -sy, cy * sx, cy * cx
+        )
+    }
 
     private fun distance(first: DoubleArray, second: DoubleArray): Double =
         sqrt((0 until 3).sumOf { (first[it] - second[it]) * (first[it] - second[it]) })

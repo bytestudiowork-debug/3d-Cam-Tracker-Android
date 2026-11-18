@@ -2,15 +2,13 @@ package com.trackstudio.app.tracking.glomap
 
 import com.trackstudio.app.tracking.CameraFeatureTrack
 import com.trackstudio.app.tracking.CameraIntrinsics
-import com.trackstudio.app.tracking.PrincipalPointRefinementPolicy
 import org.opencv.core.Mat
 
 /**
  * Joint reprojection bundle adjustment for the independent global pipeline.
  * Rotations, centers, points, and shared focal lengths are jointly optimized.
- * Principal point is released only with broad image coverage, parallax, and
- * multi-axis camera rotation;
- * skew remains fixed, and the reference pose/baseline norm fix the gauges.
+ * The principal point and skew remain fixed, matching the pinned GLOMAP
+ * defaults; the reference pose/baseline norm fix the gauges.
  */
 internal class GlomapGlobalBundleAdjuster {
     data class Result(
@@ -94,16 +92,8 @@ internal class GlomapGlobalBundleAdjuster {
             cameraMatrix.get(1, 2)?.firstOrNull() ?: Double.NaN
         )
         if (intrinsics.any { !it.isFinite() } || intrinsics[0] <= 0.0 || intrinsics[3] <= 0.0) return null
-        val refinePrincipalPoint = PrincipalPointRefinementPolicy.isObservable(
-            PrincipalPointRefinementPolicy.assess(
-                tracks = tracks,
-                frameCentersById = frameCentersById,
-                rotationsByFrame = rotationsByFrame,
-                pointsByTrackId = pointsByTrackId,
-                imageWidth = imageWidth,
-                imageHeight = imageHeight
-            )
-        )
+        // Pinned GLOMAP optimizes focal lengths but fixes the principal point by default.
+        val refinePrincipalPoint = false
 
         val packed = nativeSolve(
             centers, rotations, points, frameIndices, trackIndices,
