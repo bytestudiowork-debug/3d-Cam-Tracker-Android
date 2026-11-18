@@ -91,26 +91,33 @@ class OpenCvInitialPairEvaluatorInstrumentationTest {
                 ransacThresholdPx = 4.0
             )
 
+            val candidate = evaluation.candidate
+            val candidateDiagnostics = "matches=${candidate.matchedCount}, " +
+                "inliers=${candidate.inlierCount}, " +
+                "E/F=${candidate.essentialToFundamentalInlierRatio}, " +
+                "F-derived=${candidate.fundamentalPoseRecovered}, " +
+                "parallax=${candidate.medianParallaxDegrees}, " +
+                "H=${candidate.homographyInlierRatio}"
             assertTrue("F-supported pose recovery was rejected: ${evaluation.reason}", evaluation.accepted)
             assertTrue(
-                "Expected F-derived uncalibrated pose: ${evaluation.candidate}",
-                evaluation.candidate.fundamentalPoseRecovered
+                "Expected F-derived uncalibrated pose: $candidateDiagnostics",
+                candidate.fundamentalPoseRecovered
             )
             assertTrue(
-                "E/F support ratio should indicate unknown focal: ${evaluation.candidate.essentialToFundamentalInlierRatio}; candidate=${evaluation.candidate}",
-                evaluation.candidate.essentialToFundamentalInlierRatio < 0.95
+                "E/F support ratio should indicate unknown focal: $candidateDiagnostics",
+                candidate.essentialToFundamentalInlierRatio < 0.95
             )
             assertTrue(
-                "Too few cheiral inliers: ${evaluation.candidate.inlierCount}; candidate=${evaluation.candidate}",
-                evaluation.candidate.inlierCount >= 100
+                "Too few cheiral inliers: $candidateDiagnostics",
+                candidate.inlierCount >= 100
             )
             assertTrue(
-                "Parallax below initialization threshold: ${evaluation.candidate.medianParallaxDegrees}; candidate=${evaluation.candidate}",
-                evaluation.candidate.medianParallaxDegrees > 16.0
+                "Parallax below initialization threshold: $candidateDiagnostics",
+                candidate.medianParallaxDegrees > 16.0
             )
             assertTrue(
-                "Planar support ratio exceeds the expected bound: ${evaluation.candidate.homographyInlierRatio}; candidate=${evaluation.candidate}",
-                evaluation.candidate.homographyInlierRatio <= 0.8
+                "Planar support ratio exceeds the expected bound: $candidateDiagnostics",
+                candidate.homographyInlierRatio <= 0.8
             )
         } finally {
             matcher.clear()
@@ -250,7 +257,8 @@ class OpenCvInitialPairEvaluatorInstrumentationTest {
 
     private companion object {
         const val TRUE_FOCAL = 800.0
-        const val APP_FOCAL = 640.0
+        // Keep the mismatch large enough to exercise the source-ratio F-to-E fallback.
+        const val APP_FOCAL = 500.0
         const val PRINCIPAL_X = 640.0
         const val PRINCIPAL_Y = 360.0
         const val DESCRIPTOR_LENGTH = 128
