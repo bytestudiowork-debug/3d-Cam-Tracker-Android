@@ -8,17 +8,24 @@
 #include <Eigen/Core>
 
 #include "two_view_epipolar_estimator_core.h"
+#include "two_view_geometry_core.h"
 
 namespace {
 
 using tracking::source_two_view::EpipolarGeometryReport;
 using tracking::source_two_view::EssentialPoseResult;
+using tracking::source_two_view::EstimateInitialPairGeometry;
 using tracking::source_two_view::EstimateTwoViewEpipolarGeometry;
+using tracking::source_two_view::InitialPairGeometryReport;
+using tracking::source_two_view::InitialPairPoseResult;
 using tracking::source_two_view::RecoverEssentialPoseFromPixels;
 using tracking::source_two_view::RansacOptions;
+using tracking::source_two_view::RecoverInitialPairPose;
+using tracking::source_two_view::TwoViewDispatchOptions;
 
 constexpr std::size_t kModelHeaderSize = 17;
 constexpr std::size_t kPoseHeaderSize = 15;
+constexpr std::size_t kInitialPairHeaderSize = 41;
 constexpr std::size_t kMaxArrayValues =
         tracking::source_two_view::kMaxAndroidInputObservations * 2;
 
@@ -230,6 +237,140 @@ Java_com_trackstudio_app_tracking_SourceFaithfulTwoViewEstimator_nativeRecoverPo
         for (std::size_t i = 0; i < pose.cheirality_mask.size(); ++i) {
             packed[kPoseHeaderSize + i] =
                     pose.cheirality_mask[i] != 0 ? 1.0 : 0.0;
+        }
+        return MakeDoubleArray(env, packed);
+    } catch (const std::exception&) {
+        return nullptr;
+    } catch (...) {
+        return nullptr;
+    }
+}
+
+extern "C" JNIEXPORT jdoubleArray JNICALL
+Java_com_trackstudio_app_tracking_SourceFaithfulTwoViewEstimator_nativeEstimateInitialPair(
+        JNIEnv* env,
+        jobject,
+        jdoubleArray first_pixels_xy,
+        jdoubleArray second_pixels_xy,
+        jdoubleArray camera_matrix_values,
+        jboolean both_cameras_have_focal_priors,
+        jdouble max_error_pixels,
+        jint minimum_inliers,
+        jdouble minimum_essential_to_fundamental_ratio,
+        jdouble maximum_homography_ratio) {
+    try {
+        if ((both_cameras_have_focal_priors != JNI_TRUE &&
+             both_cameras_have_focal_priors != JNI_FALSE) ||
+            minimum_inliers <= 0) {
+            return nullptr;
+        }
+        std::vector<Eigen::Vector2d> pixels1;
+        std::vector<Eigen::Vector2d> pixels2;
+        Eigen::Matrix3d camera_matrix;
+        if (!ReadPixelPairs(env, first_pixels_xy, second_pixels_xy,
+                            &pixels1, &pixels2) ||
+            !ReadCameraMatrix(env, camera_matrix_values, &camera_matrix)) {
+            return nullptr;
+        }
+        RansacOptions epipolar_options;
+        epipolar_options.max_num_trials =
+                tracking::source_two_view::kAndroidTrialLimit;
+        epipolar_options.random_seed = 20261118;
+        RansacOptions homography_options;
+        homography_options.max_num_trials =
+                tracking::source_two_view::kAndroidTrialLimit;
+        homography_options.random_seed = 20261118;
+        TwoViewDispatchOptions dispatch_options;
+        dispatch_options.minimum_inliers =
+                static_cast<std::size_t>(minimum_inliers);
+        dispatch_options.minimum_essential_to_fundamental_ratio =
+                minimum_essential_to_fundamental_ratio;
+        dispatch_options.maximum_homography_ratio = maximum_homography_ratio;
+        InitialPairGeometryReport geometry;
+        if (!EstimateInitialPairGeometry(
+                    pixels1, pixels2, camera_matrix,
+                    both_cameras_have_focal_priors == JNI_TRUE,
+                    max_error_pixels, &geometry, epipolar_options,
+                    homography_options, dispatch_options)) {
+            return nullptr;
+        }
+        InitialPairPoseResult pose;
+        const bool pose_recovered = geometry.decision.pose_source !=
+                        tracking::source_two_view::PoseSource::kNone &&
+                RecoverInitialPairPose(
+                        geometry, pixels1, pixels2, camera_matrix,
+                        tracking::source_homography::InitialPairGates{}, &pose);
+        const std::size_t count = pixels1.size();
+        std::vector<double> packed(kInitialPairHeaderSize + 5 * count, 0.0);
+        packed[0] = 1.0;
+        packed[1] = static_cast<double>(geometry.decision.configuration);
+        packed[2] = static_cast<double>(geometry.decision.selected_model);
+        packed[3] = static_cast<double>(geometry.decision.pose_source);
+        packed[4] = static_cast<double>(geometry.decision.num_inliers);
+        packed[5] = pose_recovered && pose.success ? 1.0 : 0.0;
+        packed[6] = static_cast<double>(pose.selected_candidate);
+        packed[7] = static_cast<double>(pose.positive_depth_count);
+        packed[8] = pose.median_triangulation_angle_radians;
+        packed[9] = pose.passes_initial_pair_gates ? 1.0 : 0.0;
+        const auto pack_report = [&packed](
+                const tracking::source_two_view::LORansacReport<Eigen::Matrix3d>&
+                        report,
+                const std::size_t offset) {
+            packed[offset] = report.success ? 1.0 : 0.0;
+            packed[offset + 1] = report.success
+                    ? static_cast<double>(report.support.num_inliers)
+                    : 0.0;
+            packed[offset + 2] = static_cast<double>(report.num_trials);
+            packed[offset + 3] =
+                    static_cast<double>(report.local_optimization_trials);
+            packed[offset + 4] =
+                    static_cast<double>(report.accepted_local_refits);
+            packed[offset + 5] = report.best_model_is_local ? 1.0 : 0.0;
+        };
+        pack_report(geometry.epipolar.essential, 10);
+        pack_report(geometry.epipolar.fundamental, 16);
+        pack_report(geometry.homography, 22);
+        packed[28] = geometry.homography.success
+                ? geometry.homography.support.residual_sum
+                : 0.0;
+        if (pose_recovered && pose.success) {
+            for (int row = 0; row < 3; ++row) {
+                for (int col = 0; col < 3; ++col) {
+                    packed[29 + static_cast<std::size_t>(row * 3 + col)] =
+                            pose.rotation(row, col);
+                }
+            }
+            for (int i = 0; i < 3; ++i) {
+                packed[38 + static_cast<std::size_t>(i)] = pose.translation(i);
+            }
+        }
+        const auto pack_mask = [&packed, count](
+                const std::vector<char>& mask,
+                const std::size_t offset) {
+            if (mask.size() != count) {
+                return;
+            }
+            for (std::size_t i = 0; i < count; ++i) {
+                packed[offset + i] = mask[i] != 0 ? 1.0 : 0.0;
+            }
+        };
+        if (geometry.epipolar.essential.success) {
+            pack_mask(geometry.epipolar.essential.inlier_mask,
+                      kInitialPairHeaderSize);
+        }
+        if (geometry.epipolar.fundamental.success) {
+            pack_mask(geometry.epipolar.fundamental.inlier_mask,
+                      kInitialPairHeaderSize + count);
+        }
+        if (geometry.homography.success) {
+            pack_mask(geometry.homography.inlier_mask,
+                      kInitialPairHeaderSize + 2 * count);
+        }
+        pack_mask(geometry.decision.selected_inlier_mask,
+                  kInitialPairHeaderSize + 3 * count);
+        if (pose_recovered && pose.success) {
+            pack_mask(pose.cheirality_mask,
+                      kInitialPairHeaderSize + 4 * count);
         }
         return MakeDoubleArray(env, packed);
     } catch (const std::exception&) {

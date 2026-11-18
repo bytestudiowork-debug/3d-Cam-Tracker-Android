@@ -29,6 +29,7 @@
 #include "two_view_dispatch_differential.h"
 #include "homography_differential.h"
 #include "../two_view_epipolar_estimator_core.h"
+#include "../two_view_geometry_core.h"
 
 #include <Eigen/Geometry>
 
@@ -72,7 +73,9 @@ SyntheticScene MakeScene(const std::string& kind) {
                   0.0, 0.0, 1.0;
     const Matrix rotation = Eigen::AngleAxisd(
             0.13, Ray(0.25, 0.6, 0.31).normalized()).toRotationMatrix();
-    const Ray translation(0.65, -0.08, 0.03);
+    const Ray translation(kind == "mixed_high"
+                                  ? Ray(1.5, -0.08, 0.03)
+                                  : Ray(0.65, -0.08, 0.03));
     constexpr std::size_t kPointCount = 120;
     scene.points1.reserve(kPointCount);
     scene.points2.reserve(kPointCount);
@@ -87,7 +90,7 @@ SyntheticScene MakeScene(const std::string& kind) {
         double depth = 4.5;
         if (kind == "nonplanar") {
             depth = 2.8 + 0.19 * static_cast<double>(i % 17);
-        } else if (kind == "mixed") {
+        } else if (kind == "mixed" || kind == "mixed_high") {
             depth = i < 100 ? 4.5 : 2.2 + 0.71 * static_cast<double>(i % 6);
         }
         const Ray point1(x, y, depth);
@@ -115,14 +118,13 @@ ModelSupport ToSupport(const tracking::source_two_view::LORansacReport<Matrix>& 
     return {report.success, report.support.num_inliers, report.inlier_mask};
 }
 
-ModelSupport ToSupport(const tracking::homography_test::LORansacReport<Matrix>& report) {
-    return {report.success, report.support.num_inliers, report.inlier_mask};
-}
-
 struct FixtureResult {
     tracking::source_two_view::EpipolarGeometryReport epipolar;
     tracking::homography_test::LORansacReport<Matrix> homography;
     Decision decision;
+    tracking::source_two_view::InitialPairGeometryReport integrated_geometry;
+    tracking::source_two_view::InitialPairPoseResult integrated_pose;
+    bool integrated_pose_recovered = false;
 };
 
 FixtureResult RunFixture(const std::string& kind,
@@ -147,7 +149,7 @@ FixtureResult RunFixture(const std::string& kind,
                     &result.epipolar, epipolar_options),
             "native E/F estimator rejected deterministic dispatch fixture");
 
-    tracking::colmap_initial_pair_test::RansacOptions homography_options;
+    tracking::source_two_view::RansacOptions homography_options;
     homography_options.max_error = 4.0;
     homography_options.min_inlier_ratio = 0.25;
     homography_options.confidence = 0.999;
@@ -163,6 +165,35 @@ FixtureResult RunFixture(const std::string& kind,
             ToSupport(result.epipolar.essential),
             ToSupport(result.epipolar.fundamental),
             ToSupport(result.homography), Options{});
+    Require(tracking::source_two_view::EstimateInitialPairGeometry(
+                    scene.points1, scene.points2, intrinsics,
+                    both_cameras_have_focal_priors, 4.0,
+                    &result.integrated_geometry, epipolar_options,
+                    homography_options),
+            "integrated production estimator rejected pinned fixture");
+    const auto& integrated = result.integrated_geometry;
+    Require(integrated.epipolar.essential.inlier_mask ==
+                            result.epipolar.essential.inlier_mask &&
+                    integrated.epipolar.fundamental.inlier_mask ==
+                            result.epipolar.fundamental.inlier_mask &&
+                    integrated.homography.inlier_mask ==
+                            result.homography.inlier_mask &&
+                    integrated.decision.selected_inlier_mask ==
+                            result.decision.selected_inlier_mask,
+            "integrated path changed a model or selected mask");
+    result.integrated_pose_recovered =
+            tracking::source_two_view::RecoverInitialPairPose(
+                    integrated, scene.points1, scene.points2, intrinsics,
+                    tracking::source_homography::InitialPairGates{},
+                    &result.integrated_pose);
+    Require(result.integrated_pose_recovered,
+            "integrated path failed to recover the dispatched pose source");
+    Require(result.integrated_pose.success &&
+                    result.integrated_pose.selected_inlier_mask ==
+                            integrated.decision.selected_inlier_mask &&
+                    result.integrated_pose.cheirality_mask.size() ==
+                            scene.points1.size(),
+            "integrated pose did not preserve the selected-mask contract");
     return result;
 }
 
@@ -220,6 +251,36 @@ void CheckPinnedReferenceFixture(const OracleExpectation& expected) {
                     MaskString(result.decision.selected_inlier_mask) ==
                             all_inliers,
             label + ": selected inlier mask differs from the pinned reference");
+    Require(result.integrated_geometry.decision.configuration ==
+                            (expected.pose_source ==
+                                            tracking::two_view_dispatch_test::PoseSource::kHomography
+                                    ? tracking::source_two_view::GeometryConfiguration::kPlanarOrPanoramic
+                                    : expected.both_cameras_have_focal_priors
+                                            ? tracking::source_two_view::GeometryConfiguration::kCalibrated
+                                            : tracking::source_two_view::GeometryConfiguration::kUncalibrated) &&
+                    result.integrated_geometry.decision.num_inliers == 120 &&
+                    result.integrated_pose.success,
+            label + ": integrated production geometry/pose differs from pinned dispatch");
+    if (expected.pose_source ==
+        tracking::two_view_dispatch_test::PoseSource::kHomography) {
+        Require(result.integrated_geometry.decision.pose_source ==
+                                tracking::source_two_view::PoseSource::kHomography,
+                label + ": integrated path did not use H pose recovery");
+        if (std::string(expected.scene_kind) == "mixed") {
+            Require(!result.integrated_pose.passes_initial_pair_gates &&
+                            result.integrated_pose.median_triangulation_angle_radians <=
+                                    16.0 * 3.14159265358979323846 / 180.0,
+                    label + ": mixed-depth H pose did not fail the strict parallax gate (angle=" +
+                            std::to_string(result.integrated_pose
+                                                   .median_triangulation_angle_radians *
+                                           180.0 / 3.14159265358979323846) +
+                            ", tz=" +
+                            std::to_string(result.integrated_pose.translation.z()) + ")");
+        } else {
+            Require(!result.integrated_pose.passes_initial_pair_gates,
+                    label + ": planar H pose unexpectedly passed initial-pair gates");
+        }
+    }
 }
 
 void TestPinnedDispatchDifferentialCases() {
@@ -336,12 +397,45 @@ void TestMaskSelectionAndStrictThresholds() {
             "the H ratio threshold must remain a strict greater-than");
 }
 
+void TestHighParallaxIntegratedHomographyPose() {
+    const std::string all_inliers(120, '1');
+    for (const bool has_focal_prior : {true, false}) {
+        const FixtureResult result = RunFixture("mixed_high", has_focal_prior);
+        const std::string label = has_focal_prior ? "calibrated high-parallax" :
+                                                    "unknown-focal high-parallax";
+        const double median_degrees =
+                result.integrated_pose.median_triangulation_angle_radians *
+                180.0 / 3.14159265358979323846;
+        Require(result.integrated_geometry.decision.configuration ==
+                                tracking::source_two_view::GeometryConfiguration::kPlanarOrPanoramic &&
+                        result.integrated_geometry.decision.pose_source ==
+                                tracking::source_two_view::PoseSource::kHomography &&
+                        result.integrated_geometry.decision.selected_inlier_mask.size() ==
+                                all_inliers.size() &&
+                        MaskString(result.integrated_geometry.decision.selected_inlier_mask) ==
+                                all_inliers &&
+                        result.integrated_pose.passes_initial_pair_gates,
+                label + " did not preserve E/F correspondences and pass H gates (E=" +
+                        std::to_string(result.epipolar.essential.support.num_inliers) +
+                        ", F=" + std::to_string(result.epipolar.fundamental.support.num_inliers) +
+                        ", H=" + std::to_string(result.homography.support.num_inliers) +
+                        ", angle=" + std::to_string(median_degrees) +
+                        ", tz=" + std::to_string(result.integrated_pose.translation.z()) + ")");
+        const auto expected_model = has_focal_prior
+                ? tracking::two_view_dispatch_test::Model::kEssential
+                : tracking::two_view_dispatch_test::Model::kFundamental;
+        Require(result.decision.selected_model == expected_model,
+                label + " selected a different correspondence model");
+    }
+}
+
 }  // namespace
 
 int main() {
     try {
         TestPinnedDispatchDifferentialCases();
         TestMaskSelectionAndStrictThresholds();
+        TestHighParallaxIntegratedHomographyPose();
         std::cout << "Two-view dispatch differential tests passed\n";
         return 0;
     } catch (const std::exception& error) {

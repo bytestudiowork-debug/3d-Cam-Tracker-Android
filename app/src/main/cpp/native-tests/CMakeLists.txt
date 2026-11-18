@@ -60,8 +60,11 @@ add_test(NAME colmap_initial_pair_differential_tests
 
 add_executable(homography_differential_tests
         homography_differential_tests.cpp
-        homography_differential.cpp
-        colmap_initial_pair_differential.cpp)
+        ../homography_estimator_core.cpp
+        ../two_view_epipolar_estimator_core.cpp
+        ../two_view_epipolar_geometry_utils.cpp
+        ../two_view_essential_five_point.cpp
+        ../two_view_fundamental_solvers.cpp)
 target_link_libraries(homography_differential_tests PRIVATE Eigen3::Eigen)
 target_include_directories(homography_differential_tests PRIVATE ..)
 target_compile_options(homography_differential_tests PRIVATE -O2 -fno-fast-math)
@@ -70,10 +73,8 @@ add_test(NAME homography_differential_tests COMMAND homography_differential_test
 add_executable(two_view_dispatch_differential_tests
         two_view_dispatch_differential_tests.cpp
         two_view_dispatch_differential.cpp
-        homography_differential.cpp
-        colmap_initial_pair_differential.cpp
-        colmap_five_point_differential.cpp
-        fundamental_matrix_solver_differential.cpp
+        ../homography_estimator_core.cpp
+        ../two_view_geometry_core.cpp
         ../two_view_epipolar_estimator_core.cpp
         ../two_view_epipolar_geometry_utils.cpp
         ../two_view_essential_five_point.cpp

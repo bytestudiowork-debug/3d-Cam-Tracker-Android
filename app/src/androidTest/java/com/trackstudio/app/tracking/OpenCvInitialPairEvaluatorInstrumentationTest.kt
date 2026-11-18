@@ -1,7 +1,9 @@
 package com.trackstudio.app.tracking
 
 import androidx.test.ext.junit.runners.AndroidJUnit4
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
 import org.junit.runner.RunWith
@@ -340,6 +342,233 @@ class OpenCvInitialPairEvaluatorInstrumentationTest {
         val errorX = secondX - projectedX * projectedScale
         val errorY = secondY - projectedY * projectedScale
         return errorX * errorX + errorY * errorY
+    }
+
+    @Test
+    fun integratedProductionNativePathMatchesPinnedFocalAndMixedFixtures() {
+        assertTrue("OpenCV runtime is unavailable", OpenCvRuntime.ensureLoaded())
+        val camera = doubleArrayOf(
+            800.0, 0.0, PRINCIPAL_X,
+            0.0, 800.0, PRINCIPAL_Y,
+            0.0, 0.0, 1.0
+        )
+        val allInliers = "1".repeat(120)
+        val nonplanarHMask =
+            "000000000000000001111100000000000011111111110000000000001111111111" +
+                "000000000001111111100000000000000111000000000000000000"
+        val mixedHMask =
+            "111111111111111111111111111111111111111111111111111111111111" +
+                "111111111111111111111111111111111111111100000100000100000100"
+        data class Expected(
+            val scene: String,
+            val focalPrior: Boolean,
+            val configuration: SourceFaithfulTwoViewEstimator.Configuration,
+            val selectedModel: SourceFaithfulTwoViewEstimator.InlierModel,
+            val poseSource: SourceFaithfulTwoViewEstimator.PoseSource,
+            val essentialSupport: Int,
+            val fundamentalSupport: Int,
+            val homographySupport: Int,
+            val homographyMask: String,
+            val passesHSeedGates: Boolean
+        )
+        val cases = listOf(
+            Expected("nonplanar", true,
+                SourceFaithfulTwoViewEstimator.Configuration.CALIBRATED,
+                SourceFaithfulTwoViewEstimator.InlierModel.ESSENTIAL,
+                SourceFaithfulTwoViewEstimator.PoseSource.ESSENTIAL,
+                120, 120, 36, nonplanarHMask, true),
+            Expected("nonplanar", false,
+                SourceFaithfulTwoViewEstimator.Configuration.UNCALIBRATED,
+                SourceFaithfulTwoViewEstimator.InlierModel.FUNDAMENTAL,
+                SourceFaithfulTwoViewEstimator.PoseSource.FUNDAMENTAL,
+                120, 120, 36, nonplanarHMask, true),
+            Expected("mixed", true,
+                SourceFaithfulTwoViewEstimator.Configuration.PLANAR_OR_PANORAMIC,
+                SourceFaithfulTwoViewEstimator.InlierModel.ESSENTIAL,
+                SourceFaithfulTwoViewEstimator.PoseSource.HOMOGRAPHY,
+                120, 120, 103, mixedHMask, false),
+            Expected("mixed", false,
+                SourceFaithfulTwoViewEstimator.Configuration.PLANAR_OR_PANORAMIC,
+                SourceFaithfulTwoViewEstimator.InlierModel.FUNDAMENTAL,
+                SourceFaithfulTwoViewEstimator.PoseSource.HOMOGRAPHY,
+                120, 120, 103, mixedHMask, false),
+            Expected("planar", true,
+                SourceFaithfulTwoViewEstimator.Configuration.PLANAR_OR_PANORAMIC,
+                SourceFaithfulTwoViewEstimator.InlierModel.ESSENTIAL,
+                SourceFaithfulTwoViewEstimator.PoseSource.HOMOGRAPHY,
+                120, 120, 120, allInliers, false),
+            Expected("planar", false,
+                SourceFaithfulTwoViewEstimator.Configuration.PLANAR_OR_PANORAMIC,
+                SourceFaithfulTwoViewEstimator.InlierModel.FUNDAMENTAL,
+                SourceFaithfulTwoViewEstimator.PoseSource.HOMOGRAPHY,
+                120, 120, 120, allInliers, false)
+        )
+        for (expected in cases) {
+            val scene = sourceFixture(expected.scene)
+            val estimate = requireNotNull(
+                SourceFaithfulTwoViewEstimator.estimateInitialPair(
+                    firstPixelsXY = flatten(scene.first),
+                    secondPixelsXY = flatten(scene.second),
+                    cameraMatrixRowMajor = camera,
+                    bothCamerasHaveFocalPriors = expected.focalPrior,
+                    maxErrorPixels = 4.0
+                )
+            )
+            val label = "${expected.scene}, focalPrior=${expected.focalPrior}"
+            assertEquals(label, expected.configuration, estimate.configuration)
+            assertEquals(label, expected.selectedModel, estimate.selectedModel)
+            assertEquals(label, expected.poseSource, estimate.poseSource)
+            assertEquals(label, expected.essentialSupport, estimate.essential.inlierCount)
+            assertEquals(label, expected.fundamentalSupport, estimate.fundamental.inlierCount)
+            assertEquals(label, expected.homographySupport, estimate.homography.inlierCount)
+            assertEquals(label, expected.homographyMask, maskString(estimate.homography.inlierMask))
+            assertEquals(label, allInliers, maskString(estimate.selectedInlierMask))
+            assertNotNull("$label pose missing", estimate.pose)
+            assertEquals(label, expected.passesHSeedGates, estimate.passesInitialPairGates)
+            if (expected.scene == "mixed") {
+                assertEquals(
+                    label,
+                    7.294462,
+                    Math.toDegrees(estimate.medianTriangulationAngleRadians),
+                    0.02
+                )
+            }
+        }
+
+        for (focalPrior in listOf(true, false)) {
+            val scene = sourceFixture("mixed_high")
+            val estimate = requireNotNull(
+                SourceFaithfulTwoViewEstimator.estimateInitialPair(
+                    firstPixelsXY = flatten(scene.first),
+                    secondPixelsXY = flatten(scene.second),
+                    cameraMatrixRowMajor = camera,
+                    bothCamerasHaveFocalPriors = focalPrior,
+                    maxErrorPixels = 4.0
+                )
+            )
+            assertEquals(SourceFaithfulTwoViewEstimator.PoseSource.HOMOGRAPHY, estimate.poseSource)
+            assertEquals(
+                if (focalPrior) SourceFaithfulTwoViewEstimator.InlierModel.ESSENTIAL
+                else SourceFaithfulTwoViewEstimator.InlierModel.FUNDAMENTAL,
+                estimate.selectedModel
+            )
+            assertEquals(allInliers, maskString(estimate.selectedInlierMask))
+            assertTrue(estimate.passesInitialPairGates)
+            assertTrue(Math.toDegrees(estimate.medianTriangulationAngleRadians) > 16.0)
+            assertTrue(kotlin.math.abs(requireNotNull(estimate.pose).translation[2]) < 0.95)
+        }
+
+        val acceptedFixture = sourceFixture("mixed_high")
+        val descriptors = identicalDescriptors(acceptedFixture.first.size)
+        val cameraMat = Mat(3, 3, CvType.CV_64F)
+        val matcher = SiftDescriptorMatcher()
+        try {
+            cameraMat.put(0, 0, *camera)
+            for (focalPrior in listOf(true, false)) {
+                val evaluation = OpenCvInitialPairEvaluator.evaluate(
+                    firstFrame = 0,
+                    secondFrame = 10,
+                    firstKeypoints = Array(acceptedFixture.first.size) { index ->
+                        KeyPoint(acceptedFixture.first[index].x.toFloat(),
+                            acceptedFixture.first[index].y.toFloat(), 1.0f)
+                    },
+                    firstDescriptors = descriptors.first,
+                    secondKeypoints = Array(acceptedFixture.second.size) { index ->
+                        KeyPoint(acceptedFixture.second[index].x.toFloat(),
+                            acceptedFixture.second[index].y.toFloat(), 1.0f)
+                    },
+                    secondDescriptors = descriptors.second,
+                    cameraMatrix = cameraMat,
+                    matcher = matcher,
+                    frameWidth = 1280,
+                    frameHeight = 720,
+                    policy = InitialPairPolicy.initialization(),
+                    cameraFocalLengthHasPrior = focalPrior
+                )
+                val candidate = evaluation.candidate
+                assertTrue("H seed candidate was rejected: ${evaluation.reason}", evaluation.accepted)
+                assertTrue(candidate.homographyPoseRecovered)
+                assertEquals(SourceFaithfulTwoViewEstimator.PoseSource.HOMOGRAPHY, candidate.poseSource)
+                assertEquals(
+                    if (focalPrior) SourceFaithfulTwoViewEstimator.InlierModel.ESSENTIAL
+                    else SourceFaithfulTwoViewEstimator.InlierModel.FUNDAMENTAL,
+                    candidate.selectedInlierModel
+                )
+                assertTrue(candidate.inlierCount >= 100)
+                assertEquals(candidate.inlierCount, candidate.verifiedMatches.size)
+            }
+        } finally {
+            matcher.clear()
+            descriptors.first.release()
+            descriptors.second.release()
+            cameraMat.release()
+        }
+    }
+
+    private data class SourceScene(val first: Array<Point>, val second: Array<Point>)
+
+    private fun sourceFixture(kind: String): SourceScene {
+        val r = rotation(doubleArrayOf(0.25, 0.6, 0.31), 0.13)
+        val translationX = if (kind == "mixed_high") 1.5 else 0.65
+        val first = Array(120) { index ->
+            val i = index.toDouble()
+            val x = -2.0 + 0.037 * i + 0.31 * sin(0.31 * i)
+            val y = -1.0 + 0.16 * (index % 11) + 0.17 * cos(0.47 * i)
+            val z = when (kind) {
+                "nonplanar" -> 2.8 + 0.19 * (index % 17)
+                "mixed", "mixed_high" -> if (index < 100) 4.5 else 2.2 + 0.71 * (index % 6)
+                else -> 4.5
+            }
+            Point(TRUE_FOCAL * x / z + PRINCIPAL_X, TRUE_FOCAL * y / z + PRINCIPAL_Y)
+        }
+        val second = Array(120) { index ->
+            val i = index.toDouble()
+            val x = -2.0 + 0.037 * i + 0.31 * sin(0.31 * i)
+            val y = -1.0 + 0.16 * (index % 11) + 0.17 * cos(0.47 * i)
+            val z = when (kind) {
+                "nonplanar" -> 2.8 + 0.19 * (index % 17)
+                "mixed", "mixed_high" -> if (index < 100) 4.5 else 2.2 + 0.71 * (index % 6)
+                else -> 4.5
+            }
+            val x2 = r[0] * x + r[1] * y + r[2] * z + translationX
+            val y2 = r[3] * x + r[4] * y + r[5] * z - 0.08
+            val z2 = r[6] * x + r[7] * y + r[8] * z + 0.03
+            Point(TRUE_FOCAL * x2 / z2 + PRINCIPAL_X, TRUE_FOCAL * y2 / z2 + PRINCIPAL_Y)
+        }
+        return SourceScene(first, second)
+    }
+
+    private fun flatten(points: Array<Point>): DoubleArray = DoubleArray(points.size * 2).also { values ->
+        points.forEachIndexed { index, point ->
+            values[2 * index] = point.x
+            values[2 * index + 1] = point.y
+        }
+    }
+
+    private fun maskString(mask: BooleanArray): String = buildString(mask.size) {
+        mask.forEach { append(if (it) '1' else '0') }
+    }
+
+    private fun identicalDescriptors(count: Int): Pair<Mat, Mat> {
+        val random = Random(20261119L)
+        val row = ByteArray(DESCRIPTOR_LENGTH)
+        val values = ByteArray(count * DESCRIPTOR_LENGTH)
+        for (index in 0 until count) {
+            random.nextBytes(row)
+            val descriptor = FloatArray(DESCRIPTOR_LENGTH) {
+                (row[it].toInt() and 0xff).toFloat()
+            }
+            RootSiftDescriptorMath.normalizeDescriptorInPlace(descriptor)
+            for (column in descriptor.indices) {
+                values[index * DESCRIPTOR_LENGTH + column] =
+                    descriptor[column].roundToInt().coerceIn(0, 255).toByte()
+            }
+        }
+        val first = Mat(count, DESCRIPTOR_LENGTH, CvType.CV_8UC1)
+        val second = Mat(count, DESCRIPTOR_LENGTH, CvType.CV_8UC1)
+        check(first.put(0, 0, values) == values.size)
+        check(second.put(0, 0, values) == values.size)
+        return first to second
     }
 
     private companion object {

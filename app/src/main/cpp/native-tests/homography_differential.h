@@ -28,77 +28,24 @@
 // POSSIBILITY OF SUCH DAMAGE.
 #pragma once
 
-#include "colmap_initial_pair_differential.h"
-
-#include <Eigen/Core>
-#include <Eigen/Geometry>
+#include "../homography_estimator_core.h"
 
 namespace tracking::homography_test {
-
-using tracking::colmap_initial_pair_test::LORansacReport;
-using tracking::colmap_initial_pair_test::RansacOptions;
-using tracking::colmap_initial_pair_test::RunLORansac;
-
-using Point = Eigen::Vector2d;
-using Ray = Eigen::Vector3d;
-using Matrix = Eigen::Matrix3d;
-
-struct HomographyPoseCandidate {
-    Eigen::Quaterniond rotation = Eigen::Quaterniond::Identity();
-    Ray translation = Ray::Zero();
-    Ray normal = Ray::Zero();
-    std::size_t positive_depth_count = 0;
-    double reprojection_residual_sum = 0.0;
-    std::vector<char> positive_depth_mask;
-};
-
-struct HomographyPoseReport {
-    std::vector<HomographyPoseCandidate> candidates;
-    std::size_t selected_index = 0;
-    std::vector<Ray> triangulated_points;
-    double median_triangulation_angle = 0.0;
-};
-
-struct InitialPairGates {
-    std::size_t minimum_inliers = 100;
-    double maximum_absolute_z_translation = 0.95;
-    double minimum_median_triangulation_angle_degrees = 16.0;
-};
-
-bool EstimateDLT(const std::vector<Point>& points1,
-                 const std::vector<Point>& points2,
-                 std::vector<Matrix>* models);
-
-void OneWaySquaredReprojectionResiduals(const std::vector<Point>& points1,
-                                        const std::vector<Point>& points2,
-                                        const Matrix& homography,
-                                        std::vector<double>* residuals);
-
-LORansacReport<Matrix> RunHomographyLORansac(
-        const std::vector<Point>& points1,
-        const std::vector<Point>& points2,
-        const RansacOptions& options);
-
-std::vector<HomographyPoseCandidate> DecomposeHomography(
-        const Matrix& homography,
-        const Matrix& intrinsics1,
-        const Matrix& intrinsics2);
-
-HomographyPoseReport RecoverHomographyPose(
-        const Matrix& homography,
-        const Matrix& intrinsics1,
-        const Matrix& intrinsics2,
-        const std::vector<Ray>& rays1,
-        const std::vector<Ray>& rays2);
-
-double CalculateTriangulationAngle(const Ray& projection_center1,
-                                   const Ray& projection_center2,
-                                   const Ray& point3d);
-
-double Median(std::vector<double> values);
-
-bool PassInitialPairGates(std::size_t inlier_count,
-                          const HomographyPoseReport& pose,
-                          const InitialPairGates& gates = {});
-
+using tracking::source_homography::CalculateTriangulationAngle;
+using tracking::source_homography::DecomposeHomography;
+using tracking::source_homography::EstimateDLT;
+using tracking::source_homography::HomographyPoseCandidate;
+using tracking::source_homography::HomographyPoseReport;
+using tracking::source_homography::InitialPairGates;
+using tracking::source_homography::LORansacReport;
+using tracking::source_homography::Matrix;
+using tracking::source_homography::Median;
+using tracking::source_homography::OneWaySquaredReprojectionResiduals;
+using tracking::source_homography::PassInitialPairGates;
+using tracking::source_homography::Point;
+using tracking::source_homography::Ray;
+using tracking::source_homography::RecoverHomographyPose;
+using tracking::source_homography::RansacOptions;
+using tracking::source_homography::RunHomographyLORansac;
+using tracking::source_homography::RunLORansac;
 }  // namespace tracking::homography_test

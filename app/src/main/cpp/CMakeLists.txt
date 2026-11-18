@@ -108,6 +108,8 @@ add_library(trackstudio_camera SHARED
         absolute_pose_loransac_jni.cpp
         camera_pose_refiner.cpp
         camera_pose_refiner_core.cpp
+        homography_estimator_core.cpp
+        two_view_geometry_core.cpp
         two_view_epipolar_estimator_core.cpp
         two_view_epipolar_geometry_utils.cpp
         two_view_essential_five_point.cpp

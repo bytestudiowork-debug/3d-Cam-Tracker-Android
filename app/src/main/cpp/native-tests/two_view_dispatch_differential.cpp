@@ -27,54 +27,46 @@
 // ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE
 // POSSIBILITY OF SUCH DAMAGE.
 #include "two_view_dispatch_differential.h"
-
-#include <algorithm>
-#include <stdexcept>
-#include <string>
+#include "../two_view_geometry_core.h"
 
 namespace tracking::two_view_dispatch_test {
 namespace {
-
-void Validate(const ModelSupport& report, const char* label) {
-    if (report.success &&
-        (report.inlier_mask.empty() ||
-         static_cast<std::size_t>(std::count_if(
-                 report.inlier_mask.begin(), report.inlier_mask.end(),
-                 [](const char inlier) { return inlier != 0; })) !=
-                 report.num_inliers)) {
-        throw std::invalid_argument(std::string("invalid ") + label +
-                                    " support report");
-    }
+tracking::source_two_view::ModelSupport ToProductionSupport(
+        const ModelSupport& support) {
+    return {support.success, support.num_inliers, support.inlier_mask};
 }
-
-Decision MakeDecision(const Configuration configuration,
-                      const Model model,
-                      const std::size_t num_inliers,
-                      const ModelSupport& report) {
-    Decision decision;
-    decision.configuration = configuration;
-    decision.selected_model = model;
-    decision.num_inliers = num_inliers;
-    if (model != Model::kNone) {
-        decision.selected_inlier_mask = report.inlier_mask;
+Configuration ToTestConfiguration(
+        const tracking::source_two_view::GeometryConfiguration value) {
+    switch (value) {
+        case tracking::source_two_view::GeometryConfiguration::kDegenerate:
+            return Configuration::kDegenerate;
+        case tracking::source_two_view::GeometryConfiguration::kCalibrated:
+            return Configuration::kCalibrated;
+        case tracking::source_two_view::GeometryConfiguration::kUncalibrated:
+            return Configuration::kUncalibrated;
+        case tracking::source_two_view::GeometryConfiguration::kPlanarOrPanoramic:
+            return Configuration::kPlanarOrPanoramic;
     }
-    switch (configuration) {
-        case Configuration::kCalibrated:
-            decision.pose_source = PoseSource::kEssential;
-            break;
-        case Configuration::kUncalibrated:
-            decision.pose_source = PoseSource::kFundamental;
-            break;
-        case Configuration::kPlanarOrPanoramic:
-            decision.pose_source = PoseSource::kHomography;
-            break;
-        case Configuration::kDegenerate:
-            decision.pose_source = PoseSource::kNone;
-            break;
-    }
-    return decision;
+    return Configuration::kDegenerate;
 }
-
+Model ToTestModel(const tracking::source_two_view::InlierModel value) {
+    switch (value) {
+        case tracking::source_two_view::InlierModel::kNone: return Model::kNone;
+        case tracking::source_two_view::InlierModel::kEssential: return Model::kEssential;
+        case tracking::source_two_view::InlierModel::kFundamental: return Model::kFundamental;
+        case tracking::source_two_view::InlierModel::kHomography: return Model::kHomography;
+    }
+    return Model::kNone;
+}
+PoseSource ToTestPoseSource(const tracking::source_two_view::PoseSource value) {
+    switch (value) {
+        case tracking::source_two_view::PoseSource::kNone: return PoseSource::kNone;
+        case tracking::source_two_view::PoseSource::kEssential: return PoseSource::kEssential;
+        case tracking::source_two_view::PoseSource::kFundamental: return PoseSource::kFundamental;
+        case tracking::source_two_view::PoseSource::kHomography: return PoseSource::kHomography;
+    }
+    return PoseSource::kNone;
+}
 }  // namespace
 
 Decision Dispatch(const bool both_cameras_have_focal_priors,
@@ -82,125 +74,21 @@ Decision Dispatch(const bool both_cameras_have_focal_priors,
                   const ModelSupport& fundamental,
                   const ModelSupport& homography,
                   const Options& options) {
-    if (options.minimum_inliers == 0 ||
-        options.minimum_essential_to_fundamental_ratio < 0.0 ||
-        options.minimum_essential_to_fundamental_ratio > 1.0 ||
-        options.maximum_homography_ratio < 0.0 ||
-        options.maximum_homography_ratio > 1.0) {
-        throw std::invalid_argument("invalid two-view dispatch options");
-    }
-    Validate(essential, "essential");
-    Validate(fundamental, "fundamental");
-    Validate(homography, "homography");
-
-    const bool any_model_succeeded = essential.success || fundamental.success ||
-                                     homography.success;
-    const bool any_model_has_support =
-            essential.num_inliers >= options.minimum_inliers ||
-            fundamental.num_inliers >= options.minimum_inliers ||
-            homography.num_inliers >= options.minimum_inliers;
-    if (!any_model_succeeded || !any_model_has_support) {
-        return MakeDecision(Configuration::kDegenerate, Model::kNone, 0,
-                            essential);
-    }
-
-    if (both_cameras_have_focal_priors) {
-        const double essential_to_fundamental_ratio =
-                static_cast<double>(essential.num_inliers) /
-                fundamental.num_inliers;
-        const double homography_to_essential_ratio =
-                static_cast<double>(homography.num_inliers) /
-                essential.num_inliers;
-
-        if (essential.success &&
-            essential_to_fundamental_ratio >
-                    options.minimum_essential_to_fundamental_ratio &&
-            essential.num_inliers >= options.minimum_inliers) {
-            // The pinned calibrated branch retains the larger E/F support;
-            // E wins ties. H changes the configuration on a strict ratio
-            // comparison, but replaces the support mask only when strictly
-            // larger than the retained E/F support.
-            const bool essential_is_best =
-                    essential.num_inliers >= fundamental.num_inliers;
-            const ModelSupport& best_epipolar =
-                    essential_is_best ? essential : fundamental;
-            const Model best_model = essential_is_best ? Model::kEssential
-                                                       : Model::kFundamental;
-            if (homography_to_essential_ratio >
-                options.maximum_homography_ratio) {
-                if (homography.num_inliers > best_epipolar.num_inliers) {
-                    return MakeDecision(Configuration::kPlanarOrPanoramic,
-                                        Model::kHomography,
-                                        homography.num_inliers, homography);
-                }
-                return MakeDecision(Configuration::kPlanarOrPanoramic,
-                                    best_model, best_epipolar.num_inliers,
-                                    best_epipolar);
-            }
-            return MakeDecision(Configuration::kCalibrated, best_model,
-                                best_epipolar.num_inliers, best_epipolar);
-        }
-
-        if (fundamental.success &&
-            fundamental.num_inliers >= options.minimum_inliers) {
-            const double homography_to_fundamental_ratio =
-                    static_cast<double>(homography.num_inliers) /
-                    fundamental.num_inliers;
-            if (homography_to_fundamental_ratio >
-                options.maximum_homography_ratio) {
-                if (homography.num_inliers > fundamental.num_inliers) {
-                    return MakeDecision(Configuration::kPlanarOrPanoramic,
-                                        Model::kHomography,
-                                        homography.num_inliers, homography);
-                }
-                return MakeDecision(Configuration::kPlanarOrPanoramic,
-                                    Model::kFundamental,
-                                    fundamental.num_inliers, fundamental);
-            }
-            return MakeDecision(Configuration::kUncalibrated,
-                                Model::kFundamental,
-                                fundamental.num_inliers, fundamental);
-        }
-
-        if (homography.success &&
-            homography.num_inliers >= options.minimum_inliers) {
-            return MakeDecision(Configuration::kPlanarOrPanoramic,
-                                Model::kHomography, homography.num_inliers,
-                                homography);
-        }
-        return MakeDecision(Configuration::kDegenerate, Model::kNone, 0,
-                            essential);
-    }
-
-    const double homography_to_fundamental_ratio =
-            static_cast<double>(homography.num_inliers) /
-            fundamental.num_inliers;
-    if (fundamental.success &&
-        fundamental.num_inliers >= options.minimum_inliers) {
-        if (homography_to_fundamental_ratio >
-            options.maximum_homography_ratio) {
-            if (homography.num_inliers > fundamental.num_inliers) {
-                return MakeDecision(Configuration::kPlanarOrPanoramic,
-                                    Model::kHomography,
-                                    homography.num_inliers, homography);
-            }
-            return MakeDecision(Configuration::kPlanarOrPanoramic,
-                                Model::kFundamental,
-                                fundamental.num_inliers, fundamental);
-        }
-        return MakeDecision(Configuration::kUncalibrated,
-                            Model::kFundamental, fundamental.num_inliers,
-                            fundamental);
-    }
-
-    if (homography.success &&
-        homography.num_inliers >= options.minimum_inliers) {
-        return MakeDecision(Configuration::kPlanarOrPanoramic,
-                            Model::kHomography, homography.num_inliers,
-                            homography);
-    }
-    return MakeDecision(Configuration::kDegenerate, Model::kNone, 0,
-                        essential);
+    const tracking::source_two_view::TwoViewDispatchOptions production_options{
+            options.minimum_inliers,
+            options.minimum_essential_to_fundamental_ratio,
+            options.maximum_homography_ratio};
+    const tracking::source_two_view::TwoViewGeometryDecision production =
+            tracking::source_two_view::DispatchTwoViewGeometry(
+                    both_cameras_have_focal_priors,
+                    ToProductionSupport(essential),
+                    ToProductionSupport(fundamental),
+                    ToProductionSupport(homography), production_options);
+    return {ToTestConfiguration(production.configuration),
+            ToTestModel(production.selected_model),
+            ToTestPoseSource(production.pose_source),
+            production.num_inliers,
+            production.selected_inlier_mask};
 }
 
 const char* ToString(const Configuration configuration) {

@@ -75,7 +75,8 @@ internal object InitialPairSelector {
             !candidate.essentialToFundamentalInlierRatio.isFinite() ||
                 candidate.essentialToFundamentalInlierRatio < 0.0 ->
                 "Invalid calibrated-model agreement metric"
-            !candidate.fundamentalPoseRecovered && candidate.essentialToFundamentalInlierRatio <=
+            !candidate.homographyPoseRecovered && !candidate.fundamentalPoseRecovered &&
+                candidate.essentialToFundamentalInlierRatio <=
                 policy.minimumEssentialToFundamentalInlierRatio ->
                 "Essential geometry is inconsistent with the fundamental model"
             !candidate.forwardMotionRatio.isFinite() ||
@@ -89,9 +90,11 @@ internal object InitialPairSelector {
                 "Too few points have useful triangulation parallax"
             candidate.cheiralityRatio < policy.minimumCheiralityRatio ->
                 "Too few points satisfy positive-depth cheirality"
-            candidate.forwardMotionRatio >= policy.maximumForwardMotionRatio ->
+            !candidate.homographyPoseRecovered &&
+                candidate.forwardMotionRatio >= policy.maximumForwardMotionRatio ->
                 "Pair is dominated by degenerate forward motion"
-            candidate.homographyInlierRatio > policy.planarDominanceRatio ->
+            !candidate.homographyPoseRecovered &&
+                candidate.homographyInlierRatio > policy.planarDominanceRatio ->
                 "Homography-dominated pair is planar or panoramic for calibrated initialization"
             else -> null
         }
@@ -277,8 +280,13 @@ internal data class InitialPairCandidate(
     val verifiedMatches: List<Pair<Int, Int>> = emptyList(),
     /** Essential support divided by fundamental support; values above one are valid. */
     val essentialToFundamentalInlierRatio: Double = 1.0,
-    /** True only when COLMAP-style F-to-E conversion supplied the recovered pose. */
-    val fundamentalPoseRecovered: Boolean = false
+    /** True only when F-to-E conversion supplied the recovered pose. */
+    val fundamentalPoseRecovered: Boolean = false,
+    val homographyPoseRecovered: Boolean = false,
+    val selectedInlierModel: SourceFaithfulTwoViewEstimator.InlierModel =
+        SourceFaithfulTwoViewEstimator.InlierModel.NONE,
+    val poseSource: SourceFaithfulTwoViewEstimator.PoseSource =
+        SourceFaithfulTwoViewEstimator.PoseSource.NONE
 ) {
     val frameGap: Int
         get() = secondFrame - firstFrame

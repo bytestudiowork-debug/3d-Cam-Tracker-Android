@@ -265,6 +265,27 @@ class InitialPairSelectorTest {
     }
 
     @Test
+    fun sourceGatedHomographyPoseUsesItsOwnPlanarAndForwardMotionChecks() {
+        val candidate = candidate(
+            medianParallax = 20.0,
+            upperParallax = 25.0,
+            homographyRatio = 1.2,
+            essentialToFundamentalRatio = 0.5
+        ).copy(
+            forwardMotionRatio = 0.99,
+            homographyPoseRecovered = true,
+            poseSource = SourceFaithfulTwoViewEstimator.PoseSource.HOMOGRAPHY
+        )
+
+        val evaluation = InitialPairSelector.evaluate(
+            candidate,
+            InitialPairPolicy.initialization()
+        )
+
+        assertTrue(evaluation.accepted)
+    }
+
+    @Test
     fun returnsNoSelectionWhenEveryPairFailsQualityGates() {
         val result = InitialPairSelector.select(
             listOf(candidate(inliers = 20), candidate(secondFrame = 9, inliers = 25))

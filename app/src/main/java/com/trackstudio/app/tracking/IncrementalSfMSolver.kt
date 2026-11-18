@@ -218,7 +218,8 @@ internal class IncrementalSfMSolver(
                         cameraMatrix = cameraMatrix,
                         matcher = matcher,
                         frameWidth = minOf(first.width, second.width),
-                        frameHeight = minOf(first.height, second.height)
+                        frameHeight = minOf(first.height, second.height),
+                        cameraFocalLengthHasPrior = cameraFocalLengthHasPrior
                     )
                 }
                 onProgress(
