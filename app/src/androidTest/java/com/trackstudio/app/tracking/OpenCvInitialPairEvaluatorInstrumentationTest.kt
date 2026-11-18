@@ -174,6 +174,76 @@ class OpenCvInitialPairEvaluatorInstrumentationTest {
     }
 
     @Test
+    fun oneWaySquaredHomographySupportDiffersFromCurrentSymmetricRefit() {
+        assertTrue("OpenCV runtime is unavailable", OpenCvRuntime.ensureLoaded())
+
+        val first = arrayOf(
+            Point(0.0, 0.0),
+            Point(100.0, 0.0),
+            Point(0.0, 100.0),
+            Point(100.0, 100.0),
+            Point(20.0, 20.0)
+        )
+        val second = arrayOf(
+            Point(0.0, 0.0),
+            Point(10.0, 0.0),
+            Point(0.0, 10.0),
+            Point(10.0, 10.0),
+            Point(2.5, 2.0)
+        )
+        val fitFirst = MatOfPoint2f()
+        val fitSecond = MatOfPoint2f()
+        val fitMask = Mat()
+        var homography = Mat()
+        try {
+            fitFirst.fromArray(*first.take(4).toTypedArray())
+            fitSecond.fromArray(*second.take(4).toTypedArray())
+            homography = Calib3d.findHomography(
+                fitFirst, fitSecond, 0, 4.0, fitMask, 1, 0.999
+            )
+            val model = requireNotNull(OpenCvMatrixReadback.readCv64F(homography, 3, 3))
+            val transform = requireNotNull(HomographyGeometryMath.fromMatrix(model))
+
+            val sourceStyleMask = first.indices.map { index ->
+                squaredForwardTransferResidual(
+                    model,
+                    first[index].x, first[index].y,
+                    second[index].x, second[index].y
+                ) <= 4.0 * 4.0
+            }
+            val currentSymmetricMask = first.indices.map { index ->
+                HomographyGeometryMath.symmetricTransferError(
+                    transform,
+                    first[index].x, first[index].y,
+                    second[index].x, second[index].y
+                ) <= 4.0
+            }
+            val localResult = requireNotNull(OpenCvHomographyLocalOptimizer.refine(
+                firstPoints = first,
+                secondPoints = second,
+                initialHomography = model,
+                initialRansacInliers = first.indices.toList(),
+                thresholdPx = 4.0,
+                maximumRefitRounds = 0
+            ))
+
+            assertEquals(listOf(true, true, true, true, true), sourceStyleMask)
+            assertEquals(listOf(true, true, true, true, false), currentSymmetricMask)
+            assertEquals(listOf(0, 1, 2, 3), localResult.inlierIndices)
+            assertTrue(
+                kotlin.math.abs(
+                    squaredForwardTransferResidual(model, 20.0, 20.0, 2.5, 2.0) - 0.25
+                ) < 1e-6
+            )
+        } finally {
+            fitFirst.release()
+            fitSecond.release()
+            fitMask.release()
+            homography.release()
+        }
+    }
+
+    @Test
     fun poseRecoveryRetainsPositiveDepthPointsBeyondOpenCvDefaultFiftyUnitCutoff() {
         assertTrue("OpenCV runtime is unavailable", OpenCvRuntime.ensureLoaded())
 
@@ -253,6 +323,23 @@ class OpenCvInitialPairEvaluatorInstrumentationTest {
             t * x * y + s * z, t * y * y + c, t * y * z - s * x,
             t * x * z - s * y, t * y * z + s * x, t * z * z + c
         )
+    }
+
+    private fun squaredForwardTransferResidual(
+        homography: DoubleArray,
+        firstX: Double,
+        firstY: Double,
+        secondX: Double,
+        secondY: Double
+    ): Double {
+        val projectedX = homography[0] * firstX + homography[1] * firstY + homography[2]
+        val projectedY = homography[3] * firstX + homography[4] * firstY + homography[5]
+        val projectedScale = 1.0 / (
+            homography[6] * firstX + homography[7] * firstY + homography[8]
+        )
+        val errorX = secondX - projectedX * projectedScale
+        val errorY = secondY - projectedY * projectedScale
+        return errorX * errorX + errorY * errorY
     }
 
     private companion object {
