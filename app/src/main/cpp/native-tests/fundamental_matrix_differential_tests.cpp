@@ -105,18 +105,20 @@ void TestPinnedFixtures() {
     using namespace fundamental_matrix_oracle_expectations;
     VerifyFixture(kSevenGeneral,
                   MakeCorrespondences(7, Geometry::kGeneral), true);
-    VerifyFixture(kSevenPlanar,
-                  MakeCorrespondences(7, Geometry::kPlanar), true);
-    VerifyFixture(kSevenCollinear,
-                  MakeCorrespondences(7, Geometry::kCollinear), true);
+    VerifyFixture(kSevenNearPlanar,
+                  MakeCorrespondences(7, Geometry::kNearPlanar), true);
+    VerifyFixture(kSevenNearCollinear,
+                  MakeCorrespondences(7, Geometry::kNearCollinear), true);
+    VerifyFixture(kSevenAllZero,
+                  MakeCorrespondences(7, Geometry::kAllZero), true);
     VerifyFixture(kEightMinimal,
                   MakeCorrespondences(8, Geometry::kGeneral), false);
     VerifyFixture(kEightNoisyOverdetermined,
                   MakeCorrespondences(13, Geometry::kGeneral, 0.35), false);
-    VerifyFixture(kEightPlanar,
-                  MakeCorrespondences(8, Geometry::kPlanar), false);
-    VerifyFixture(kEightCollinearOverdetermined,
-                  MakeCorrespondences(10, Geometry::kCollinear), false);
+    VerifyFixture(kEightNearPlanar,
+                  MakeCorrespondences(8, Geometry::kNearPlanar), false);
+    VerifyFixture(kEightNearCollinearOverdetermined,
+                  MakeCorrespondences(10, Geometry::kNearCollinear), false);
 }
 void TestInvalidInputSemantics() {
     const Eigen::Matrix3d marker = Eigen::Matrix3d::Constant(42.0);

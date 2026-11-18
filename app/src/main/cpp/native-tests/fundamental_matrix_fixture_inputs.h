@@ -11,26 +11,31 @@ struct Correspondences {
 };
 enum class Geometry {
     kGeneral,
-    kPlanar,
-    kCollinear,
+    kNearPlanar,
+    kNearCollinear,
+    kAllZero,
 };
 inline Eigen::Vector3d ScenePoint(const std::size_t index,
                                  const std::size_t count,
                                  const Geometry geometry) {
-    if (geometry == Geometry::kCollinear) {
+    if (geometry == Geometry::kNearCollinear) {
         const double t = count <= 1
                 ? 0.0
                 : -0.9 + 1.8 * static_cast<double>(index) /
                                   static_cast<double>(count - 1);
-        return {0.4 + 0.9 * t, -0.3 + 0.4 * t, 5.0 + 0.6 * t};
+        const double i = static_cast<double>(index);
+        return {0.4 + 0.9 * t + 0.22 * std::sin(0.71 * i + 0.2),
+                -0.3 + 0.4 * t + 0.17 * std::cos(1.13 * i + 0.4),
+                5.0 + 0.6 * t + 0.14 * std::sin(0.83 * i + 0.1)};
     }
     const double i = static_cast<double>(index);
     const double x = 0.72 * std::sin(0.71 * i + 0.13) +
                      0.19 * std::cos(1.31 * i + 0.27) + 0.055 * i;
     const double y = 0.51 * std::cos(0.53 * i + 0.41) -
                      0.12 * std::sin(1.17 * i + 0.09) + 0.018 * i * i;
-    if (geometry == Geometry::kPlanar) {
-        return {x, y, 5.2 + 0.22 * x - 0.17 * y};
+    if (geometry == Geometry::kNearPlanar) {
+        return {x, y, 5.2 + 0.22 * x - 0.17 * y +
+                              0.18 * std::sin(0.87 * i + 0.4)};
     }
     return {x, y, 5.0 + 0.31 * std::sin(0.37 * i + 0.2) + 0.08 * i};
 }
@@ -40,6 +45,13 @@ inline Correspondences MakeCorrespondences(const std::size_t count,
     Correspondences result;
     result.points1.reserve(count);
     result.points2.reserve(count);
+    if (geometry == Geometry::kAllZero) {
+        for (std::size_t index = 0; index < count; ++index) {
+            result.points1.emplace_back(0.0, 0.0);
+            result.points2.emplace_back(0.0, 0.0);
+        }
+        return result;
+    }
     const Eigen::Matrix3d rotation = Eigen::AngleAxisd(
             0.12, Eigen::Vector3d(0.1, 0.6, 0.2).normalized())
             .toRotationMatrix();
