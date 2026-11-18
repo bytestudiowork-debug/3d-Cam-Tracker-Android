@@ -13,6 +13,7 @@ import org.opencv.core.KeyPoint
 import org.opencv.core.Mat
 import org.opencv.core.MatOfKeyPoint
 import org.opencv.core.Point
+import org.opencv.core.Point3
 import java.util.Random
 import kotlin.math.hypot
 import kotlin.math.roundToInt
@@ -258,6 +259,343 @@ class IncrementalSfMInitializationInstrumentationTest {
             cameraMatrix.release()
         }
     }
+
+    @Test
+    fun seededPixelNoiseOutliersAndPartialThirdViewOcclusionRegisterThroughPublicEngine() {
+        val fixture = SyntheticSeedScene.render(
+            SceneKind.PLANAR_HIGH,
+            includeThirdCamera = true,
+            pixelNoiseSigmaPx = 0.8,
+            secondViewOutlierFraction = 0.08,
+            thirdViewOutlierFraction = 0.10,
+            thirdViewVisibleFraction = 0.70
+        )
+        val cameraMatrix = cameraMatrix()
+        try {
+            val oracle = inspectSeedPair(fixture, cameraMatrix, cameraFocalLengthHasPrior = true)
+            assertTrue("Seed noise/outliers lost the 100-inlier initialization support: " +
+                "${oracle.geometry.numInliers}", oracle.geometry.numInliers >= 100)
+            assertTrue("Seed noise/outliers crossed the source-derived initialization gates: " +
+                "${oracle.evaluation.reason}", oracle.geometry.passesInitialPairGates && oracle.evaluation.accepted)
+            assertEquals(oracle.geometry.selectedInlierMask.count { it }, oracle.geometry.numInliers)
+            val mismatchedPatchMatches = oracle.inputMatches.indices.filter { matchIndex ->
+                val (firstIndex, secondIndex) = oracle.inputMatches[matchIndex]
+                val firstPoint = oracle.firstKeypoints[firstIndex].pt
+                val secondPoint = oracle.secondKeypoints[secondIndex].pt
+                val firstPatch = fixture.patchIndex(
+                    FIRST_FRAME,
+                    CameraFeatureObservation(FIRST_FRAME, firstPoint.x, firstPoint.y, firstIndex)
+                )
+                val secondPatch = fixture.patchIndex(
+                    SECOND_FRAME,
+                    CameraFeatureObservation(SECOND_FRAME, secondPoint.x, secondPoint.y, secondIndex)
+                )
+                firstPatch != null && secondPatch != null && firstPatch != secondPatch
+            }
+            assertTrue("Rendered texture swaps produced no detectable outlier correspondences",
+                mismatchedPatchMatches.isNotEmpty())
+            assertTrue("Selected seed mask retained too many wrong patch identities",
+                mismatchedPatchMatches.count { oracle.geometry.selectedInlierMask[it] } <=
+                    maxOf(1, mismatchedPatchMatches.size / 10))
+
+            val result = solvePublicEngine(
+                fixture,
+                cameraMatrix,
+                cameraFocalLengthHasPrior = true
+            )
+            assertConsistentSeedResult(result, oracle, expectedRegisteredCameraCount = 3)
+            assertEquals(CameraPoseStatus.PNP_REGISTERED, result.poses[THIRD_FRAME].status)
+            assertTrue(result.diagnostics[THIRD_FRAME].status.contains("PnP"))
+            assertTrue("Occlusion unexpectedly removed all synthetic overlap",
+                fixture.visiblePatchIds(THIRD_FRAME).size in 70..90)
+
+            val keypointsByFrame = mapOf(
+                FIRST_FRAME to oracle.firstKeypoints,
+                SECOND_FRAME to oracle.secondKeypoints,
+                THIRD_FRAME to detectKeypoints(fixture.frames[THIRD_FRAME])
+            )
+            val threeViewTracks = result.featureTracks.filter { track ->
+                listOf(FIRST_FRAME, SECOND_FRAME, THIRD_FRAME).all { frameIndex ->
+                    track.observations.any { it.frameIndex == frameIndex }
+                }
+            }
+            assertTrue("Only ${threeViewTracks.size} tracks survived all three perturbed views",
+                threeViewTracks.size >= 30)
+            threeViewTracks.forEach { track ->
+                val observations = track.observations.associateBy { it.frameIndex }
+                assertEquals(listOf(FIRST_FRAME, SECOND_FRAME, THIRD_FRAME), observations.keys.sorted())
+                val patchIds = observations.map { (frameIndex, observation) ->
+                    val keypoint = keypointsByFrame.getValue(frameIndex).getOrNull(observation.featureIndex)
+                    assertNotNull("Invalid feature index in frame $frameIndex", keypoint)
+                    val point = requireNotNull(keypoint).pt
+                    assertEquals(point.x, observation.x, 1e-9)
+                    assertEquals(point.y, observation.y, 1e-9)
+                    fixture.patchIndex(frameIndex, observation)
+                }
+                assertTrue("Outlier matching joined different physical patches: $patchIds",
+                    patchIds.all { it != null } && patchIds.distinct().size == 1)
+                assertTrue("A track continued through an occluded third-view feature",
+                    fixture.isPatchVisible(THIRD_FRAME, requireNotNull(patchIds.last())))
+            }
+            for (frameIndex in listOf(FIRST_FRAME, SECOND_FRAME, THIRD_FRAME)) {
+                val indices = threeViewTracks.map { track ->
+                    track.observations.single { it.frameIndex == frameIndex }.featureIndex
+                }
+                assertEquals("Frame $frameIndex feature was assigned to multiple tracks",
+                    indices.size, indices.toSet().size)
+            }
+
+            val tracksById = result.featureTracks.associateBy { it.id }
+            val landmarksById = result.landmarks.associateBy { it.trackId }
+            assertEquals(tracksById.keys, landmarksById.keys)
+            for ((trackId, track) in tracksById) {
+                val landmark = landmarksById.getValue(trackId)
+                assertEquals(track.observations.size, landmark.observationCount)
+                assertTrue("Track $trackId fell below the 1.5 degree triangulation parallax floor",
+                    landmark.triangulationAngleDegrees >= 1.5)
+                val point = doubleArrayOf(landmark.position.x, landmark.position.y, landmark.position.z)
+                for (observation in track.observations) {
+                    val cameraPoint = transform(result.poses[observation.frameIndex], point)
+                    assertTrue("Track $trackId is behind frame ${observation.frameIndex}", cameraPoint[2] > 0.0)
+                    val dx = CAMERA_VALUES[0] * cameraPoint[0] / cameraPoint[2] + CAMERA_VALUES[2] - observation.x
+                    val dy = CAMERA_VALUES[4] * cameraPoint[1] / cameraPoint[2] + CAMERA_VALUES[5] - observation.y
+                    assertTrue("Track $trackId reprojection error exceeds 4.25 px", hypot(dx, dy) <= 4.25)
+                }
+                assertTrue(landmark.meanReprojectionErrorPx <= 4.0)
+            }
+        } finally {
+            fixture.release()
+            cameraMatrix.release()
+        }
+    }
+
+    @Test
+    fun severeThirdViewOcclusionIsHeldByExistingRegistrationGates() {
+        val fixture = SyntheticSeedScene.render(
+            SceneKind.PLANAR_HIGH,
+            includeThirdCamera = true,
+            thirdViewVisibleFraction = 0.01
+        )
+        val cameraMatrix = cameraMatrix()
+        try {
+            val oracle = inspectSeedPair(fixture, cameraMatrix, cameraFocalLengthHasPrior = true)
+            val result = solvePublicEngine(fixture, cameraMatrix, cameraFocalLengthHasPrior = true)
+            assertConsistentSeedResult(result, oracle)
+            assertEquals(1, fixture.visiblePatchIds(THIRD_FRAME).size)
+            assertEquals(CameraPoseStatus.HELD_LAST_VALID, result.poses[THIRD_FRAME].status)
+            assertTrue(result.featureTracks.none { track ->
+                track.observations.any { it.frameIndex == THIRD_FRAME }
+            })
+            assertFalse(result.diagnostics[THIRD_FRAME].status.contains("PnP registered"))
+            assertTrue(result.diagnostics[THIRD_FRAME].status.isNotBlank())
+        } finally {
+            fixture.release()
+            cameraMatrix.release()
+        }
+    }
+
+    @Test
+    fun sourceFaithfulTwoViewAndPnpMasksRejectSeededOutliersAtExistingQualityGates() {
+        val pair = syntheticSeedCorrespondences(
+            pixelNoiseSigmaPx = 0.8,
+            outlierFraction = 0.10
+        )
+        val pairEstimate = requireNotNull(estimateSyntheticSeedPair(pair)) {
+            "Source-faithful estimator did not return a model for the in-range synthetic perturbation"
+        }
+        assertTrue(pairEstimate.passesInitialPairGates)
+        assertTrue(pairEstimate.numInliers >= InitialPairPolicy.initialization().minimumInliers)
+        assertEquals(pairEstimate.numInliers, pairEstimate.selectedInlierMask.count { it })
+        val selectedOutliers = pair.outlierIndices.count { pairEstimate.selectedInlierMask[it] }
+        assertEquals("Selected seed mask retained a deliberately swapped correspondence", 0, selectedOutliers)
+        assertTrue(pairEstimate.pose!!.inlierIndices.none { it in pair.outlierIndices })
+
+        val camera = cameraMatrix()
+        try {
+            val random = Random(0x51A7E5L)
+            val worldPoints = (0 until SyntheticSeedScene.FEATURE_COUNT).map { index ->
+                val column = index % 12
+                val row = index / 12
+                val depth = 2.8 + (index % 7) * 0.43
+                val pixelX = 300.0 + column * 80.0
+                val pixelY = 50.0 + row * 65.0
+                Point3((pixelX - 640.0) * depth / 800.0,
+                    (pixelY - 360.0) * depth / 800.0, depth)
+            }
+            val trueImagePoints = worldPoints.map { point ->
+                Point(
+                    800.0 * (point.x - 2.0 / 3.0) / point.z + 640.0,
+                    800.0 * point.y / point.z + 360.0
+                )
+            }
+            val belowMinimumCount = CameraRegistrationPolicy.MINIMUM_CORRESPONDENCES - 1
+            val belowMinimumTracks = (0 until belowMinimumCount).map { index ->
+                val observed = trueImagePoints[index]
+                CameraFeatureTrack(index, listOf(
+                    CameraFeatureObservation(THIRD_FRAME, observed.x, observed.y, index)
+                ))
+            }
+            val belowMinimumLandmarks = worldPoints.take(belowMinimumCount).mapIndexed { index, point ->
+                CameraLandmark(index, point, observationCount = 1, meanReprojectionErrorPx = 0.0)
+            }
+            val belowMinimumResult = IncrementalCameraRegistrar.register(
+                frameIndex = THIRD_FRAME,
+                frameWidth = SyntheticSeedScene.WIDTH,
+                frameHeight = SyntheticSeedScene.HEIGHT,
+                featureTracks = belowMinimumTracks,
+                landmarks = belowMinimumLandmarks,
+                cameraMatrix = camera
+            )
+            assertFalse(belowMinimumResult.accepted)
+            assertEquals(belowMinimumCount, belowMinimumResult.correspondenceCount)
+            assertTrue(belowMinimumResult.reason.contains("Not enough 2D-3D correspondences"))
+
+            val outlierIndices = shuffledIndices(worldPoints.size, 0xBADC0DEL)
+                .take((worldPoints.size * 0.15).roundToInt()).toSet()
+            val outlierOrder = outlierIndices.sorted()
+            val imagePoints = trueImagePoints.mapIndexed { index, _ ->
+                val sourceIndex = if (index in outlierIndices) {
+                    outlierOrder[(outlierOrder.indexOf(index) + 1) % outlierOrder.size]
+                } else index
+                val source = trueImagePoints[sourceIndex]
+                Point(
+                    source.x + random.nextGaussian() * 1.0,
+                    source.y + random.nextGaussian() * 1.0
+                )
+            }
+            val estimate = requireNotNull(AbsolutePoseLORansacEstimator.estimate(
+                worldPoints.toTypedArray(), imagePoints.toTypedArray(), camera,
+                CameraRegistrationPolicy.RANSAC_REPROJECTION_ERROR_PX,
+                randomSeed = 0xC0FFEE
+            )) { "Seeded PnP fixture did not produce a robust pose" }
+            val pnpMask = estimate.inlierIndices.toSet()
+            assertTrue("PnP consensus did not meet the 30-correspondence registration minimum",
+                pnpMask.size >= CameraRegistrationPolicy.MINIMUM_CORRESPONDENCES)
+            assertTrue("PnP consensus fell below the 25% registration inlier ratio",
+                pnpMask.size.toDouble() / worldPoints.size >= CameraRegistrationPolicy.MINIMUM_INLIER_RATIO)
+            assertEquals("PnP consensus retained a deliberately swapped 2D-3D association",
+                0, outlierIndices.count { it in pnpMask })
+            val positiveDepth = estimate.inlierIndices.count { index ->
+                val point = worldPoints[index]
+                estimate.rotation[6] * point.x + estimate.rotation[7] * point.y +
+                    estimate.rotation[8] * point.z + estimate.translation[2] > 1e-6
+            }
+            assertTrue("PnP consensus failed the 90% positive-depth registration gate",
+                positiveDepth.toDouble() / pnpMask.size >= CameraRegistrationPolicy.MINIMUM_CHEIRALITY_RATIO)
+            val reprojectionErrors = estimate.inlierIndices.map { index ->
+                val point = worldPoints[index]
+                val observed = imagePoints[index]
+                val r = estimate.rotation
+                val t = estimate.translation
+                val x = r[0] * point.x + r[1] * point.y + r[2] * point.z + t[0]
+                val y = r[3] * point.x + r[4] * point.y + r[5] * point.z + t[1]
+                val z = r[6] * point.x + r[7] * point.y + r[8] * point.z + t[2]
+                hypot(800.0 * x / z + 640.0 - observed.x, 800.0 * y / z + 360.0 - observed.y)
+            }
+            val sortedErrors = reprojectionErrors.sorted()
+            val medianError = sortedErrors[sortedErrors.size / 2]
+            val rmsError = sqrt(reprojectionErrors.sumOf { it * it } / reprojectionErrors.size)
+            assertTrue("PnP median error exceeds the 4 px final registration gate", medianError <=
+                CameraRegistrationPolicy.FINAL_REPROJECTION_ERROR_PX)
+            assertTrue("PnP RMS error exceeds 1.5x the final registration limit", rmsError <=
+                CameraRegistrationPolicy.FINAL_REPROJECTION_ERROR_PX * 1.5)
+            val occupiedCells = estimate.inlierIndices.map { index ->
+                val observed = imagePoints[index]
+                val column = ((observed.x / SyntheticSeedScene.WIDTH) * 4.0).toInt().coerceIn(0, 3)
+                val row = ((observed.y / SyntheticSeedScene.HEIGHT) * 4.0).toInt().coerceIn(0, 3)
+                row * 4 + column
+            }.toSet().size
+            assertTrue("PnP inliers fail the four-cell coverage gate",
+                occupiedCells >= CameraRegistrationPolicy.MINIMUM_OCCUPIED_GRID_CELLS)
+        } finally {
+            camera.release()
+        }
+    }
+
+    @Test
+    fun seedGateRejectsExcessivePixelNoiseAndInsufficientVisibleCorrespondences() {
+        val noisyPair = syntheticSeedCorrespondences(pixelNoiseSigmaPx = 6.0)
+        val noisyEstimate = estimateSyntheticSeedPair(noisyPair)
+        assertTrue("Excessive pixel noise unexpectedly passed the 4 px/100-inlier seed gates",
+            noisyEstimate == null || !noisyEstimate.passesInitialPairGates ||
+                noisyEstimate.numInliers < InitialPairPolicy.initialization().minimumInliers)
+
+        val lowOverlapPair = syntheticSeedCorrespondences(visibleFraction = 0.75)
+        assertEquals(90, lowOverlapPair.firstPixelsXY.size / 2)
+        val lowOverlapEstimate = requireNotNull(estimateSyntheticSeedPair(lowOverlapPair))
+        assertTrue("A 90-correspondence seed passed the existing 100-inlier initialization minimum",
+            lowOverlapEstimate.numInliers < InitialPairPolicy.initialization().minimumInliers &&
+                !lowOverlapEstimate.passesInitialPairGates)
+    }
+
+    private data class SyntheticSeedCorrespondences(
+        val firstPixelsXY: DoubleArray,
+        val secondPixelsXY: DoubleArray,
+        val outlierIndices: Set<Int>
+    )
+
+    private fun syntheticSeedCorrespondences(
+        pixelNoiseSigmaPx: Double = 0.0,
+        outlierFraction: Double = 0.0,
+        visibleFraction: Double = 1.0
+    ): SyntheticSeedCorrespondences {
+        require(pixelNoiseSigmaPx.isFinite() && pixelNoiseSigmaPx >= 0.0)
+        require(outlierFraction in 0.0..1.0 && visibleFraction in 0.0..1.0)
+        val allIndices = (0 until 120).toList()
+        val retained = shuffledIndices(allIndices.size, 0xA11CE).take(
+            (allIndices.size * visibleFraction).roundToInt()
+        ).sorted()
+        val outlierCount = (retained.size * outlierFraction).roundToInt()
+        val localOutliers = shuffledIndices(retained.size, 0x0BADC0DE)
+            .take(outlierCount).toSet()
+        val outlierOrder = localOutliers.sorted()
+        val firstPixels = DoubleArray(retained.size * 2)
+        val secondPixels = DoubleArray(retained.size * 2)
+        retained.forEachIndexed { localIndex, featureId ->
+            val column = featureId % 12
+            val row = featureId / 12
+            val pixelX = 300.0 + column * 80.0
+            val pixelY = 50.0 + row * 65.0
+            val sourceFeatureId = if (localIndex in localOutliers && outlierOrder.size > 1) {
+                retained[outlierOrder[(outlierOrder.indexOf(localIndex) + 1) % outlierOrder.size]]
+            } else featureId
+            val sourceColumn = sourceFeatureId % 12
+            val sourceRow = sourceFeatureId / 12
+            val sourcePixelX = 300.0 + sourceColumn * 80.0
+            val sourcePixelY = 50.0 + sourceRow * 65.0
+            val firstNoise = Random(0x1F1F1L + featureId * 104729L)
+            val secondNoise = Random(0x2E2E2L + localIndex * 130363L)
+            val offset = localIndex * 2
+            firstPixels[offset] = pixelX + firstNoise.nextGaussian() * pixelNoiseSigmaPx
+            firstPixels[offset + 1] = pixelY + firstNoise.nextGaussian() * pixelNoiseSigmaPx
+            secondPixels[offset] = sourcePixelX - 800.0 * 1.5 / 4.5 +
+                secondNoise.nextGaussian() * pixelNoiseSigmaPx
+            secondPixels[offset + 1] = sourcePixelY +
+                secondNoise.nextGaussian() * pixelNoiseSigmaPx
+        }
+        return SyntheticSeedCorrespondences(firstPixels, secondPixels, localOutliers)
+    }
+
+    private fun estimateSyntheticSeedPair(
+        fixture: SyntheticSeedCorrespondences
+    ): SourceFaithfulTwoViewEstimator.InitialPairEstimate? {
+        val policy = InitialPairPolicy.initialization()
+        return SourceFaithfulTwoViewEstimator.estimateInitialPair(
+            firstPixelsXY = fixture.firstPixelsXY,
+            secondPixelsXY = fixture.secondPixelsXY,
+            cameraMatrixRowMajor = CAMERA_VALUES,
+            bothCamerasHaveFocalPriors = true,
+            maxErrorPixels = RANSAC_THRESHOLD_PX,
+            minimumInliers = policy.minimumInliers,
+            minimumEssentialToFundamentalRatio = policy.minimumEssentialToFundamentalInlierRatio,
+            maximumHomographyRatio = policy.planarDominanceRatio
+        )
+    }
+
+    private fun shuffledIndices(size: Int, seed: Long): List<Int> =
+        (0 until size).toMutableList().apply {
+            java.util.Collections.shuffle(this, Random(seed))
+        }
 
     private fun inspectSeedPair(
         fixture: SyntheticSeedScene.Fixture,
@@ -508,13 +846,14 @@ class IncrementalSfMInitializationInstrumentationTest {
         private const val LOW_BASELINE = 0.65
         private const val PLANE_DEPTH = 4.5
         private const val PLANAR_FEATURE_COUNT = 100
-        private const val FEATURE_COUNT = 120
+        const val FEATURE_COUNT = 120
 
         data class Fixture(
             val frames: List<Mat>,
             val patchCentersFirst: List<Point>,
             val patchCentersSecond: List<Point>,
             val patchCentersThird: List<Point>,
+            private val visiblePatchIdsByFrame: Map<Int, Set<Int>>,
             val nonPlanarFeatureStart: Int
         ) {
             val firstFrame: Mat get() = frames[FIRST_FRAME]
@@ -538,6 +877,12 @@ class IncrementalSfMInitializationInstrumentationTest {
                 return nearestPatch(observation.x, observation.y, centers)
             }
 
+            fun visiblePatchIds(frameIndex: Int): Set<Int> =
+                visiblePatchIdsByFrame[frameIndex].orEmpty()
+
+            fun isPatchVisible(frameIndex: Int, patchId: Int): Boolean =
+                patchId in visiblePatchIds(frameIndex)
+
             fun release() = frames.forEach(Mat::release)
 
             private fun nearestPatch(x: Double, y: Double, centers: List<Point>): Int? {
@@ -555,9 +900,17 @@ class IncrementalSfMInitializationInstrumentationTest {
         fun render(
             kind: SceneKind,
             includeThirdCamera: Boolean = false,
-            thirdCameraHasTexture: Boolean = true
+            thirdCameraHasTexture: Boolean = true,
+            pixelNoiseSigmaPx: Double = 0.0,
+            secondViewOutlierFraction: Double = 0.0,
+            thirdViewOutlierFraction: Double = 0.0,
+            secondViewVisibleFraction: Double = 1.0,
+            thirdViewVisibleFraction: Double = 1.0
         ): Fixture {
             check(OpenCvRuntime.ensureLoaded()) { "OpenCV could not be loaded in the emulator" }
+            require(pixelNoiseSigmaPx.isFinite() && pixelNoiseSigmaPx in 0.0..8.0)
+            require(secondViewOutlierFraction in 0.0..1.0 && thirdViewOutlierFraction in 0.0..1.0)
+            require(secondViewVisibleFraction in 0.0..1.0 && thirdViewVisibleFraction in 0.0..1.0)
             val baseline = if (kind == SceneKind.PLANAR_LOW_ANGLE) LOW_BASELINE else HIGH_BASELINE
             val patches = (0 until FEATURE_COUNT).map { index ->
                 val nonPlanar = kind == SceneKind.MIXED_HIGH && index >= PLANAR_FEATURE_COUNT
@@ -580,19 +933,40 @@ class IncrementalSfMInitializationInstrumentationTest {
                 val worldY = (pixelY - CY) * depth / FY
                 Patch(index, worldX, worldY, depth, makePattern(index))
             }
-            val first = renderView(patches, cameraCenterX = 0.0)
-            val second = renderView(patches, cameraCenterX = baseline)
+            val firstCenters = jitteredCenters(patches, 0.0, FIRST_FRAME, pixelNoiseSigmaPx)
+            val secondCenters = jitteredCenters(patches, baseline, SECOND_FRAME, pixelNoiseSigmaPx)
             val blank = blankView()
+            val secondVisiblePatchIds = visiblePatchSubset(patches.size, secondViewVisibleFraction, 0x2B02L)
+            val thirdVisiblePatchIds = if (includeThirdCamera && thirdCameraHasTexture) {
+                visiblePatchSubset(patches.size, thirdViewVisibleFraction, 0x3B03L)
+            } else emptySet()
+            val first = renderView(patches, firstCenters)
+            val second = renderView(
+                patches,
+                secondCenters,
+                textureSourceByPatch = texturePermutation(patches.size, secondViewOutlierFraction, 0x2A02L),
+                visiblePatchIds = secondVisiblePatchIds
+            )
             val third = if (includeThirdCamera) {
-                if (thirdCameraHasTexture) renderView(patches, THIRD_CAMERA_CENTER_X)
+                if (thirdCameraHasTexture) {
+                    val thirdCenters = jitteredCenters(
+                        patches, THIRD_CAMERA_CENTER_X, THIRD_FRAME, pixelNoiseSigmaPx
+                    )
+                    renderView(
+                        patches,
+                        thirdCenters,
+                        textureSourceByPatch = texturePermutation(
+                            patches.size, thirdViewOutlierFraction, 0x3A03L
+                        ),
+                        visiblePatchIds = thirdVisiblePatchIds
+                    )
+                }
                 else blankView()
             } else {
                 null
             }
-            val firstCenters = patches.map { project(it, 0.0) }
-            val secondCenters = patches.map { project(it, baseline) }
             val thirdCenters = if (third != null && thirdCameraHasTexture) {
-                patches.map { project(it, THIRD_CAMERA_CENTER_X) }
+                jitteredCenters(patches, THIRD_CAMERA_CENTER_X, THIRD_FRAME, pixelNoiseSigmaPx)
             } else {
                 emptyList()
             }
@@ -601,9 +975,61 @@ class IncrementalSfMInitializationInstrumentationTest {
                 patchCentersFirst = firstCenters,
                 patchCentersSecond = secondCenters,
                 patchCentersThird = thirdCenters,
+                visiblePatchIdsByFrame = mapOf(
+                    FIRST_FRAME to patches.indices.toSet(),
+                    SECOND_FRAME to secondVisiblePatchIds,
+                    THIRD_FRAME to thirdVisiblePatchIds
+                ),
                 nonPlanarFeatureStart = if (kind == SceneKind.MIXED_HIGH) PLANAR_FEATURE_COUNT else FEATURE_COUNT
             )
         }
+
+        private fun jitteredCenters(
+            patches: List<Patch>,
+            cameraCenterX: Double,
+            viewId: Int,
+            pixelNoiseSigmaPx: Double
+        ): List<Point> = patches.map { patch ->
+            val ideal = project(patch, cameraCenterX)
+            if (pixelNoiseSigmaPx == 0.0) return@map ideal
+            val random = Random(0x5EEDC0DEL + patch.id * 7919L + viewId * 104729L)
+            val maximumOffset = pixelNoiseSigmaPx * 3.0
+            val dx = (random.nextGaussian() * pixelNoiseSigmaPx)
+                .coerceIn(-maximumOffset, maximumOffset).roundToInt()
+            val dy = (random.nextGaussian() * pixelNoiseSigmaPx)
+                .coerceIn(-maximumOffset, maximumOffset).roundToInt()
+            Point(ideal.x + dx, ideal.y + dy)
+        }
+
+        private fun visiblePatchSubset(
+            patchCount: Int,
+            visibleFraction: Double,
+            seed: Long
+        ): Set<Int> = shuffledIndices(patchCount, seed)
+            .take((patchCount * visibleFraction).roundToInt())
+            .toSet()
+
+        private fun texturePermutation(
+            patchCount: Int,
+            outlierFraction: Double,
+            seed: Long
+        ): IntArray {
+            val permutation = IntArray(patchCount) { it }
+            val swapCount = ((patchCount * outlierFraction).roundToInt().coerceAtMost(patchCount)) / 2 * 2
+            val selected = shuffledIndices(patchCount, seed).take(swapCount)
+            selected.chunked(2).forEach { pair ->
+                if (pair.size == 2) {
+                    permutation[pair[0]] = pair[1]
+                    permutation[pair[1]] = pair[0]
+                }
+            }
+            return permutation
+        }
+
+        private fun shuffledIndices(size: Int, seed: Long): List<Int> =
+            (0 until size).toMutableList().apply {
+                java.util.Collections.shuffle(this, Random(seed))
+            }
 
         private fun blankView(): Mat {
             val pixels = ByteArray(WIDTH * HEIGHT) { 127.toByte() }
@@ -620,24 +1046,31 @@ class IncrementalSfMInitializationInstrumentationTest {
             val pixels: ByteArray
         )
 
-        private fun renderView(patches: List<Patch>, cameraCenterX: Double): Mat {
+        private fun renderView(
+            patches: List<Patch>,
+            centers: List<Point>,
+            textureSourceByPatch: IntArray = IntArray(patches.size) { it },
+            visiblePatchIds: Set<Int> = patches.indices.toSet()
+        ): Mat {
             val image = ByteArray(WIDTH * HEIGHT) { 127.toByte() }
             val occupied = mutableListOf<Box>()
             for (patch in patches) {
-                val center = project(patch, cameraCenterX)
+                if (patch.id !in visiblePatchIds) continue
+                val center = centers[patch.id]
                 val left = center.x.roundToInt() - PATCH_SIZE / 2
                 val top = center.y.roundToInt() - PATCH_SIZE / 2
                 val box = Box(left, top, left + PATCH_SIZE, top + PATCH_SIZE)
                 check(box.left >= 0 && box.top >= 0 && box.right <= WIDTH && box.bottom <= HEIGHT) {
-                    "Synthetic patch ${patch.id} is clipped at baseline $cameraCenterX"
+                    "Synthetic patch ${patch.id} is clipped at center $center"
                 }
                 check(occupied.none(box::overlaps)) {
-                    "Synthetic patches overlap at baseline $cameraCenterX"
+                    "Synthetic patches overlap at center $center"
                 }
                 occupied += box
+                val appearance = patches[textureSourceByPatch[patch.id]]
                 for (y in 0 until PATCH_SIZE) {
                     val target = (top + y) * WIDTH + left
-                    System.arraycopy(patch.pixels, y * PATCH_SIZE, image, target, PATCH_SIZE)
+                    System.arraycopy(appearance.pixels, y * PATCH_SIZE, image, target, PATCH_SIZE)
                 }
             }
             return Mat(HEIGHT, WIDTH, CvType.CV_8UC1).also { mat ->
