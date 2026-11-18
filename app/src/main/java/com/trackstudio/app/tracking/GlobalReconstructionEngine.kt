@@ -78,16 +78,16 @@ class GlobalReconstructionEngine(
         val height: Int
     )
 
-    private data class FundamentalPair(
+    internal data class PairCandidate(
         val first: Int,
         val second: Int,
-        val fundamentalInlierIndices: IntArray,
         val allMatches: MutableList<Pair<Int, Int>>,
-        val fundamentalMatrix: DoubleArray,
-        val matchCount: Int
+        val fundamentalMatrix: DoubleArray?,
+        val matchCount: Int,
+        val fundamentalInlierCount: Int
     )
 
-    private data class VerifiedPair(
+    internal data class VerifiedPair(
         val first: Int,
         val second: Int,
         val rotation: DoubleArray,
@@ -201,7 +201,7 @@ class GlobalReconstructionEngine(
             val progressMutex = Mutex()
             val workerCount = minOf(Runtime.getRuntime().availableProcessors().coerceAtLeast(1), 2, candidatePairs.size.coerceAtLeast(1))
             val chunks = candidatePairs.chunked((candidatePairs.size + workerCount - 1) / workerCount)
-            val fundamentalPairs = coroutineScope {
+            val pairCandidates = coroutineScope {
                 chunks.map { chunk ->
                     async(Dispatchers.Default) {
                         val workerMatcher = SiftDescriptorMatcher(ratioThreshold)
@@ -237,11 +237,23 @@ class GlobalReconstructionEngine(
             // Descriptor Mats are no longer needed after fundamental estimation.
             frames.filterNotNull().forEach { it.descriptors.release() }
 
+            // Only robust F models constrain focal calibration. A weak or failed
+            // F RANSAC must not discard a pair before the calibrated PoseLib
+            // estimator gets to assess its complete match set.
+            val calibrationPairIndices = pairCandidates.indices.filter { index ->
+                pairCandidates[index].fundamentalMatrix != null
+            }
             val calibrationResult = try {
-                GlomapViewGraphCalibrator().calibrate(
-                    fundamentals = fundamentalPairs.map { it.fundamentalMatrix },
-                    initialIntrinsics = initialIntrinsics
-                )
+                if (calibrationPairIndices.isEmpty()) {
+                    null
+                } else {
+                    GlomapViewGraphCalibrator().calibrate(
+                        fundamentals = calibrationPairIndices.mapNotNull { index ->
+                            pairCandidates[index].fundamentalMatrix
+                        },
+                        initialIntrinsics = initialIntrinsics
+                    )
+                }
             } catch (_: LinkageError) {
                 null
             }
@@ -250,10 +262,13 @@ class GlobalReconstructionEngine(
                 workingCameraMatrix.put(0, 0, *effectiveIntrinsics.toRowMajorMatrix())
             }
             val pairsForPoseEstimation = if (calibrationResult == null) {
-                fundamentalPairs
+                pairCandidates
             } else {
-                fundamentalPairs.filterIndexed { index, _ ->
-                    index in calibrationResult.acceptedPairIndices
+                val acceptedCandidateIndices = calibrationResult.acceptedPairIndices
+                    .mapNotNull { index -> calibrationPairIndices.getOrNull(index) }
+                    .toSet()
+                pairCandidates.filterIndexed { index, pair ->
+                    pair.fundamentalMatrix == null || index in acceptedCandidateIndices
                 }
             }
             onProgress(CameraTrackingProgress(
@@ -1102,14 +1117,14 @@ class GlobalReconstructionEngine(
         return pairs.toList()
     }
 
-    private fun estimateFundamentalPair(
+    internal fun estimateFundamentalPair(
         firstIndex: Int,
         secondIndex: Int,
         first: FrameFeatures,
         second: FrameFeatures,
         intrinsics: CameraIntrinsics,
         matcher: SiftDescriptorMatcher
-    ): FundamentalPair? {
+    ): PairCandidate? {
         if (first.descriptors.empty() || second.descriptors.empty() ||
             first.keypoints.isEmpty() || second.keypoints.isEmpty()
         ) return null
@@ -1118,7 +1133,9 @@ class GlobalReconstructionEngine(
             .filter { (query, train) ->
                 query in first.keypoints.indices && train in second.keypoints.indices
             }.toMutableList()
-        if (matched.size < 30) return null
+        // The downstream GLOMAP essential-geometry filter requires 30 inliers,
+        // so fewer raw matches cannot possibly produce an accepted pair.
+        if (matched.size < GlomapImagePairInlierScorer.MINIMUM_INLIERS) return null
 
         val points1 = MatOfPoint2f()
         val points2 = MatOfPoint2f()
@@ -1130,25 +1147,29 @@ class GlobalReconstructionEngine(
             fundamental = Calib3d.findFundamentalMat(
                 points1, points2, Calib3d.FM_RANSAC, 1.0, 0.999, 900, fundamentalMask
             )
-            if (fundamental.empty() || fundamental.rows() != 3 || fundamental.cols() != 3 ||
-                fundamentalMask.empty() || fundamentalMask.total().toInt() != matched.size
-            ) return null
-            val fundamentalInlierIndices = IntArray(matched.size)
             var inlierCount = 0
-            for (index in matched.indices) {
-                val maskValue = if (fundamentalMask.rows() == 1) {
-                    fundamentalMask.get(0, index)
-                } else {
-                    fundamentalMask.get(index, 0)
+            var fundamentalValues: DoubleArray? = null
+            if (fundamental.rows() == 3 && fundamental.cols() == 3 &&
+                !fundamentalMask.empty() && fundamentalMask.total().toInt() == matched.size
+            ) {
+                for (index in matched.indices) {
+                    val maskValue = if (fundamentalMask.rows() == 1) {
+                        fundamentalMask.get(0, index)
+                    } else {
+                        fundamentalMask.get(index, 0)
+                    }
+                    val accepted = maskValue?.firstOrNull() ?: 0.0
+                    if (accepted != 0.0) inlierCount++
                 }
-                val accepted = maskValue?.firstOrNull() ?: 0.0
-                if (accepted != 0.0) fundamentalInlierIndices[inlierCount++] = index
+                if (inlierCount >= GlomapImagePairInlierScorer.MINIMUM_INLIERS &&
+                    inlierCount.toDouble() / matched.size >= 0.20
+                ) {
+                    fundamentalValues = OpenCvMatrixReadback.readCv64F(fundamental, 3, 3)
+                        ?.takeIf { values -> values.all { it.isFinite() } }
+                }
             }
-            if (inlierCount < 30 || inlierCount.toDouble() / matched.size < 0.20) return null
-            val fundamentalValues = OpenCvMatrixReadback.readCv64F(fundamental, 3, 3) ?: return null
-            FundamentalPair(
-                firstIndex, secondIndex, fundamentalInlierIndices.copyOf(inlierCount), matched,
-                fundamentalValues, matched.size
+            PairCandidate(
+                firstIndex, secondIndex, matched, fundamentalValues, matched.size, inlierCount
             )
         } finally {
             points1.release()
@@ -1164,20 +1185,19 @@ class GlobalReconstructionEngine(
             point.y
         )
 
-    private fun verifyPair(
-        pair: FundamentalPair,
+    internal fun verifyPair(
+        pair: PairCandidate,
         first: FrameFeatures,
         second: FrameFeatures,
         cameraMatrix: Mat
     ): VerifiedPair? {
         if (first.keypoints.isEmpty() || second.keypoints.isEmpty() ||
             pair.allMatches.size != pair.matchCount ||
-            pair.fundamentalInlierIndices.any { it !in pair.allMatches.indices }
+            pair.matchCount < GlomapImagePairInlierScorer.MINIMUM_INLIERS ||
+            pair.allMatches.any { (query, train) ->
+                query !in first.keypoints.indices || train !in second.keypoints.indices
+            }
         ) {
-            pair.allMatches.clear()
-            return null
-        }
-        if (pair.fundamentalInlierIndices.size < 30) {
             pair.allMatches.clear()
             return null
         }
@@ -1201,8 +1221,9 @@ class GlobalReconstructionEngine(
                 secondPixels[index * 2] = secondPoint.x
                 secondPixels[index * 2 + 1] = secondPoint.y
             }
-            // GLOMAP estimates from the full pair match set; the prior
-            // fundamental inliers remain a pair-quality gate for this adapter.
+            // GLOMAP estimates from every valid pair's full match set. The
+            // fundamental model is calibration-only; calibrated essential
+            // inliers below remain the pair-quality gate for this adapter.
             val estimate = GlomapRelativePoseEstimator.estimate(
                 firstPixelsXY = firstPixels,
                 secondPixelsXY = secondPixels,
