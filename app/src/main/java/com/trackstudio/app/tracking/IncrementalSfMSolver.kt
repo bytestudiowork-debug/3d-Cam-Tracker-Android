@@ -878,7 +878,7 @@ internal class IncrementalSfMSolver(
                                 secondFrame.keypoints, currentKeypoints, anchorMatches
                             )
                             if (anchorMatches.isNotEmpty() &&
-                                registrationTrials.beginTrial(frameIndex) != null
+                                registrationTrials.currentTrialForFallback(frameIndex) != null
                             ) {
                                 trackBuilder.addInlierMatchesFromFrame(
                                     selected.secondFrame, frameIndex,
@@ -912,7 +912,7 @@ internal class IncrementalSfMSolver(
                                 firstFrame.keypoints, currentKeypoints, firstAnchorMatches
                             )
                             if (firstAnchorMatches.isNotEmpty() &&
-                                registrationTrials.beginTrial(frameIndex) != null
+                                registrationTrials.currentTrialForFallback(frameIndex) != null
                             ) {
                                 trackBuilder.addInlierMatchesFromFrame(
                                     selected.firstFrame, frameIndex,
@@ -1095,7 +1095,7 @@ internal class IncrementalSfMSolver(
                                     secondFrame.keypoints, currentKeypoints, anchorMatches
                                 )
                                 if (anchorMatches.isNotEmpty() &&
-                                    registrationTrials.beginTrial(frameIndex) != null
+                                    registrationTrials.currentTrialForFallback(frameIndex) != null
                                 ) {
                                     trackBuilder.addInlierMatchesFromFrame(
                                         selected.secondFrame, frameIndex,
@@ -1129,7 +1129,7 @@ internal class IncrementalSfMSolver(
                                     firstFrame.keypoints, currentKeypoints, firstAnchorMatches
                                 )
                                 if (firstAnchorMatches.isNotEmpty() &&
-                                    registrationTrials.beginTrial(frameIndex) != null
+                                    registrationTrials.currentTrialForFallback(frameIndex) != null
                                 ) {
                                     trackBuilder.addInlierMatchesFromFrame(
                                         selected.firstFrame, frameIndex,

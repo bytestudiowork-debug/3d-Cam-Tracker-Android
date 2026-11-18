@@ -18,6 +18,11 @@ internal class ColmapRegistrationTrialLedger(
         return trialCounts[frameIndex]
     }
 
+    fun currentTrialForFallback(frameIndex: Int): Int? {
+        require(frameIndex in trialCounts.indices)
+        return trialCounts[frameIndex].takeIf { it > 0 }
+    }
+
     operator fun get(frameIndex: Int): Int {
         require(frameIndex in trialCounts.indices)
         return trialCounts[frameIndex]
