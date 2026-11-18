@@ -30,6 +30,8 @@
 // Differential fixtures for COLMAP c5f9cefc87e5dd596b638e4cee0ff543c7d14755.
 // These tests intentionally do not invoke or modify production estimator code.
 #include "colmap_initial_pair_differential.h"
+#include "colmap_five_point_differential.h"
+#include "colmap_five_point_pinned_expectations.h"
 
 #include <chrono>
 #include <cmath>
@@ -374,11 +376,173 @@ void RunBenchmarkCase(const std::size_t observation_count) {
               << " elapsed_ms=" << milliseconds << '\n';
 }
 
+struct FivePointRayFixture {
+    std::vector<Eigen::Vector3d> rays1;
+    std::vector<Eigen::Vector3d> rays2;
+    Eigen::Matrix3d rotation = Eigen::Matrix3d::Identity();
+    Eigen::Vector3d translation = Eigen::Vector3d::Zero();
+};
+
+FivePointRayFixture MakeFivePointRayFixture(const std::size_t count) {
+    FivePointRayFixture fixture;
+    const Eigen::Vector3d axis(0.2, 0.6, 0.3);
+    fixture.rotation =
+            Eigen::AngleAxisd(0.23, axis.normalized()).toRotationMatrix();
+    fixture.translation = Eigen::Vector3d(0.9, -0.2, 0.15).normalized();
+    fixture.rays1.reserve(count);
+    fixture.rays2.reserve(count);
+    for (std::size_t i = 0; i < count; ++i) {
+        const double x = -1.3 + 0.37 * i + 0.09 * std::sin(0.7 * i);
+        const double y = -0.8 + 0.23 * (i % 4) + 0.04 * i;
+        const double z = 4.1 + 0.31 * (i % 5) + 0.11 * i;
+        const Eigen::Vector3d ray1(x, y, z);
+        fixture.rays1.push_back(ray1);
+        fixture.rays2.push_back(
+                (fixture.rotation * ray1 + fixture.translation).normalized());
+    }
+    return fixture;
+}
+
+template <std::size_t CandidateCount, std::size_t ObservationCount>
+void CheckFivePointOracleFixture(
+        const FivePointRayFixture& fixture,
+        const double (&expected_matrices)[CandidateCount][9],
+        const double (&expected_residuals)[CandidateCount][ObservationCount]) {
+    Require(fixture.rays1.size() == ObservationCount &&
+                    fixture.rays2.size() == ObservationCount,
+            "five-point fixture observation count changed");
+    std::vector<Eigen::Matrix3d> models;
+    tracking::colmap_initial_pair_test::EstimateEssentialFivePoint(
+            fixture.rays1, fixture.rays2, &models);
+    Require(models.size() == CandidateCount,
+            "five-point candidate count differs from pinned COLMAP");
+
+    const Eigen::Matrix3d expected_pose_essential =
+            Skew(fixture.translation) * fixture.rotation;
+    const Eigen::Matrix3d normalized_expected_pose_essential =
+            expected_pose_essential.normalized();
+    bool found_pose_solution = false;
+    for (std::size_t candidate = 0; candidate < CandidateCount; ++candidate) {
+        Eigen::Matrix3d expected_matrix;
+        for (int row = 0; row < 3; ++row) {
+            for (int column = 0; column < 3; ++column) {
+                expected_matrix(row, column) =
+                        expected_matrices[candidate][row * 3 + column];
+            }
+        }
+        Require(models[candidate].allFinite() &&
+                        std::abs(models[candidate].norm() - 1.0) < 1e-12,
+                "five-point candidate is non-finite or not normalized");
+        const double candidate_matrix_error = std::min(
+                (models[candidate] - expected_matrix).norm(),
+                (models[candidate] + expected_matrix).norm());
+        Require(candidate_matrix_error < 1e-8,
+                "ordered five-point candidate differs from pinned COLMAP output");
+        if (std::min((models[candidate] - normalized_expected_pose_essential).norm(),
+                     (models[candidate] + normalized_expected_pose_essential).norm()) <
+            1e-8) {
+            found_pose_solution = true;
+        }
+        for (std::size_t observation = 0; observation < ObservationCount;
+             ++observation) {
+            const double actual_residual = SquaredSampsonError(
+                    fixture.rays1[observation], fixture.rays2[observation],
+                    models[candidate]);
+            const double expected_residual =
+                    expected_residuals[candidate][observation];
+            const double tolerance =
+                    2e-25 + 2e-8 * std::abs(expected_residual);
+            Require(std::isfinite(actual_residual) &&
+                            std::abs(actual_residual - expected_residual) <= tolerance,
+                    "five-point candidate residual differs from pinned COLMAP output");
+        }
+    }
+    Require(found_pose_solution,
+            "five-point candidates do not include the known camera-pose essential matrix");
+}
+
+void TestFivePointSolverCandidatesAndResiduals() {
+    const FivePointRayFixture minimal_fixture = MakeFivePointRayFixture(5);
+    CheckFivePointOracleFixture(
+            minimal_fixture,
+            five_point_oracle_fixtures::kCandidateMatrices5,
+            five_point_oracle_fixtures::kSquaredResiduals5);
+    const FivePointRayFixture overdetermined_fixture = MakeFivePointRayFixture(8);
+    CheckFivePointOracleFixture(
+            overdetermined_fixture,
+            five_point_oracle_fixtures::kCandidateMatrices8,
+            five_point_oracle_fixtures::kSquaredResiduals8);
+}
+
+void TestFivePointSolverInvalidInputsAndDegeneracy() {
+    const FivePointRayFixture fixture = MakeFivePointRayFixture(5);
+    std::vector<Eigen::Matrix3d> models;
+    bool threw = false;
+    try {
+        tracking::colmap_initial_pair_test::EstimateEssentialFivePoint(
+                fixture.rays1, std::vector<Eigen::Vector3d>(4), &models);
+    } catch (const std::invalid_argument&) {
+        threw = true;
+    }
+    Require(threw, "five-point solver did not reject mismatched ray vectors");
+
+    threw = false;
+    try {
+        tracking::colmap_initial_pair_test::EstimateEssentialFivePoint(
+                std::vector<Eigen::Vector3d>(4),
+                std::vector<Eigen::Vector3d>(4), &models);
+    } catch (const std::invalid_argument&) {
+        threw = true;
+    }
+    Require(threw, "five-point solver did not reject fewer than five rays");
+
+    threw = false;
+    try {
+        tracking::colmap_initial_pair_test::EstimateEssentialFivePoint(
+                fixture.rays1, fixture.rays2, nullptr);
+    } catch (const std::invalid_argument&) {
+        threw = true;
+    }
+    Require(threw, "five-point solver did not reject a null output vector");
+
+    const std::vector<Eigen::Vector3d> repeated_ray1(
+            5, Eigen::Vector3d(0.1, 0.2, 1.0));
+    const std::vector<Eigen::Vector3d> repeated_ray2(
+            5, Eigen::Vector3d(-0.1, 0.05, 1.0));
+    models.push_back(Eigen::Matrix3d::Identity());
+    tracking::colmap_initial_pair_test::EstimateEssentialFivePoint(
+            repeated_ray1, repeated_ray2, &models);
+    Require(models.empty(),
+            "degenerate repeated-ray fixture differs from pinned COLMAP no-candidate result");
+}
+
+void RunFivePointHostBenchmark(const std::size_t observation_count,
+                               const int repetitions) {
+    const FivePointRayFixture fixture = MakeFivePointRayFixture(observation_count);
+    std::vector<Eigen::Matrix3d> models;
+    const auto start = std::chrono::steady_clock::now();
+    for (int run = 0; run < repetitions; ++run) {
+        tracking::colmap_initial_pair_test::EstimateEssentialFivePoint(
+                fixture.rays1, fixture.rays2, &models);
+    }
+    const auto stop = std::chrono::steady_clock::now();
+    const double milliseconds =
+            std::chrono::duration<double, std::milli>(stop - start).count();
+    Require(!models.empty() && observation_count <= 8 && repetitions <= 16,
+            "bounded five-point host benchmark did not complete its small fixture");
+    std::cout << "host_bounded_five_point_solver observations="
+              << observation_count << " repetitions=" << repetitions
+              << " candidates=" << models.size()
+              << " host_elapsed_ms=" << milliseconds << '\n';
+}
+
 void RunAllTests() {
     TestSquaredSampsonResidualAndPixelPathDivergence();
     TestSquaredSampsonSupportMaskAndRanking();
     TestLORansacDeterministicMaskAndLocalRefit();
     TestEssentialPoseHypothesesAndCheirality();
+    TestFivePointSolverCandidatesAndResiduals();
+    TestFivePointSolverInvalidInputsAndDegeneracy();
 }
 
 }  // namespace
@@ -389,6 +553,8 @@ int main(const int argc, char** argv) {
         if (argc == 2 && std::string(argv[1]) == "--benchmark") {
             RunBenchmarkCase(1024);
             RunBenchmarkCase(4096);
+            RunFivePointHostBenchmark(5, 8);
+            RunFivePointHostBenchmark(8, 8);
         }
         std::cout << "COLMAP initial-pair differential fixtures passed\n";
         return 0;
