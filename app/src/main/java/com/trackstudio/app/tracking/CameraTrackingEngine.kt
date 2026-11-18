@@ -169,6 +169,8 @@ data class CameraTrackingResult(
     val globalCovisibilityClusterCount: Int = 0,
     val globalCovisibilityStrongThreshold: Double = Double.NaN,
     val globalCovisibilityEligiblePairCount: Int = 0,
+    /** Frame-pair visibility edges invalidated by final weak-connectivity pruning. */
+    val globalCovisibilityInvalidatedPairWeights: Map<Pair<Int, Int>, Long> = emptyMap(),
     val globalCovisibilityBridgeIterations: Int = 0
 ) {
     val effectiveCameraIntrinsics: CameraIntrinsics?

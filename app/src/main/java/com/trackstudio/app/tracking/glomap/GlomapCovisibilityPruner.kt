@@ -52,6 +52,8 @@ internal object GlomapCovisibilityPruner {
         val clusterCount: Int,
         val strongThreshold: Double?,
         val eligiblePairWeights: Map<Pair<Int, Int>, Long>,
+        /** Eligible visibility-graph edges invalidated by cross-cluster pruning. */
+        val invalidatedPairWeights: Map<Pair<Int, Int>, Long>,
         val bridgeIterations: Int
     )
 
@@ -112,6 +114,7 @@ internal object GlomapCovisibilityPruner {
                 clusterCount = 0,
                 strongThreshold = null,
                 eligiblePairWeights = emptyMap(),
+                invalidatedPairWeights = emptyMap(),
                 bridgeIterations = 0
             )
         }
@@ -158,6 +161,11 @@ internal object GlomapCovisibilityPruner {
             if (!merged) break
         }
 
+        // GLOMAP invalidates visibility edges whose endpoints remain in distinct clusters.
+        val invalidatedPairWeights = visiblePairWeights.filter { (pair, _) ->
+            disjointSet.find(pair.first) != disjointSet.find(pair.second)
+        }.toSortedMap(pairComparator)
+
         val adjacency = HashMap<Int, MutableSet<Int>>()
         for ((pair, _) in visiblePairWeights) {
             if (disjointSet.find(pair.first) != disjointSet.find(pair.second)) continue
@@ -197,6 +205,7 @@ internal object GlomapCovisibilityPruner {
             clusterCount = orderedComponents.size,
             strongThreshold = strongThreshold,
             eligiblePairWeights = visiblePairWeights,
+            invalidatedPairWeights = invalidatedPairWeights,
             bridgeIterations = bridgeIterations
         )
     }

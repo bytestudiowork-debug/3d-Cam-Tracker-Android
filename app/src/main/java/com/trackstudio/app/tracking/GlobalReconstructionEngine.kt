@@ -1088,6 +1088,8 @@ class GlobalReconstructionEngine(
                     covisibilityPruning?.strongThreshold ?: Double.NaN,
                 globalCovisibilityEligiblePairCount =
                     covisibilityPruning?.eligiblePairWeights?.size ?: 0,
+                globalCovisibilityInvalidatedPairWeights =
+                    covisibilityPruning?.invalidatedPairWeights ?: emptyMap(),
                 globalCovisibilityBridgeIterations = covisibilityPruning?.bridgeIterations ?: 0
             )
         } finally {

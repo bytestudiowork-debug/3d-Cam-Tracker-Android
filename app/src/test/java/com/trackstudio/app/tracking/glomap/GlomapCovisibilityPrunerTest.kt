@@ -29,6 +29,10 @@ class GlomapCovisibilityPrunerTest {
         assertEquals(1, result.clusterIdByFrame.getValue(5))
         assertEquals(-1, result.clusterIdByFrame.getValue(6))
         assertEquals(21L, result.eligiblePairWeights.getValue(1 to 3))
+        assertEquals(
+            mapOf((1 to 3) to 21L, (2 to 3) to 21L),
+            result.invalidatedPairWeights
+        )
     }
 
     @Test
@@ -49,6 +53,7 @@ class GlomapCovisibilityPrunerTest {
         assertEquals(setOf(0), result.clusterIdByFrame.values.toSet())
         assertEquals(23L, result.eligiblePairWeights.getValue(1 to 3))
         assertEquals(23L, result.eligiblePairWeights.getValue(2 to 3))
+        assertEquals(emptyMap<Pair<Int, Int>, Long>(), result.invalidatedPairWeights)
     }
 
     @Test
