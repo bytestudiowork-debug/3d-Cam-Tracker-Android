@@ -97,6 +97,7 @@ class GlomapNativeSolverInstrumentationTest {
                 0.0, trueFy, initialCy,
                 0.0, 0.0, 1.0
             )
+            val iterationBudgets = mutableListOf<Int>()
             val result = GlomapGlobalBundleAdjuster().solve(
                 frameCentersById = frameCenters,
                 rotationsByFrame = rotations,
@@ -107,10 +108,16 @@ class GlomapNativeSolverInstrumentationTest {
                 imageHeight = imageHeight,
                 optimizeRotations = false,
                 optimizeTranslation = false,
-                maxIterations = 20,
-                numThreads = 1
+                maxIterations = GlomapGlobalBundleAdjuster.MAX_ITERATIONS,
+                numThreads = 1,
+                onIteration = { _, total -> iterationBudgets += total }
             ) ?: throw AssertionError("Native GLOMAP bundle adjustment rejected the synthetic scene")
 
+            assertTrue("Native global BA progress callback was not invoked", iterationBudgets.isNotEmpty())
+            assertTrue(
+                "Native global BA did not receive the pinned iteration budget",
+                iterationBudgets.all { it == GlomapGlobalBundleAdjuster.MAX_ITERATIONS }
+            )
             assertFalse("Pinned GLOMAP must not enable principal-point optimization",
                 result.principalPointRefinementEnabled)
             assertEquals("cx must remain fixed at its input value", initialCx, result.intrinsics.cx, 0.0)

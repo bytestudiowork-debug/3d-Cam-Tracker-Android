@@ -65,6 +65,7 @@ class GlomapPostRetriangulationNativeInstrumentationTest {
             intrinsics = intrinsics
         )
         var solveCalls = 0
+        val iterationBudgets = mutableListOf<Int>()
         val result = GlomapPostRetriangulationRefinement.refine(
             initialState = initialState,
             solveBundleAdjustment = { state, _ ->
@@ -82,8 +83,9 @@ class GlomapPostRetriangulationNativeInstrumentationTest {
                         imageHeight = 480,
                         optimizeRotations = true,
                         optimizeTranslation = true,
-                        maxIterations = 45,
-                        numThreads = 1
+                        maxIterations = GlomapGlobalBundleAdjuster.MAX_ITERATIONS,
+                        numThreads = 1,
+                        onIteration = { _, total -> iterationBudgets += total }
                     )
                 } finally {
                     cameraMatrix.release()
@@ -92,6 +94,11 @@ class GlomapPostRetriangulationNativeInstrumentationTest {
         )
 
         assertEquals(2, solveCalls)
+        assertTrue("Post-retriangulation native BA progress callback was not invoked", iterationBudgets.isNotEmpty())
+        assertTrue(
+            "Post-retriangulation BA did not receive the pinned iteration budget",
+            iterationBudgets.all { it == GlomapGlobalBundleAdjuster.MAX_ITERATIONS }
+        )
         assertEquals(2, result.acceptedBundleAdjustmentCount)
         assertTrue(result.firstBundleAdjustmentAccepted)
         assertTrue(result.secondBundleAdjustmentAccepted)

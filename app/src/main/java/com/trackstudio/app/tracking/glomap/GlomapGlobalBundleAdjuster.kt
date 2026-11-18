@@ -33,7 +33,7 @@ internal class GlomapGlobalBundleAdjuster {
         imageHeight: Int = 0,
         optimizeRotations: Boolean = true,
         optimizeTranslation: Boolean = true,
-        maxIterations: Int = 60,
+        maxIterations: Int = MAX_ITERATIONS,
         numThreads: Int = Runtime.getRuntime().availableProcessors().coerceIn(1, 4),
         onIteration: (Int, Int) -> Unit = { _, _ -> }
     ): Result? {
@@ -199,6 +199,8 @@ internal class GlomapGlobalBundleAdjuster {
     }
 
     companion object {
+        const val MAX_ITERATIONS = 200
+
         init {
             System.loadLibrary("trackstudio_reconstruction")
         }

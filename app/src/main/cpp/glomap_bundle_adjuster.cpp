@@ -150,7 +150,9 @@ jdoubleArray JointCameraBundleAdjusterSolve(
         }
 
         trackstudio::JniProgressCallback progress_callback(
-                env, progress_listener, std::min(max_iterations, 60));
+                env, progress_listener,
+                std::min(max_iterations,
+                         tracking::kGlobalBundleAdjustmentMaxIterations));
         if (env->ExceptionCheck()) return nullptr;
         std::function<bool(int, int)> notify_progress;
         if (progress_callback.valid()) {

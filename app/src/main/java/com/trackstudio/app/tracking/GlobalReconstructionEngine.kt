@@ -496,7 +496,7 @@ class GlobalReconstructionEngine(
                                 imageHeight = frameSizes.single().second,
                                 optimizeRotations = optimizeRotations,
                                 optimizeTranslation = true,
-                                maxIterations = 45,
+                                maxIterations = GlomapGlobalBundleAdjuster.MAX_ITERATIONS,
                                 numThreads = if (activeFrames.size >= 300) 2 else Runtime.getRuntime().availableProcessors().coerceIn(1, 4),
                                 onIteration = { iteration, total ->
                                     val stageFraction =
@@ -789,7 +789,7 @@ class GlobalReconstructionEngine(
                                     imageHeight = frameSizes.single().second,
                                     optimizeRotations = true,
                                     optimizeTranslation = true,
-                                    maxIterations = 45,
+                                    maxIterations = GlomapGlobalBundleAdjuster.MAX_ITERATIONS,
                                     numThreads = if (activeFrames.size >= 300) 2 else Runtime.getRuntime().availableProcessors().coerceIn(1, 4),
                                     onIteration = { iteration, total ->
                                         val solveFraction = (

@@ -348,7 +348,8 @@ bool RunGlobalBundleAdjustment(const std::vector<double>& initial_camera_centers
         options.linear_solver_type = ceres::SPARSE_SCHUR;
         options.preconditioner_type = ceres::JACOBI;
     }
-    options.max_num_iterations = std::min(max_iterations, 60);
+    options.max_num_iterations = std::min(max_iterations,
+                                          kGlobalBundleAdjustmentMaxIterations);
     options.num_threads = std::min(num_threads, 4);
     options.function_tolerance = 1e-6;
     options.gradient_tolerance = 1e-10;
@@ -356,7 +357,8 @@ bool RunGlobalBundleAdjustment(const std::vector<double>& initial_camera_centers
     options.linear_solver_ordering = ordering;
 
     ProgressCallback iteration_callback(
-            progress_callback, std::min(max_iterations, 60));
+            progress_callback,
+            std::min(max_iterations, kGlobalBundleAdjustmentMaxIterations));
     if (progress_callback) options.callbacks.push_back(&iteration_callback);
     ceres::Solver::Summary summary;
     ceres::Solve(options, &problem, &summary);
