@@ -92,11 +92,26 @@ class OpenCvInitialPairEvaluatorInstrumentationTest {
             )
 
             assertTrue("F-supported pose recovery was rejected: ${evaluation.reason}", evaluation.accepted)
-            assertTrue(evaluation.candidate.fundamentalPoseRecovered)
-            assertTrue(evaluation.candidate.essentialToFundamentalInlierRatio < 0.95)
-            assertTrue(evaluation.candidate.inlierCount >= 100)
-            assertTrue(evaluation.candidate.medianParallaxDegrees > 16.0)
-            assertTrue(evaluation.candidate.homographyInlierRatio <= 0.8)
+            assertTrue(
+                "Expected F-derived uncalibrated pose: ${evaluation.candidate}",
+                evaluation.candidate.fundamentalPoseRecovered
+            )
+            assertTrue(
+                "E/F support ratio should indicate unknown focal: ${evaluation.candidate.essentialToFundamentalInlierRatio}; candidate=${evaluation.candidate}",
+                evaluation.candidate.essentialToFundamentalInlierRatio < 0.95
+            )
+            assertTrue(
+                "Too few cheiral inliers: ${evaluation.candidate.inlierCount}; candidate=${evaluation.candidate}",
+                evaluation.candidate.inlierCount >= 100
+            )
+            assertTrue(
+                "Parallax below initialization threshold: ${evaluation.candidate.medianParallaxDegrees}; candidate=${evaluation.candidate}",
+                evaluation.candidate.medianParallaxDegrees > 16.0
+            )
+            assertTrue(
+                "Planar support ratio exceeds the expected bound: ${evaluation.candidate.homographyInlierRatio}; candidate=${evaluation.candidate}",
+                evaluation.candidate.homographyInlierRatio <= 0.8
+            )
         } finally {
             matcher.clear()
             firstDescriptors.release()
