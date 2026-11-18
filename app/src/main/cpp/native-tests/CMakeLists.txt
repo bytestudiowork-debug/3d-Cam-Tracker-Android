@@ -52,6 +52,15 @@ target_compile_options(colmap_initial_pair_differential_tests PRIVATE -O2 -fno-f
 add_test(NAME colmap_initial_pair_differential_tests
         COMMAND colmap_initial_pair_differential_tests)
 
+add_executable(fundamental_matrix_differential_tests
+        fundamental_matrix_differential_tests.cpp
+        fundamental_matrix_solver_differential.cpp)
+target_link_libraries(fundamental_matrix_differential_tests PRIVATE Eigen3::Eigen)
+target_compile_options(fundamental_matrix_differential_tests PRIVATE
+        -O2 -fno-fast-math)
+add_test(NAME fundamental_matrix_differential_tests
+        COMMAND fundamental_matrix_differential_tests)
+
 set(SIFT_PORTABLE_C_SOURCES
         ../sift_core/sift.c
         ../sift_core/imopv.c
