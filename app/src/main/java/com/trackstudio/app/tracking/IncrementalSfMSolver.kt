@@ -1992,7 +1992,7 @@ internal class IncrementalSfMSolver(
                         val r = Mat()
                         val t = Mat()
                         try {
-                            val count = Calib3d.recoverPose(
+                            val count = OpenCvTwoViewPoseRecovery.recover(
                                 candidate, points1, points2, cameraMatrix, r, t, candidateMask
                             )
                             if (count > bestCount) {

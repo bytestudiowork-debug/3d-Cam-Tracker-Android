@@ -207,7 +207,7 @@ internal object OpenCvInitialPairEvaluator {
                         val candidateRotation = Mat()
                         val candidateTranslation = Mat()
                         try {
-                            val inliers = Calib3d.recoverPose(
+                            val inliers = OpenCvTwoViewPoseRecovery.recover(
                                 candidate, points1, points2, cameraMatrix,
                                 candidateRotation, candidateTranslation, mask
                             )

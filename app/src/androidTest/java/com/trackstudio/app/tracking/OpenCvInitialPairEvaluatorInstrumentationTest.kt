@@ -1,12 +1,16 @@
 package com.trackstudio.app.tracking
 
 import androidx.test.ext.junit.runners.AndroidJUnit4
+import org.junit.Assert.assertEquals
 import org.junit.Assert.assertTrue
 import org.junit.Test
 import org.junit.runner.RunWith
+import org.opencv.calib3d.Calib3d
 import org.opencv.core.CvType
 import org.opencv.core.KeyPoint
 import org.opencv.core.Mat
+import org.opencv.core.MatOfPoint2f
+import org.opencv.core.Point
 import java.util.Random
 import kotlin.math.cos
 import kotlin.math.roundToInt
@@ -98,6 +102,73 @@ class OpenCvInitialPairEvaluatorInstrumentationTest {
             firstDescriptors.release()
             secondDescriptors.release()
             cameraMatrix.release()
+        }
+    }
+
+    @Test
+    fun poseRecoveryRetainsPositiveDepthPointsBeyondOpenCvDefaultFiftyUnitCutoff() {
+        assertTrue("OpenCV runtime is unavailable", OpenCvRuntime.ensureLoaded())
+
+        val count = 32
+        val cameraMatrix = Mat(3, 3, CvType.CV_64F)
+        val essential = Mat(3, 3, CvType.CV_64F)
+        val firstPoints = MatOfPoint2f()
+        val secondPoints = MatOfPoint2f()
+        val defaultMask = Mat(count, 1, CvType.CV_8UC1)
+        val sourceCompatibleMask = Mat(count, 1, CvType.CV_8UC1)
+        val defaultRotation = Mat()
+        val defaultTranslation = Mat()
+        val sourceCompatibleRotation = Mat()
+        val sourceCompatibleTranslation = Mat()
+        try {
+            cameraMatrix.put(
+                0, 0,
+                TRUE_FOCAL, 0.0, PRINCIPAL_X,
+                0.0, TRUE_FOCAL, PRINCIPAL_Y,
+                0.0, 0.0, 1.0
+            )
+            // E = [t]_x R for R=I and unit translation t=(1, 0, 0).
+            essential.put(0, 0, 0.0, 0.0, 0.0, 0.0, 0.0, -1.0, 0.0, 1.0, 0.0)
+            val first = Array(count) { index ->
+                val x = -0.4 + (index % 8) * 0.1
+                val y = -0.2 + (index / 8) * 0.1
+                val z = 120.0 + index * 2.0
+                Point(TRUE_FOCAL * x / z + PRINCIPAL_X, TRUE_FOCAL * y / z + PRINCIPAL_Y)
+            }
+            val second = Array(count) { index ->
+                val x = -0.4 + (index % 8) * 0.1
+                val y = -0.2 + (index / 8) * 0.1
+                val z = 120.0 + index * 2.0
+                Point(TRUE_FOCAL * (x + 1.0) / z + PRINCIPAL_X, TRUE_FOCAL * y / z + PRINCIPAL_Y)
+            }
+            firstPoints.fromArray(*first)
+            secondPoints.fromArray(*second)
+            val allInliers = ByteArray(count) { 1 }
+            defaultMask.put(0, 0, allInliers)
+            sourceCompatibleMask.put(0, 0, allInliers)
+
+            val defaultCount = Calib3d.recoverPose(
+                essential, firstPoints, secondPoints, cameraMatrix,
+                defaultRotation, defaultTranslation, defaultMask
+            )
+            val sourceCompatibleCount = OpenCvTwoViewPoseRecovery.recover(
+                essential, firstPoints, secondPoints, cameraMatrix,
+                sourceCompatibleRotation, sourceCompatibleTranslation, sourceCompatibleMask
+            )
+
+            assertEquals(0, defaultCount)
+            assertEquals(count, sourceCompatibleCount)
+        } finally {
+            cameraMatrix.release()
+            essential.release()
+            firstPoints.release()
+            secondPoints.release()
+            defaultMask.release()
+            sourceCompatibleMask.release()
+            defaultRotation.release()
+            defaultTranslation.release()
+            sourceCompatibleRotation.release()
+            sourceCompatibleTranslation.release()
         }
     }
 
