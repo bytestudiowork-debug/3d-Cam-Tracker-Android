@@ -22,6 +22,7 @@ class GlobalRotationAveragerTest {
         edges += GlobalRotationAverager.Edge(0,3,rot(0.0,1.1,0.0),120)
         val solved = GlobalRotationAverager.solve(expected.keys.toList(), edges)!!
         assertTrue(solved.rejectedEdges.isNotEmpty())
+        assertTrue("connected robust solve stopped before iterative refinement", solved.iterations > 1)
         assertTrue(relativeAngle(solved.rotationsByFrame.getValue(3), expected.getValue(3)) < 0.08)
     }
 
