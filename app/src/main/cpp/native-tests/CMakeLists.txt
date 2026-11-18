@@ -8,6 +8,7 @@ set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_POSITION_INDEPENDENT_CODE ON)
 
 find_package(Ceres REQUIRED)
+find_package(Eigen3 REQUIRED)
 
 enable_testing()
 
@@ -41,6 +42,14 @@ target_include_directories(tracking_solver_numeric_tests PRIVATE ..)
 target_link_libraries(tracking_solver_numeric_tests PRIVATE Ceres::ceres PoseLib)
 target_compile_options(tracking_solver_numeric_tests PRIVATE -O2 -fno-fast-math)
 add_test(NAME tracking_solver_numeric_tests COMMAND tracking_solver_numeric_tests)
+
+add_executable(colmap_initial_pair_differential_tests
+        colmap_initial_pair_differential_tests.cpp
+        colmap_initial_pair_differential.cpp)
+target_link_libraries(colmap_initial_pair_differential_tests PRIVATE Eigen3::Eigen)
+target_compile_options(colmap_initial_pair_differential_tests PRIVATE -O2 -fno-fast-math)
+add_test(NAME colmap_initial_pair_differential_tests
+        COMMAND colmap_initial_pair_differential_tests)
 
 set(SIFT_PORTABLE_C_SOURCES
         ../sift_core/sift.c
