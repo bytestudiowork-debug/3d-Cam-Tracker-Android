@@ -115,7 +115,9 @@ suspend fun ReconstructionEngine.solve(
             }
         }
 
-        return solve(frameCount, cameraMatrix, calibratedFrameProvider, onProgress).copy(
+        return solveWithKnownCameraIntrinsics(
+            frameCount, cameraMatrix, calibratedFrameProvider, onProgress
+        ).copy(
             inputCameraCalibration = calibration,
             observationCoordinateModel = CameraObservationCoordinateModel.CALIBRATED_PINHOLE_PIXELS,
             observationCameraIntrinsics = observationIntrinsics

@@ -45,4 +45,13 @@ class CameraReconstructionEngine(
         frameProvider: suspend (Int) -> Mat?,
         onProgress: suspend (CameraTrackingProgress) -> Unit
     ): CameraTrackingResult = delegate.solve(frameCount, cameraMatrix, frameProvider, onProgress)
+
+    override suspend fun solveWithKnownCameraIntrinsics(
+        frameCount: Int,
+        cameraMatrix: Mat,
+        frameProvider: suspend (Int) -> Mat?,
+        onProgress: suspend (CameraTrackingProgress) -> Unit
+    ): CameraTrackingResult = delegate.solveWithKnownCameraIntrinsics(
+        frameCount, cameraMatrix, frameProvider, onProgress
+    )
 }

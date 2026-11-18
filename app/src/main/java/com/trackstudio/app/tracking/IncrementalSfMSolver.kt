@@ -1385,8 +1385,7 @@ internal class IncrementalSfMSolver(
                         rotation = positioningRotationsByFrame.getValue(observation.frameIndex),
                         cameraCenter = initialCameraCenters.getValue(observation.frameIndex),
                         undistortedFeatureDirection = doubleArrayOf(normalizedX, normalizedY, 1.0),
-                        // The current focal length is estimated, not user-calibrated.
-                        isCalibrated = false
+                        isCalibrated = cameraFocalLengthHasPrior
                     )
                 }
                 if (observations.size < GlomapGlobalPositioningProblemBuilder.DEFAULT_MINIMUM_TRACK_VIEWS) {

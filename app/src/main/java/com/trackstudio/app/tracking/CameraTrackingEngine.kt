@@ -26,8 +26,27 @@ class CameraTrackingEngine(
         cameraMatrix: Mat,
         frameProvider: suspend (Int) -> Mat?,
         onProgress: suspend (CameraTrackingProgress) -> Unit
+    ): CameraTrackingResult = solveWithFocalPrior(
+        frameCount, cameraMatrix, frameProvider, onProgress, cameraFocalLengthHasPrior
+    )
+
+    override suspend fun solveWithKnownCameraIntrinsics(
+        frameCount: Int,
+        cameraMatrix: Mat,
+        frameProvider: suspend (Int) -> Mat?,
+        onProgress: suspend (CameraTrackingProgress) -> Unit
+    ): CameraTrackingResult = solveWithFocalPrior(
+        frameCount, cameraMatrix, frameProvider, onProgress, focalLengthHasPrior = true
+    )
+
+    private suspend fun solveWithFocalPrior(
+        frameCount: Int,
+        cameraMatrix: Mat,
+        frameProvider: suspend (Int) -> Mat?,
+        onProgress: suspend (CameraTrackingProgress) -> Unit,
+        focalLengthHasPrior: Boolean
     ): CameraTrackingResult = withContext(Dispatchers.Default) {
-        IncrementalSfMSolver(maxFeatures, ratioThreshold, cameraFocalLengthHasPrior).solve(
+        IncrementalSfMSolver(maxFeatures, ratioThreshold, focalLengthHasPrior).solve(
             frameCount = frameCount,
             cameraMatrix = cameraMatrix,
             frameProvider = frameProvider,

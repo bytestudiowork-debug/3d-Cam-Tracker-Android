@@ -251,6 +251,7 @@ class CameraTrackingEngineEndToEndTest {
             skew = 5.0,
             distortionCoefficients = listOf(0.08, -0.02, 0.001, -0.001)
         )
+        var knownIntrinsicsPathUsed = false
         val delegate = object : ReconstructionEngine {
             override suspend fun solve(
                 frameCount: Int,
@@ -270,6 +271,16 @@ class CameraTrackingEngineEndToEndTest {
                     isCameraMotionEstimated = false
                 )
             }
+
+            override suspend fun solveWithKnownCameraIntrinsics(
+                frameCount: Int,
+                cameraMatrix: Mat,
+                frameProvider: suspend (Int) -> Mat?,
+                onProgress: suspend (CameraTrackingProgress) -> Unit
+            ): CameraTrackingResult {
+                knownIntrinsicsPathUsed = true
+                return solve(frameCount, cameraMatrix, frameProvider, onProgress)
+            }
         }
 
         val result = delegate.solve(
@@ -283,6 +294,7 @@ class CameraTrackingEngineEndToEndTest {
         assertEquals(5.0, result.inputCameraCalibration?.skew ?: Double.NaN, 0.0)
         assertEquals(0.0, result.observationCameraIntrinsics?.skew ?: Double.NaN, 0.0)
         assertEquals(0.0, result.effectiveCameraIntrinsics?.skew ?: Double.NaN, 0.0)
+        assertTrue("The calibrated solve did not use the known-intrinsics path", knownIntrinsicsPathUsed)
     }
 
     @Test
@@ -424,6 +436,53 @@ class CameraTrackingEngineEndToEndTest {
         } finally {
             frames.forEach(Mat::release)
             cameraMatrix.release()
+        }
+    }
+
+    @Test
+    fun calibratedIncrementalEngineRegistersSyntheticWideBaselineSequence() {
+        val frames = SyntheticSequence.render(
+            cameraStepWorld = 0.6,
+            pixelStartX = 700.0,
+            imageWidth = 1280,
+            principalX = 640.0
+        )
+        val calibration = CameraCalibration(
+            imageWidth = 1280,
+            imageHeight = SyntheticSequence.HEIGHT,
+            fx = 700.0,
+            fy = 700.0,
+            cx = 640.0,
+            cy = 240.0
+        )
+        try {
+            val result = runBlocking {
+                CameraReconstructionEngine(
+                    mode = ReconstructionMode.CUSTOM,
+                    options = CameraReconstructionOptions(
+                        customMaxFeatures = 1200,
+                        globalMaxFeatures = 1200,
+                        ratioThreshold = 0.8f,
+                        maximumPairCount = 10
+                    )
+                ).solve(
+                    frameCount = frames.size,
+                    calibration = calibration,
+                    frameProvider = { index -> frames[index].clone() }
+                )
+            }
+
+            assertEquals(frames.size, result.processedFrames)
+            assertTrue(
+                "Calibrated custom engine registered only ${result.registeredCameraCount} cameras; " +
+                    "seed=${result.initialPairFrames}; ${result.diagnostics}",
+                result.registeredCameraCount >= 3
+            )
+            assertEquals(700.0, result.inputCameraCalibration?.fx ?: Double.NaN, 0.0)
+            assertEquals(700.0, result.inputCameraCalibration?.fy ?: Double.NaN, 0.0)
+            assertNotNull(result.effectiveCameraIntrinsics)
+        } finally {
+            frames.forEach(Mat::release)
         }
     }
 

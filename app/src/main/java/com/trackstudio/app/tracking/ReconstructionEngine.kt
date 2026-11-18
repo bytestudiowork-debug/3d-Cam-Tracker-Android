@@ -26,4 +26,15 @@ interface ReconstructionEngine {
         frameProvider: suspend (Int) -> Mat?,
         onProgress: suspend (CameraTrackingProgress) -> Unit = {}
     ): CameraTrackingResult
+
+    /**
+     * Solves with caller-supplied camera intrinsics treated as a focal-length prior.
+     * Engines that do not estimate focal length may use the ordinary solve path.
+     */
+    suspend fun solveWithKnownCameraIntrinsics(
+        frameCount: Int,
+        cameraMatrix: Mat,
+        frameProvider: suspend (Int) -> Mat?,
+        onProgress: suspend (CameraTrackingProgress) -> Unit = {}
+    ): CameraTrackingResult = solve(frameCount, cameraMatrix, frameProvider, onProgress)
 }
