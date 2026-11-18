@@ -13,6 +13,7 @@ import org.opencv.core.Point
 import org.opencv.imgproc.Imgproc
 import org.opencv.core.Point3
 import com.trackstudio.app.tracking.colmap.ColmapLocalBundleSelector
+import com.trackstudio.app.tracking.colmap.ColmapLocalBundleTrackSelector
 import com.trackstudio.app.tracking.colmap.ColmapNextImageSelector
 import com.trackstudio.app.tracking.colmap.ColmapRegistrationTrialLedger
 import com.trackstudio.app.tracking.colmap.ColmapIterativeLocalRefinement
@@ -496,9 +497,7 @@ internal class IncrementalSfMSolver(
                 val localFrameIds = selection.frameIds.toSet()
                 if (localFrameIds.size < 3) return null
 
-                val localTracks = mapTracks.filter { track ->
-                    track.observations.count { it.frameIndex in localFrameIds } >= 3
-                }
+                val localTracks = ColmapLocalBundleTrackSelector.select(mapTracks, localFrameIds)
                 val localTrackIds = localTracks.mapTo(linkedSetOf()) { it.id }
                 val localObservationCount = localTracks.sumOf { track ->
                     track.observations.count { it.frameIndex in localFrameIds }

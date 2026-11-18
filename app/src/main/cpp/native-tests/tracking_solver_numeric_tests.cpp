@@ -593,6 +593,55 @@ void TestObservablePrincipalPointRefinement() {
             "principal-point refinement moved the fixed reference pose");
 }
 
+void TestBundleAdjustmentAcceptsTwoObservationTracks() {
+    const std::vector<double> centers = {
+            0.0, 0.0, 0.0,
+            0.8, 0.05, 0.0,
+            0.2, 0.7, 0.04};
+    const std::vector<double> identity = {1, 0, 0, 0, 1, 0, 0, 0, 1};
+    std::vector<double> rotations;
+    for (int frame = 0; frame < 3; ++frame) {
+        rotations.insert(rotations.end(), identity.begin(), identity.end());
+    }
+    const std::vector<double> intrinsics = {700.0, 0.0, 640.0, 710.0, 360.0};
+    constexpr int track_count = 30;
+    std::vector<double> points;
+    for (int track = 0; track < track_count; ++track) {
+        points.push_back((static_cast<double>(track % 6) - 2.5) * 0.25);
+        points.push_back((static_cast<double>(track / 6) - 2.0) * 0.22);
+        points.push_back(4.0 + 0.11 * (track % 7));
+    }
+
+    const std::array<std::array<int, 2>, 3> visible_frame_pairs = {{
+            {{0, 1}}, {{1, 2}}, {{0, 2}}}};
+    std::vector<int> frame_indices;
+    std::vector<int> track_indices;
+    std::vector<double> image_points;
+    for (int track = 0; track < track_count; ++track) {
+        const auto& visible_frames = visible_frame_pairs[track % visible_frame_pairs.size()];
+        for (int frame : visible_frames) {
+            double image[2];
+            Project(centers.data() + frame * 3,
+                    rotations.data() + frame * 9,
+                    points.data() + track * 3,
+                    intrinsics.data(), image);
+            frame_indices.push_back(frame);
+            track_indices.push_back(track);
+            image_points.insert(image_points.end(), image, image + 2);
+        }
+    }
+
+    tracking::GlobalBundleAdjustmentResult result;
+    Require(tracking::RunGlobalBundleAdjustment(
+                    centers, rotations, points, frame_indices, track_indices,
+                    image_points, intrinsics, 20, 1, &result),
+            "bundle adjustment rejected valid two-observation tracks");
+    Require(result.positive_depth_ratio == 1.0 && result.points.size() == points.size(),
+            "two-observation bundle adjustment lost positive-depth landmarks");
+    Require(result.final_cost <= result.initial_cost,
+            "two-observation bundle adjustment increased reprojection cost");
+}
+
 void TestBundleAdjustmentRejectsDisconnectedGraph() {
     const std::vector<double> centers = {
             0, 0, 0, 1, 0, 0,
@@ -1498,6 +1547,7 @@ int main() {
         TestGlobalHuberLossPolicy();
         TestPoseRefinement();
         TestBundleAdjustmentJointRecoveryOutliersAndGauge();
+        TestBundleAdjustmentAcceptsTwoObservationTracks();
         TestObservablePrincipalPointRefinement();
         TestBundleAdjustmentRejectsDisconnectedGraph();
         TestBundleAdjustmentRejectsRepeatedFrameObservation();

@@ -225,7 +225,9 @@ bool RunGlobalBundleAdjustment(const std::vector<double>& initial_camera_centers
     for (int frame = 0; frame < frame_count; ++frame) {
         if (components.Find(frame) != graph_root) return false;
     }
-    for (int count : observations_per_track) if (count < 3) return false;
+    // COLMAP local BA accepts valid two-view points; GLOMAP's Android caller
+    // retains its separate three-observation global-track filter.
+    for (int count : observations_per_track) if (count < 2) return false;
 
     std::vector<double> centers = initial_camera_centers;
     std::vector<double> points = initial_points;

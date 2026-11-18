@@ -1,5 +1,6 @@
 package com.trackstudio.app.tracking
 
+import com.trackstudio.app.tracking.colmap.ColmapLocalBundleTrackSelector
 import org.opencv.core.Mat
 
 /** Joint robust reprojection refinement for a connected incremental camera map. */
@@ -50,7 +51,7 @@ internal class JointCameraBundleAdjuster {
         val activeFrameSet = frameIds.toSet()
         val trackIds = tracks.asSequence()
             .filter { pointsByTrackId.containsKey(it.id) }
-            .filter { track -> track.observations.count { it.frameIndex in activeFrameSet } >= 3 }
+            .filter { track -> ColmapLocalBundleTrackSelector.hasLocalSupport(track, activeFrameSet) }
             .map { it.id }
             .distinct()
             .sorted()
