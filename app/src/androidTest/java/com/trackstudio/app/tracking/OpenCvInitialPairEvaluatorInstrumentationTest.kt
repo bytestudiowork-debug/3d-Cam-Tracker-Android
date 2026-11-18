@@ -106,6 +106,52 @@ class OpenCvInitialPairEvaluatorInstrumentationTest {
     }
 
     @Test
+    fun initialHomographyLocalRefitDeterministicallyExpandsSupportOnSyntheticPlanarMatches() {
+        assertTrue("OpenCV runtime is unavailable", OpenCvRuntime.ensureLoaded())
+
+        val inlierCount = 80
+        val firstPoints = Array(100) { index ->
+            val row = index / 10
+            val column = index % 10
+            Point(column * 31.0 + row * 2.1, row * 23.0 + column * 1.4)
+        }
+        val secondPoints = Array(firstPoints.size) { index ->
+            val first = firstPoints[index]
+            if (index < inlierCount) {
+                Point(first.x + 5.0, first.y - 2.0)
+            } else {
+                Point(first.x + 120.0 + index, first.y - 90.0 - index)
+            }
+        }
+        val approximateHomography = doubleArrayOf(
+            1.0, 0.0, 5.8,
+            0.0, 1.0, -2.2,
+            0.0, 0.0, 1.0
+        )
+        val initialInliers = (0 until 60).toList()
+
+        val firstRun = OpenCvInitialPairEvaluator.conservativeHomographySupportCount(
+            firstPoints,
+            secondPoints,
+            approximateHomography,
+            initialInliers,
+            rawOpenCvInlierCount = initialInliers.size,
+            thresholdPx = 4.0
+        )
+        val repeatedRun = OpenCvInitialPairEvaluator.conservativeHomographySupportCount(
+            firstPoints,
+            secondPoints,
+            approximateHomography,
+            initialInliers,
+            rawOpenCvInlierCount = initialInliers.size,
+            thresholdPx = 4.0
+        )
+
+        assertEquals(inlierCount, firstRun)
+        assertEquals(firstRun, repeatedRun)
+    }
+
+    @Test
     fun poseRecoveryRetainsPositiveDepthPointsBeyondOpenCvDefaultFiftyUnitCutoff() {
         assertTrue("OpenCV runtime is unavailable", OpenCvRuntime.ensureLoaded())
 

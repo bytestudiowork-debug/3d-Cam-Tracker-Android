@@ -122,7 +122,24 @@ internal object OpenCvInitialPairEvaluator {
                         homographySucceeded = estimatedHomography.rows() == 3 &&
                             estimatedHomography.cols() == 3
                         if (homographySucceeded) {
-                            homographyInlierCount = countMaskInliers(homographyMask, matchCount)
+                            val rawSupport = countMaskInliers(homographyMask, matchCount)
+                            val homographyValues = OpenCvMatrixReadback.readCv64F(
+                                estimatedHomography, 3, 3
+                            )
+                            homographyInlierCount = if (homographyValues == null) {
+                                rawSupport
+                            } else {
+                                conservativeHomographySupportCount(
+                                    matchedFirst.toTypedArray(),
+                                    matchedSecond.toTypedArray(),
+                                    homographyValues,
+                                    OpenCvTwoViewLocalOptimizer.inliersFromMask(
+                                        homographyMask, matchCount
+                                    ),
+                                    rawSupport,
+                                    HOMOGRAPHY_THRESHOLD_PX
+                                )
+                            }
                         }
                     } finally {
                         estimatedHomography.release()
@@ -409,6 +426,36 @@ internal object OpenCvInitialPairEvaluator {
             rotation.release()
             translation.release()
         }
+    }
+
+    /**
+     * Refines H consensus with at most two deterministic all-inlier fits. The
+     * original OpenCV RANSAC count remains a floor because its one-sided
+     * reprojection test is not the symmetric transfer metric used by the
+     * bounded local optimizer; replacing it could weaken planar rejection.
+     */
+    internal fun conservativeHomographySupportCount(
+        firstPoints: Array<org.opencv.core.Point>,
+        secondPoints: Array<org.opencv.core.Point>,
+        initialHomography: DoubleArray,
+        initialInlierIndices: List<Int>,
+        rawOpenCvInlierCount: Int,
+        thresholdPx: Double
+    ): Int {
+        val rawSupport = rawOpenCvInlierCount.coerceIn(0, firstPoints.size)
+        if (firstPoints.size != secondPoints.size ||
+            firstPoints.size < OpenCvHomographyLocalOptimizer.MINIMUM_FIT_POINTS
+        ) return rawSupport
+
+        val refined = OpenCvHomographyLocalOptimizer.refine(
+            firstPoints = firstPoints,
+            secondPoints = secondPoints,
+            initialHomography = initialHomography,
+            initialRansacInliers = initialInlierIndices,
+            thresholdPx = thresholdPx,
+            maximumRefitRounds = OpenCvHomographyLocalOptimizer.MAXIMUM_REFIT_ROUNDS
+        )
+        return maxOf(rawSupport, refined?.inlierIndices?.size ?: 0)
     }
 
 
