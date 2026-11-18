@@ -495,14 +495,17 @@ internal class IncrementalSfMSolver(
                     pointsByTrackId = referencePoints
                 )
                 val localFrameIds = selection.frameIds.toSet()
-                if (localFrameIds.size < 3) return null
 
                 val localTracks = ColmapLocalBundleTrackSelector.select(mapTracks, localFrameIds)
                 val localTrackIds = localTracks.mapTo(linkedSetOf()) { it.id }
                 val localObservationCount = localTracks.sumOf { track ->
                     track.observations.count { it.frameIndex in localFrameIds }
                 }
-                if (localTracks.size < 20 || localObservationCount < 60) return null
+                if (!ColmapLocalBundleTrackSelector.meetsBundleAdjustmentMinimum(
+                        localFrameIds = localFrameIds,
+                        localTracks = localTracks
+                    )
+                ) return null
 
                 val localCenters = centersByFrame.filterKeys { it in localFrameIds }
                 val localRotations = validPoses.asSequence()

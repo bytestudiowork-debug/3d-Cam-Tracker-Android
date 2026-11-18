@@ -13,6 +13,9 @@ import com.trackstudio.app.tracking.CameraFeatureTrack
  */
 internal object ColmapLocalBundleTrackSelector {
     const val MIN_LOCAL_OBSERVATION_COUNT = 2
+    const val MIN_LOCAL_BUNDLE_FRAMES = 2
+    const val MIN_LOCAL_BUNDLE_TRACKS = 20
+    const val MIN_LOCAL_BUNDLE_OBSERVATIONS = 60
 
     fun select(
         tracks: List<CameraFeatureTrack>,
@@ -21,4 +24,17 @@ internal object ColmapLocalBundleTrackSelector {
 
     fun hasLocalSupport(track: CameraFeatureTrack, localFrameIds: Set<Int>): Boolean =
         track.observations.count { it.frameIndex in localFrameIds } >= MIN_LOCAL_OBSERVATION_COUNT
+
+    fun meetsBundleAdjustmentMinimum(
+        localFrameIds: Set<Int>,
+        localTracks: List<CameraFeatureTrack>
+    ): Boolean {
+        if (localFrameIds.size < MIN_LOCAL_BUNDLE_FRAMES ||
+            localTracks.size < MIN_LOCAL_BUNDLE_TRACKS
+        ) return false
+        val localObservationCount = localTracks.sumOf { track ->
+            track.observations.count { it.frameIndex in localFrameIds }
+        }
+        return localObservationCount >= MIN_LOCAL_BUNDLE_OBSERVATIONS
+    }
 }

@@ -56,7 +56,9 @@ internal class JointCameraBundleAdjuster {
             .distinct()
             .sorted()
             .toList()
-        if (frameIds.size < 3 || trackIds.size < 20) return null
+        if (frameIds.size < ColmapLocalBundleTrackSelector.MIN_LOCAL_BUNDLE_FRAMES ||
+            trackIds.size < ColmapLocalBundleTrackSelector.MIN_LOCAL_BUNDLE_TRACKS
+        ) return null
 
         val frameIndexById = frameIds.withIndex().associate { it.value to it.index }
         val trackIndexById = trackIds.withIndex().associate { it.value to it.index }
@@ -72,7 +74,7 @@ internal class JointCameraBundleAdjuster {
                 }
             }
             .toList()
-        if (observations.size < 60) return null
+        if (observations.size < ColmapLocalBundleTrackSelector.MIN_LOCAL_BUNDLE_OBSERVATIONS) return null
 
         val centers = DoubleArray(frameIds.size * 3)
         frameIds.forEachIndexed { index, id ->
