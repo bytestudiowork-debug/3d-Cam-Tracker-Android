@@ -240,15 +240,45 @@ internal class FeatureTrackBuilder {
         require(updatedTracks.map { it.id }.distinct().size == updatedTracks.size)
         require(updatedTracks.all { it.id in replacedTrackIds })
 
-        val retainedTracks = tracks.filterKeys { it !in replacedTrackIds }
-            .mapValues { (_, observations) -> observations.toMutableList() }
-        tracks.clear()
-        tracks.putAll(retainedTracks)
+        val ownerByFeature = HashMap<Long, Int>()
+        val updatedObservationsByTrack = linkedMapOf<Int, MutableList<CameraFeatureObservation>>()
         for (track in updatedTracks) {
-            if (track.id !in removedTrackIds) {
-                tracks[track.id] = track.observations.toMutableList()
+            if (track.id in removedTrackIds) continue
+            require(track.observations.map { it.frameIndex }.distinct().size == track.observations.size) {
+                "A map track cannot contain multiple observations from one frame."
+            }
+            val seenFeatures = HashSet<Long>()
+            for (observation in track.observations) {
+                if (observation.frameIndex < 0 || observation.featureIndex < 0) continue
+                val key = featureNode(observation.frameIndex, observation.featureIndex)
+                require(seenFeatures.add(key)) { "A map track cannot repeat a feature observation." }
+                val previousOwner = ownerByFeature.putIfAbsent(key, track.id)
+                require(previousOwner == null || previousOwner == track.id) {
+                    "A feature observation cannot belong to multiple map tracks."
+                }
+            }
+            updatedObservationsByTrack[track.id] = track.observations.toMutableList()
+        }
+
+        val retainedTracks = linkedMapOf<Int, MutableList<CameraFeatureObservation>>()
+        for ((trackId, observations) in tracks) {
+            if (trackId in replacedTrackIds) continue
+            val seenFeatures = HashSet<Long>()
+            val retainedObservations = observations.filter { observation ->
+                if (observation.frameIndex < 0 || observation.featureIndex < 0) {
+                    true
+                } else {
+                    val key = featureNode(observation.frameIndex, observation.featureIndex)
+                    seenFeatures.add(key) && ownerByFeature.putIfAbsent(key, trackId) == null
+                }
+            }
+            if (retainedObservations.isNotEmpty()) {
+                retainedTracks[trackId] = retainedObservations.toMutableList()
             }
         }
+        tracks.clear()
+        tracks.putAll(retainedTracks)
+        tracks.putAll(updatedObservationsByTrack)
 
         assignmentsByFrame.clear()
         for ((trackId, observations) in tracks) {
@@ -260,6 +290,9 @@ internal class FeatureTrackBuilder {
         }
         previousAssignments = assignmentsByFrame[activeFrameIndex]?.toMutableMap() ?: mutableMapOf()
     }
+
+    private fun featureNode(frameIndex: Int, featureIndex: Int): Long =
+        (frameIndex.toLong() shl 32) or (featureIndex.toLong() and 0xffffffffL)
 
     /**
      * Creates an immutable snapshot. When [trackIds] is supplied, only those

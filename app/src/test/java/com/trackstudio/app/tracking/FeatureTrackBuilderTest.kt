@@ -256,6 +256,47 @@ class FeatureTrackBuilderTest {
     }
 
     @Test
+    fun completedMapTrackTakesOwnershipFromRetainedFeatureTrack() {
+        val builder = FeatureTrackBuilder()
+        builder.seedPair(
+            firstFrame = 0,
+            secondFrame = 1,
+            firstKeypoints = arrayOf(keypoint(10f, 10f), keypoint(11f, 10f)),
+            secondKeypoints = arrayOf(keypoint(20f, 10f), keypoint(21f, 10f)),
+            inlierMatches = listOf(0 to 0, 1 to 1)
+        )
+        builder.addInlierMatches(
+            frameIndex = 2,
+            previousKeypoints = arrayOf(keypoint(20f, 10f), keypoint(21f, 10f)),
+            currentKeypoints = arrayOf(keypoint(31f, 10f)),
+            matches = listOf(1 to 0)
+        )
+
+        val tracksBeforeUpdate = builder.build().associateBy { it.id }
+        val mapTrack = tracksBeforeUpdate.getValue(0)
+        val retainedTrack = tracksBeforeUpdate.getValue(1)
+        assertEquals(listOf(0, 1), mapTrack.observations.map { it.frameIndex })
+        assertEquals(listOf(0, 1, 2), retainedTrack.observations.map { it.frameIndex })
+
+        builder.replaceMapTracks(
+            replacedTrackIds = setOf(mapTrack.id),
+            updatedTracks = listOf(
+                mapTrack.copy(observations = mapTrack.observations + retainedTrack.observations.last())
+            ),
+            removedTrackIds = emptySet(),
+            activeFrameIndex = 2
+        )
+
+        val updatedTracks = builder.build().associateBy { it.id }
+        assertEquals(listOf(0, 1, 2), updatedTracks.getValue(mapTrack.id).observations.map { it.frameIndex })
+        assertEquals(listOf(0, 1), updatedTracks.getValue(retainedTrack.id).observations.map { it.frameIndex })
+        val featureOwners = builder.build().flatMap { track ->
+            track.observations.map { it.frameIndex to it.featureIndex }
+        }
+        assertEquals(featureOwners.size, featureOwners.distinct().size)
+    }
+
+    @Test
     fun progressLabelAndFractionAreBounded() {
         val progress = CameraTrackingProgress(
             frameIndex = 240,
