@@ -469,6 +469,8 @@ internal class IncrementalSfMSolver(
                 )
             }
 
+            var unavailableAdjustmentFrameIds = emptySet<Int>()
+
             fun adjustLocalBundle(
                 referenceFrameId: Int,
                 lossMode: ColmapIterativeLocalRefinement.LossMode
@@ -497,6 +499,8 @@ internal class IncrementalSfMSolver(
                     pointsByTrackId = referencePoints
                 )
                 val localFrameIds = selection.frameIds.toSet()
+                unavailableAdjustmentFrameIds =
+                    ColmapLocalBundleSelector.filterFrameIdsAfterUnavailableAdjustment(selection)
 
                 val localTracks = ColmapLocalBundleTrackSelector.select(mapTracks, localFrameIds)
                 val localTrackIds = localTracks.mapTo(linkedSetOf()) { it.id }
@@ -640,7 +644,7 @@ internal class IncrementalSfMSolver(
                 val result = ColmapIterativeLocalRefinement.run(
                     filterAfterUnavailableAdjustment = {
                         applyObservationFilter(
-                            affectedFrameIds = emptySet(),
+                            affectedFrameIds = unavailableAdjustmentFrameIds,
                             changedTrackIds = modifiedPointTrackIds,
                             intrinsics = filterIntrinsics
                         )

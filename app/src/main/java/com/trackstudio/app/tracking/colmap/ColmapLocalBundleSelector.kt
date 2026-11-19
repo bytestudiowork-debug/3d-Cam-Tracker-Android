@@ -140,6 +140,11 @@ internal object ColmapLocalBundleSelector {
         return result(referenceFrameId, selected, overlapping, angleByFrame, queryPointCount)
     }
 
+    /** An empty neighborhood means there is no local bundle image scope to filter. */
+    fun filterFrameIdsAfterUnavailableAdjustment(selection: Selection): Set<Int> =
+        if (selection.neighborFrameIds.isEmpty()) emptySet()
+        else selection.frameIds.toSet()
+
     private fun result(
         referenceFrameId: Int,
         selectedFrameIds: List<Int>,

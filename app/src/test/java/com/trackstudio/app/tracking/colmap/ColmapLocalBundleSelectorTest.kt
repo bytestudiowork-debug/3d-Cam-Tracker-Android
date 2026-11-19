@@ -66,6 +66,27 @@ class ColmapLocalBundleSelectorTest {
         assertEquals(4, result.sharedObservationsByFrame[2])
     }
 
+    @Test
+    fun unavailableAdjustmentFiltersSelectedImagesOnlyWhenLocalBundleHasNeighbors() {
+        val connected = ColmapLocalBundleSelector.Selection(
+            referenceFrameId = 3,
+            neighborFrameIds = listOf(5, 8),
+            sharedObservationsByFrame = mapOf(5 to 30, 8 to 20),
+            triangulationAngle75RadiansByFrame = emptyMap(),
+            queryPointCount = 40
+        )
+        val disconnected = connected.copy(neighborFrameIds = emptyList())
+
+        assertEquals(
+            setOf(3, 5, 8),
+            ColmapLocalBundleSelector.filterFrameIdsAfterUnavailableAdjustment(connected)
+        )
+        assertEquals(
+            emptySet<Int>(),
+            ColmapLocalBundleSelector.filterFrameIdsAfterUnavailableAdjustment(disconnected)
+        )
+    }
+
     private fun select(
         scene: Scene,
         maxImages: Int = ColmapLocalBundleSelector.DEFAULT_MAX_NUM_IMAGES,
