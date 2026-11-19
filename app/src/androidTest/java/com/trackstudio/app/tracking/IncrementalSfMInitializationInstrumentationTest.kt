@@ -60,17 +60,43 @@ class IncrementalSfMInitializationInstrumentationTest {
             assertConsistentSeedResult(result, oracle)
 
             val seedFrame = result.initialPairFrames!!.second
-            val pnpProposal = IncrementalCameraRegistrar.register(
-                frameIndex = seedFrame,
-                frameWidth = fixture.firstFrame.cols(),
-                frameHeight = fixture.firstFrame.rows(),
+            val initialMap = SfMTriangulator.triangulate(
                 featureTracks = result.featureTracks,
-                landmarks = result.landmarks,
+                poses = result.poses,
                 cameraMatrix = cameraMatrix
             )
-            assertTrue("The planar seed PnP diagnostic was rejected: ${pnpProposal.reason}",
-                pnpProposal.accepted)
-            val proposedPose = requireNotNull(pnpProposal.pose)
+            assertTrue("The planar seed did not produce a replayable landmark map",
+                initialMap.landmarks.size >= 30)
+            var replayPoses = result.poses.toMutableList()
+            var replayLandmarks = initialMap.landmarks
+            repeat(2) { round ->
+                val adjusted = MobileBundleAdjuster.optimizeLandmarks(
+                    featureTracks = result.featureTracks,
+                    landmarks = replayLandmarks,
+                    poses = replayPoses,
+                    cameraMatrix = cameraMatrix
+                )
+                val adjustedByTrack = adjusted.associateBy { it.trackId }
+                replayLandmarks = replayLandmarks.map { old ->
+                    adjustedByTrack[old.trackId]
+                        ?.takeIf { it.meanReprojectionErrorPx <= old.meanReprojectionErrorPx }
+                        ?: old
+                }
+                val proposal = IncrementalCameraRegistrar.register(
+                    frameIndex = seedFrame,
+                    frameWidth = fixture.firstFrame.cols(),
+                    frameHeight = fixture.firstFrame.rows(),
+                    featureTracks = result.featureTracks,
+                    landmarks = replayLandmarks,
+                    cameraMatrix = cameraMatrix
+                )
+                assertTrue("Planar seed PnP replay round ${round + 1} was rejected: ${proposal.reason}",
+                    proposal.accepted)
+                replayPoses = replayPoses.map { pose ->
+                    if (pose.frameIndex == seedFrame) requireNotNull(proposal.pose) else pose
+                }
+            }
+            val proposedPose = replayPoses[seedFrame]
             val retainedPose = result.poses[seedFrame]
             val retainedNorm = sqrt(retainedPose.translation.sumOf { it * it })
             val proposedNorm = sqrt(proposedPose.translation.sumOf { it * it })
@@ -81,8 +107,8 @@ class IncrementalSfMInitializationInstrumentationTest {
                     proposedPose.translation[index] / proposedNorm
             }
 
-            // This is a bounded Android PnP-only adaptation regression, not a claim
-            // that the reference mapper uses this final reprojection-only stage.
+            // Replaying the old two-round Android point/PnP schedule exposes the
+            // seed-branch hazard; it does not claim reference-mapper equivalence.
             assertTrue(
                 "Re-solving the same planar seed did not expose the alternate branch: " +
                     "direction agreement=$directionAgreement, retained |tz|=$retainedZ, " +
