@@ -19,6 +19,7 @@ import com.trackstudio.app.tracking.colmap.ColmapRegistrationTrialLedger
 import com.trackstudio.app.tracking.colmap.ColmapIterativeLocalRefinement
 import com.trackstudio.app.tracking.colmap.ColmapTrackCompleter
 import com.trackstudio.app.tracking.colmap.ColmapTrackMerger
+import com.trackstudio.app.tracking.colmap.ColmapTrackRetriangulator
 import com.trackstudio.app.tracking.glomap.GlomapGlobalPositioningProblemBuilder
 import com.trackstudio.app.tracking.colmap.ColmapObservationFilter
 import com.trackstudio.app.tracking.glomap.GlomapNativeSolver
@@ -1734,15 +1735,37 @@ internal class IncrementalSfMSolver(
                     matrix.put(0, 0, *intrinsics.toRowMajorMatrix())
                 }
             } ?: cameraMatrix
-            val finalTriangulation = try {
-                SfMTriangulator.triangulate(
-                    currentFeatureTracks(), poseByFrame.filterNotNull(), finalCameraMatrix
+            val finalIntrinsics = PinholeIntrinsics(
+                fx = finalCameraMatrix.get(0, 0)[0],
+                skew = finalCameraMatrix.get(0, 1)[0],
+                cx = finalCameraMatrix.get(0, 2)[0],
+                fy = finalCameraMatrix.get(1, 1)[0],
+                cy = finalCameraMatrix.get(1, 2)[0]
+            )
+            val finalTrackTriangulation = try {
+                IncrementalTrackTriangulation.finalize(
+                    featureTracks = currentFeatureTracks(),
+                    landmarks = landmarksByTrack.values.toList(),
+                    pairMatches = verifiedMatchesByFramePair.map { (frames, matches) ->
+                        ColmapTrackRetriangulator.PairMatches(
+                            frames.first, frames.second, matches.toList()
+                        )
+                    },
+                    poses = poseByFrame.filterNotNull(),
+                    intrinsics = finalIntrinsics,
+                    featureAt = { frameIndex, featureIndex ->
+                        matchedObservationsByNode[featureNode(frameIndex, featureIndex)]
+                    }
                 )
             } finally {
                 if (finalCameraMatrix !== cameraMatrix) finalCameraMatrix.release()
             }
+            val finalTriangulation = finalTrackTriangulation.triangulation
             val finalLandmarks = finalTriangulation.landmarks.map { triangulated ->
-                val refined = if (jointBundleAdjustmentApplied && triangulated.trackId in jointRefinedTrackIds) {
+                val refined = if (jointBundleAdjustmentApplied &&
+                    triangulated.trackId in jointRefinedTrackIds &&
+                    triangulated.trackId !in finalTrackTriangulation.changedTrackIds
+                ) {
                     landmarksByTrack[triangulated.trackId]
                 } else null
                 refined?.copy(
