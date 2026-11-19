@@ -40,25 +40,19 @@ internal class GlomapGlobalBundleAdjuster {
         require(maxIterations > 0 && numThreads > 0)
         if (cameraMatrix.empty() || cameraMatrix.rows() != 3 || cameraMatrix.cols() != 3) return null
 
-        val observedFrames = tracks.asSequence()
-            .flatMap { it.observations.asSequence().map { observation -> observation.frameIndex } }
-            .toSet()
-        val frameIds = frameCentersById.keys
-            .filter { rotationsByFrame.containsKey(it) && it in observedFrames }
-            .sorted()
-        val activeFrameSet = frameIds.toSet()
-        val trackIds = tracks.asSequence()
-            .filter { pointsByTrackId.containsKey(it.id) }
-            .filter { track -> track.observations.count { it.frameIndex in activeFrameSet } >= 3 }
-            .map { it.id }
-            .distinct()
-            .sorted()
-            .toList()
+        val selectedInput = GlobalBundleAdjustmentInput.select(
+            frameCentersById = frameCentersById,
+            rotationsByFrame = rotationsByFrame,
+            pointsByTrackId = pointsByTrackId,
+            tracks = tracks
+        )
+        val frameIds = selectedInput.frameIds
+        val trackIds = selectedInput.tracks.map { it.id }.distinct().sorted()
         if (frameIds.size < 3 || trackIds.size < 20) return null
 
         val frameIndex = frameIds.withIndex().associate { it.value to it.index }
         val trackIndex = trackIds.withIndex().associate { it.value to it.index }
-        val observations = tracks.asSequence()
+        val observations = selectedInput.tracks.asSequence()
             .filter { it.id in trackIndex }
             .flatMap { track ->
                 track.observations.asSequence().mapNotNull { observation ->
@@ -110,19 +104,19 @@ internal class GlomapGlobalBundleAdjuster {
         ) return null
 
         var offset = 5
-        val solvedCenters = LinkedHashMap<Int, DoubleArray>(frameIds.size)
+        val solvedCenters = LinkedHashMap(frameCentersById)
         for (id in frameIds) {
             solvedCenters[id] = packed.copyOfRange(offset, offset + 3)
             offset += 3
         }
-        val solvedRotations = LinkedHashMap<Int, DoubleArray>(frameIds.size)
+        val solvedRotations = LinkedHashMap(rotationsByFrame)
         for (id in frameIds) {
             val rotation = packed.copyOfRange(offset, offset + 9)
             if (!isRotationMatrix(rotation)) return null
             solvedRotations[id] = rotation
             offset += 9
         }
-        val solvedPoints = LinkedHashMap<Int, DoubleArray>(trackIds.size)
+        val solvedPoints = LinkedHashMap(pointsByTrackId)
         for (id in trackIds) {
             solvedPoints[id] = packed.copyOfRange(offset, offset + 3)
             offset += 3
@@ -139,8 +133,8 @@ internal class GlomapGlobalBundleAdjuster {
             (!refinePrincipalPoint && solvedIntrinsicValues[4] != intrinsics[4]) ||
             !principalPointWithinBounds
         ) return null
-        if (solvedCenters.values.any { it.any { value -> !value.isFinite() } } ||
-            solvedPoints.values.any { it.any { value -> !value.isFinite() } }
+        if (frameIds.any { id -> solvedCenters.getValue(id).any { value -> !value.isFinite() } } ||
+            trackIds.any { id -> solvedPoints.getValue(id).any { value -> !value.isFinite() } }
         ) return null
 
         return Result(
