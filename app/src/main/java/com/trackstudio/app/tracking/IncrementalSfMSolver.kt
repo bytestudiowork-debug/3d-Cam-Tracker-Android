@@ -1277,18 +1277,26 @@ internal class IncrementalSfMSolver(
                 reverseDescriptors.release()
             }
 
-            retryFailedFramesAfterMapUpdate(firstFrame.width, firstFrame.height)
-            // Refresh the complete immutable snapshot once for final triangulation and refinement.
-            tracks = currentFeatureTracks()
-            // Flush newly observed tracks once more after the final registered pose.
-            SfMTriangulator.triangulate(
-                tracks, poseByFrame.filterNotNull(), cameraMatrix
-            ).landmarks.forEach { landmark ->
-                val old = landmarksByTrack[landmark.trackId]
-                if (old == null || landmark.meanReprojectionErrorPx < old.meanReprojectionErrorPx) {
-                    landmarksByTrack[landmark.trackId] = landmark
+            // Flush the final map before the last bounded retry pass so newly
+            // triangulated landmarks can make previously rejected frames eligible.
+            IncrementalMapUpdateSequence.flushThenRetry(
+                flush = {
+                    tracks = currentFeatureTracks()
+                    SfMTriangulator.triangulate(
+                        tracks, poseByFrame.filterNotNull(), cameraMatrix
+                    ).landmarks.forEach { landmark ->
+                        val old = landmarksByTrack[landmark.trackId]
+                        if (old == null ||
+                            landmark.meanReprojectionErrorPx < old.meanReprojectionErrorPx
+                        ) {
+                            landmarksByTrack[landmark.trackId] = landmark
+                        }
+                    }
+                },
+                retry = {
+                    retryFailedFramesAfterMapUpdate(firstFrame.width, firstFrame.height)
                 }
-            }
+            )
 
             // Two bounded block-coordinate BA rounds alternate robust 3D
             // landmark optimization with registered-camera PnP refinement.
