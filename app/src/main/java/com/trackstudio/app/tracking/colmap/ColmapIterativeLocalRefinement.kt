@@ -47,6 +47,7 @@ internal object ColmapIterativeLocalRefinement {
     fun run(
         maxRefinements: Int = DEFAULT_MAX_REFINEMENTS,
         maxRefinementChange: Double = DEFAULT_MAX_REFINEMENT_CHANGE,
+        filterAfterUnavailableAdjustment: (() -> Int)? = null,
         adjust: (LossMode) -> Report?
     ): Result {
         require(maxRefinements >= 0)
@@ -55,7 +56,11 @@ internal object ColmapIterativeLocalRefinement {
         val iterations = ArrayList<Iteration>(maxRefinements)
         for (round in 0 until maxRefinements) {
             val lossMode = if (round == 0) LossMode.SOFT_L1 else LossMode.TRIVIAL
-            val report = adjust(lossMode) ?: break
+            val report = adjust(lossMode)
+            if (report == null) {
+                if (iterations.isEmpty()) filterAfterUnavailableAdjustment?.invoke()
+                break
+            }
             iterations += Iteration(lossMode, report)
             if (report.changedObservationRatio < maxRefinementChange) break
         }

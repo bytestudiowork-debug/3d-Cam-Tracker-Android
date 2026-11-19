@@ -637,9 +637,15 @@ internal class IncrementalSfMSolver(
             }
 
             fun refineLocalBundle(referenceFrameId: Int): Boolean {
-                val result = ColmapIterativeLocalRefinement.run { lossMode ->
-                    adjustLocalBundle(referenceFrameId, lossMode)
-                }
+                val result = ColmapIterativeLocalRefinement.run(
+                    filterAfterUnavailableAdjustment = {
+                        applyObservationFilter(
+                            affectedFrameIds = emptySet(),
+                            changedTrackIds = modifiedPointTrackIds,
+                            intrinsics = filterIntrinsics
+                        )
+                    }
+                ) { lossMode -> adjustLocalBundle(referenceFrameId, lossMode) }
                 modifiedPointTrackIds.clear()
                 return result.iterations.isNotEmpty()
             }

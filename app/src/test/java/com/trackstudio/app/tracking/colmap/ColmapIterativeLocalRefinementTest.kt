@@ -45,6 +45,22 @@ class ColmapIterativeLocalRefinementTest {
     }
 
     @Test
+    fun filtersModifiedPointsWhenLocalAdjustmentIsUnavailable() {
+        var adjustmentCalls = 0
+        var filteredObservations = 0
+        val result = ColmapIterativeLocalRefinement.run(
+            filterAfterUnavailableAdjustment = { filteredObservations += 3; 3 }
+        ) {
+            adjustmentCalls++
+            null
+        }
+
+        assertEquals(1, adjustmentCalls)
+        assertEquals(3, filteredObservations)
+        assertTrue(result.iterations.isEmpty())
+    }
+
+    @Test
     fun zeroMaximumRefinementsDoesNotInvokeAdjustment() {
         val result = ColmapIterativeLocalRefinement.run(maxRefinements = 0) {
             error("No adjustment should run")
