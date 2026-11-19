@@ -62,7 +62,7 @@ class SiftFeaturePipelineTest {
     }
 
     @Test
-    fun appliesMaximumAngularDistanceAtThe07RadianBoundary() {
+    fun appliesMaximumNormalizedL2DistanceAtThe07Boundary() {
         val maximumDistance = SiftMatchPolicy.DEFAULT_MAX_DISTANCE
         val atBoundary = row(0, 0, maximumDistance, 1, 1.0)
         assertEquals(
@@ -128,7 +128,7 @@ class SiftFeaturePipelineTest {
     }
 
     @Test
-    fun quantizedDescriptorRatioUsesColmapAngularDistanceRatherThanL2() {
+    fun ratioTestUsesSameNormalizedL2MetricAsNearestNeighborSearch() {
         val query = ByteArray(RootSiftDescriptorMath.DESCRIPTOR_LENGTH) { index ->
             if (index < 64) 64 else 0
         }
@@ -151,22 +151,25 @@ class SiftFeaturePipelineTest {
                 (candidate[index].toInt() and 0xff)
             difference.toDouble() * difference
         })
+        val closerL2 = l2(closer) / RootSiftDescriptorMath.DESCRIPTOR_NORM
+        val secondL2 = l2(second) / RootSiftDescriptorMath.DESCRIPTOR_NORM
 
         assertTrue(closerAngle < SiftMatchPolicy.DEFAULT_MAX_DISTANCE)
         assertTrue(closerAngle < SiftMatchPolicy.DEFAULT_RATIO * secondAngle)
-        assertTrue(l2(closer) >= SiftMatchPolicy.DEFAULT_RATIO * l2(second))
+        assertTrue(closerL2 < secondL2)
+        assertTrue(closerL2 >= SiftMatchPolicy.DEFAULT_RATIO * secondL2)
         assertEquals(
-            listOf(0 to 0),
+            emptyList<Pair<Int, Int>>(),
             SiftMatchPolicy.selectMutualMatches(
                 forwardRows = listOf(
                     listOf(
-                        RankedDescriptorMatch(0, 0, closerAngle),
-                        RankedDescriptorMatch(0, 1, secondAngle)
+                        RankedDescriptorMatch(0, 0, closerL2),
+                        RankedDescriptorMatch(0, 1, secondL2)
                     )
                 ),
                 reverseRows = listOf(
-                    listOf(RankedDescriptorMatch(0, 0, closerAngle)),
-                    listOf(RankedDescriptorMatch(1, 0, secondAngle))
+                    listOf(RankedDescriptorMatch(0, 0, closerL2)),
+                    listOf(RankedDescriptorMatch(1, 0, secondL2))
                 )
             )
         )

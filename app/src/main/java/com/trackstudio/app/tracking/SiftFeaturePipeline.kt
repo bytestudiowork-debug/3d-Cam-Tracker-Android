@@ -151,7 +151,7 @@ internal object RootSiftDescriptorMath {
     }
 
     private fun angularDistanceFromDotProduct(dotProduct: Double): Double {
-        // COLMAP SIFT matching uses the fixed 512-scale dot product, not actual row norms.
+        // This brute-force helper uses the fixed 512-scale descriptor convention.
         val cosine = (dotProduct / (DESCRIPTOR_NORM * DESCRIPTOR_NORM)).coerceIn(-1.0, 1.0)
         return acos(cosine)
     }
@@ -178,7 +178,7 @@ internal object RootSiftDescriptorMath {
 internal data class RankedDescriptorMatch(
     val queryIndex: Int,
     val trainIndex: Int,
-    val angularDistanceRadians: Double
+    val normalizedL2Distance: Double
 )
 
 internal object SiftMatchPolicy {
@@ -218,22 +218,22 @@ internal object SiftMatchPolicy {
             val candidates = row.asSequence()
                 .filter {
                     it.queryIndex >= 0 && it.trainIndex >= 0 &&
-                        it.angularDistanceRadians.isFinite() && it.angularDistanceRadians >= 0.0
+                        it.normalizedL2Distance.isFinite() && it.normalizedL2Distance >= 0.0
                 }
                 .sortedWith(
-                    compareBy<RankedDescriptorMatch> { it.angularDistanceRadians }
+                    compareBy<RankedDescriptorMatch> { it.normalizedL2Distance }
                         .thenBy { it.trainIndex }
                 )
                 .take(2)
                 .toList()
             if (candidates.isEmpty()) continue
             val best = candidates[0]
-            val secondBestDistance = candidates.getOrNull(1)?.angularDistanceRadians ?: Double.MAX_VALUE
-            if (best.angularDistanceRadians > maxDistance) continue
-            if (best.angularDistanceRadians >= maxRatio * secondBestDistance) continue
+            val secondBestDistance = candidates.getOrNull(1)?.normalizedL2Distance ?: Double.MAX_VALUE
+            if (best.normalizedL2Distance > maxDistance) continue
+            if (best.normalizedL2Distance >= maxRatio * secondBestDistance) continue
             val previous = accepted[best.queryIndex]
-            if (previous == null || best.angularDistanceRadians < previous.angularDistanceRadians ||
-                (best.angularDistanceRadians == previous.angularDistanceRadians &&
+            if (previous == null || best.normalizedL2Distance < previous.normalizedL2Distance ||
+                (best.normalizedL2Distance == previous.normalizedL2Distance &&
                     best.trainIndex < previous.trainIndex)
             ) {
                 accepted[best.queryIndex] = best
@@ -262,10 +262,10 @@ internal class SiftDescriptorMatcher(
         if (firstDescriptors.empty() || secondDescriptors.empty() || maximumMatches <= 0) {
             return emptyList()
         }
-        val firstValues = quantizedDescriptorValues(firstDescriptors)
-        val secondValues = quantizedDescriptorValues(secondDescriptors)
-        val forward = knnRows(firstDescriptors, secondDescriptors, firstValues, secondValues)
-        val reverse = knnRows(secondDescriptors, firstDescriptors, secondValues, firstValues)
+        requireDescriptorFormat(firstDescriptors)
+        requireDescriptorFormat(secondDescriptors)
+        val forward = knnRows(firstDescriptors, secondDescriptors)
+        val reverse = knnRows(secondDescriptors, firstDescriptors)
         return SiftMatchPolicy.selectMutualMatches(
             forwardRows = forward,
             reverseRows = reverse,
@@ -277,15 +277,19 @@ internal class SiftDescriptorMatcher(
 
     fun clear() = matcher.clear()
 
+    private fun requireDescriptorFormat(descriptors: Mat) {
+        require(descriptors.type() == CvType.CV_8UC1 &&
+            descriptors.cols() == RootSiftDescriptorMath.DESCRIPTOR_LENGTH
+        ) { "SIFT matching requires quantized 128-dimensional single-channel descriptors." }
+    }
+
     private fun knnRows(
         queryDescriptors: Mat,
-        trainDescriptors: Mat,
-        queryValues: ByteArray,
-        trainValues: ByteArray
+        trainDescriptors: Mat
     ): List<List<RankedDescriptorMatch>> {
         val rows = mutableListOf<MatOfDMatch>()
         return try {
-            // OpenCV supplies the two-candidate L2 shortlist; policy decisions are angular.
+            // Keep ranking, thresholding, and ratio testing in the same L2 metric.
             matcher.knnMatch(queryDescriptors, trainDescriptors, rows, 2)
             rows.map { row ->
                 row.toArray().mapNotNull { match ->
@@ -295,12 +299,8 @@ internal class SiftDescriptorMatcher(
                     RankedDescriptorMatch(
                         queryIndex = match.queryIdx,
                         trainIndex = match.trainIdx,
-                        angularDistanceRadians = RootSiftDescriptorMath.angularDistance(
-                            first = queryValues,
-                            firstOffset = match.queryIdx * RootSiftDescriptorMath.DESCRIPTOR_LENGTH,
-                            second = trainValues,
-                            secondOffset = match.trainIdx * RootSiftDescriptorMath.DESCRIPTOR_LENGTH
-                        )
+                        normalizedL2Distance =
+                            match.distance.toDouble() / RootSiftDescriptorMath.DESCRIPTOR_NORM
                     )
                 }
             }
@@ -309,18 +309,4 @@ internal class SiftDescriptorMatcher(
         }
     }
 
-    private fun quantizedDescriptorValues(descriptors: Mat): ByteArray {
-        require(descriptors.type() == CvType.CV_8UC1 &&
-            descriptors.cols() == RootSiftDescriptorMath.DESCRIPTOR_LENGTH
-        ) { "SIFT matching requires quantized 128-dimensional single-channel descriptors." }
-        val valueCount = descriptors.rows().toLong() * descriptors.cols()
-        require(valueCount in 1..Int.MAX_VALUE.toLong()) {
-            "The quantized SIFT descriptor matrix is too large to match."
-        }
-        return ByteArray(valueCount.toInt()).also { values ->
-            check(descriptors.get(0, 0, values) == values.size) {
-                "Could not read the quantized SIFT descriptor matrix."
-            }
-        }
-    }
 }

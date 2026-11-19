@@ -177,10 +177,15 @@ class SyntheticMultiFrameSequenceTest {
         fun rankedRows(query: List<FloatArray>, train: List<FloatArray>) =
             query.mapIndexed { queryIndex, descriptor ->
                 train.mapIndexed { trainIndex, candidate ->
-                    val angularDistance = RootSiftDescriptorMath.angularDistance(descriptor, candidate)
-                    RankedDescriptorMatch(queryIndex, trainIndex, angularDistance)
+                    val normalizedL2Distance = sqrt(
+                        descriptor.indices.sumOf { index ->
+                            val difference = descriptor[index] - candidate[index]
+                            difference.toDouble() * difference
+                        }
+                    ) / RootSiftDescriptorMath.DESCRIPTOR_NORM
+                    RankedDescriptorMatch(queryIndex, trainIndex, normalizedL2Distance)
                 }.sortedWith(
-                    compareBy<RankedDescriptorMatch> { it.angularDistanceRadians }
+                    compareBy<RankedDescriptorMatch> { it.normalizedL2Distance }
                         .thenBy { it.trainIndex }
                 )
                     .take(2)
