@@ -92,9 +92,7 @@ class IncrementalSfMInitializationInstrumentationTest {
                 )
                 assertTrue("Planar seed PnP replay round ${round + 1} was rejected: ${proposal.reason}",
                     proposal.accepted)
-                replayPoses = replayPoses.map { pose ->
-                    if (pose.frameIndex == seedFrame) requireNotNull(proposal.pose) else pose
-                }
+                replayPoses[seedFrame] = requireNotNull(proposal.pose)
             }
             val proposedPose = replayPoses[seedFrame]
             val retainedPose = result.poses[seedFrame]
