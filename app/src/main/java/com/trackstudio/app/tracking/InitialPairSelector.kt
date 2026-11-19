@@ -23,14 +23,7 @@ internal object InitialPairSelector {
         val evaluations = candidates.map { candidate ->
             evaluate(candidate, policy)
         }
-        val accepted = evaluations
-            .filter { it.accepted }
-            .sortedWith(
-                compareByDescending<InitialPairEvaluation> { it.score }
-                    .thenByDescending { it.candidate.inlierCount }
-                    .thenBy { it.candidate.frameGap }
-                    .thenBy { it.candidate.firstFrame }
-            )
+        val accepted = rankAcceptedEvaluations(evaluations)
         val best = accepted.firstOrNull()
         return if (best == null) {
             InitialPairSelection(
@@ -46,6 +39,38 @@ internal object InitialPairSelector {
             )
         }
     }
+
+    /** Returns accepted candidates in the exact deterministic order used by [select]. */
+    fun rankedAcceptedCandidates(
+        candidates: List<InitialPairCandidate>,
+        policy: InitialPairPolicy = InitialPairPolicy()
+    ): List<InitialPairCandidate> = rankAcceptedEvaluations(
+        candidates.map { candidate -> evaluate(candidate, policy) }
+    ).map { it.candidate }
+
+    /** Tries seed-map construction in geometric ranking order until one succeeds. */
+    fun <T> tryRankedCandidates(
+        candidates: List<InitialPairCandidate>,
+        policy: InitialPairPolicy = InitialPairPolicy(),
+        tryCandidate: (InitialPairCandidate) -> T?
+    ): Pair<InitialPairCandidate, T>? {
+        for (candidate in rankedAcceptedCandidates(candidates, policy)) {
+            val result = tryCandidate(candidate) ?: continue
+            return candidate to result
+        }
+        return null
+    }
+
+    private fun rankAcceptedEvaluations(
+        evaluations: List<InitialPairEvaluation>
+    ): List<InitialPairEvaluation> = evaluations
+        .filter { it.accepted }
+        .sortedWith(
+            compareByDescending<InitialPairEvaluation> { it.score }
+                .thenByDescending { it.candidate.inlierCount }
+                .thenBy { it.candidate.frameGap }
+                .thenBy { it.candidate.firstFrame }
+        )
 
     fun evaluate(
         candidate: InitialPairCandidate,

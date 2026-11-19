@@ -73,6 +73,17 @@ internal class IncrementalSfMSolver(
         val inlierCount: Int
     )
 
+    private data class SeedInitialization(
+        val firstFrame: CachedFrame,
+        val secondFrame: CachedFrame,
+        val geometry: PairGeometry,
+        val trackBuilder: FeatureTrackBuilder,
+        val referencePose: CameraPose,
+        val secondPose: CameraPose,
+        val tracks: List<CameraFeatureTrack>,
+        val reconstruction: TriangulationResult
+    )
+
     suspend fun solve(
         frameCount: Int,
         cameraMatrix: Mat,
@@ -253,18 +264,93 @@ internal class IncrementalSfMSolver(
                 )
             )
 
-            val selection = InitialPairSelector.select(
-                evaluations.map { it.candidate },
+            // Geometry acceptance is necessary but not sufficient for a usable seed map.
+            // Try the remaining candidates in score order before failing initialization.
+            var seedAttemptCount = 0
+            var maximumSeedLandmarkCount = 0
+            val selectedSeed = InitialPairSelector.tryRankedCandidates(
+                candidates = evaluations.map { it.candidate },
                 policy = InitialPairPolicy.initialization()
-            )
-            val selected = selection.selected
-                ?: throw IllegalStateException(
-                    "No reliable 3D initialization pair: ${selection.reason}. Try footage with visible texture and sideways camera movement."
+            ) { candidate ->
+                seedAttemptCount++
+                val firstFrame = cache[candidate.firstFrame] ?: return@tryRankedCandidates null
+                val secondFrame = cache[candidate.secondFrame] ?: return@tryRankedCandidates null
+                val rotation = candidate.relativeRotation ?: return@tryRankedCandidates null
+                val translation = candidate.relativeTranslationDirection
+                    ?: return@tryRankedCandidates null
+                val geometry = PairGeometry(
+                    matches = candidate.verifiedMatches,
+                    rotation = rotation,
+                    translation = translation,
+                    inlierCount = candidate.inlierCount
                 )
-            val firstFrame = cache[selected.firstFrame]
-                ?: error("Selected first frame was not retained.")
-            val secondFrame = cache[selected.secondFrame]
-                ?: error("Selected second frame was not retained.")
+                val matchedFirstIndices = HashSet<Int>()
+                val matchedSecondIndices = HashSet<Int>()
+                val validCorrespondences = geometry.matches.all { (firstIndex, secondIndex) ->
+                    firstIndex in firstFrame.keypoints.indices &&
+                        secondIndex in secondFrame.keypoints.indices &&
+                        matchedFirstIndices.add(firstIndex) && matchedSecondIndices.add(secondIndex)
+                }
+                val validRelativePose = geometry.rotation.size == 9 &&
+                    geometry.rotation.all { it.isFinite() } &&
+                    geometry.translation.size == 3 && geometry.translation.all { it.isFinite() } &&
+                    geometry.translation.any { kotlin.math.abs(it) > 1e-12 }
+                if (geometry.matches.size != geometry.inlierCount || geometry.inlierCount < 100 ||
+                    !validCorrespondences || !validRelativePose
+                ) {
+                    return@tryRankedCandidates null
+                }
+
+                val trackBuilder = FeatureTrackBuilder()
+                trackBuilder.seedPair(
+                    candidate.firstFrame,
+                    candidate.secondFrame,
+                    firstFrame.keypoints,
+                    secondFrame.keypoints,
+                    geometry.matches
+                )
+                val referencePose = CameraPose(
+                    candidate.firstFrame, identity3(), doubleArrayOf(0.0, 0.0, 0.0),
+                    CameraPoseStatus.REFERENCE
+                )
+                val secondPose = CameraPose(
+                    candidate.secondFrame, geometry.rotation, geometry.translation,
+                    CameraPoseStatus.RELATIVE_ESTIMATE
+                )
+                val tracks = trackBuilder.build()
+                val reconstruction = SfMTriangulator.triangulate(
+                    tracks, listOf(referencePose, secondPose), cameraMatrix
+                )
+                maximumSeedLandmarkCount = maxOf(
+                    maximumSeedLandmarkCount, reconstruction.landmarks.size
+                )
+                if (reconstruction.landmarks.size < 30) return@tryRankedCandidates null
+                SeedInitialization(
+                    firstFrame = firstFrame,
+                    secondFrame = secondFrame,
+                    geometry = geometry,
+                    trackBuilder = trackBuilder,
+                    referencePose = referencePose,
+                    secondPose = secondPose,
+                    tracks = tracks,
+                    reconstruction = reconstruction
+                )
+            }
+            val (selected, seed) = selectedSeed ?: run {
+                val detail = if (seedAttemptCount == 0) {
+                    "No pair passed the geometric initialization quality gates"
+                } else {
+                    "All $seedAttemptCount geometrically accepted pairs failed seed validation or " +
+                        "produced fewer than 30 landmarks (maximum observed: $maximumSeedLandmarkCount)"
+                }
+                throw IllegalStateException(
+                    "No reliable 3D initialization pair: $detail. " +
+                        "Try footage with visible texture and sideways camera movement."
+                )
+            }
+            val firstFrame = seed.firstFrame
+            val secondFrame = seed.secondFrame
+            val geometry = seed.geometry
 
             onProgress(
                 CameraTrackingProgress(
@@ -276,32 +362,6 @@ internal class IncrementalSfMSolver(
                     totalFrames = frameCount
                 )
             )
-            val geometry = PairGeometry(
-                matches = selected.verifiedMatches,
-                rotation = selected.relativeRotation
-                    ?: throw IllegalStateException("The selected pair has no recovered rotation."),
-                translation = selected.relativeTranslationDirection
-                    ?: throw IllegalStateException("The selected pair has no recovered translation."),
-                inlierCount = selected.inlierCount
-            )
-            val matchedFirstIndices = HashSet<Int>()
-            val matchedSecondIndices = HashSet<Int>()
-            val validCorrespondences = geometry.matches.all { (firstIndex, secondIndex) ->
-                firstIndex in firstFrame.keypoints.indices &&
-                    secondIndex in secondFrame.keypoints.indices &&
-                    matchedFirstIndices.add(firstIndex) && matchedSecondIndices.add(secondIndex)
-            }
-            val validRelativePose = geometry.rotation.size == 9 &&
-                geometry.rotation.all { it.isFinite() } &&
-                geometry.translation.size == 3 && geometry.translation.all { it.isFinite() } &&
-                geometry.translation.any { kotlin.math.abs(it) > 1e-12 }
-            if (geometry.matches.size != geometry.inlierCount || geometry.inlierCount < 100 ||
-                !validCorrespondences || !validRelativePose
-            ) {
-                throw IllegalStateException("Initial pair failed correspondence or relative-pose validation.")
-            }
-
-            val trackBuilder = FeatureTrackBuilder()
             val verifiedMatchesByFramePair = linkedMapOf<Pair<Int, Int>, LinkedHashSet<Pair<Int, Int>>>()
             val matchedObservationsByNode = HashMap<Long, CameraFeatureObservation>()
             fun featureNode(frameIndex: Int, featureIndex: Int): Long =
@@ -341,38 +401,20 @@ internal class IncrementalSfMSolver(
                     ColmapTrackMerger.PairMatches(frames.first, frames.second, matches.toList())
                 }
 
-            trackBuilder.seedPair(
-                selected.firstFrame,
-                selected.secondFrame,
-                firstFrame.keypoints,
-                secondFrame.keypoints,
-                geometry.matches
-            )
             rememberVerifiedPair(
                 selected.firstFrame, selected.secondFrame,
                 firstFrame.keypoints, secondFrame.keypoints, geometry.matches
             )
 
+            val trackBuilder = seed.trackBuilder
             val poseByFrame = arrayOfNulls<CameraPose>(frameCount)
-            val referencePose = CameraPose(
-                selected.firstFrame, identity3(), doubleArrayOf(0.0, 0.0, 0.0),
-                CameraPoseStatus.REFERENCE
-            )
-            val secondPose = CameraPose(
-                selected.secondFrame, geometry.rotation, geometry.translation,
-                CameraPoseStatus.RELATIVE_ESTIMATE
-            )
+            val referencePose = seed.referencePose
+            val secondPose = seed.secondPose
             poseByFrame[selected.firstFrame] = referencePose
             poseByFrame[selected.secondFrame] = secondPose
 
-            var tracks = trackBuilder.build()
-            val initialReconstruction = SfMTriangulator.triangulate(
-                tracks, listOf(referencePose, secondPose), cameraMatrix
-            )
-            require(initialReconstruction.landmarks.size >= 30) {
-                "Initial 3D map is too small (${initialReconstruction.landmarks.size} landmarks). " +
-                    "Use footage with stronger camera translation and more static scene texture."
-            }
+            var tracks = seed.tracks
+            val initialReconstruction = seed.reconstruction
             val landmarksByTrack = linkedMapOf<Int, CameraLandmark>()
             initialReconstruction.landmarks.forEach { landmarksByTrack[it.trackId] = it }
             val modifiedPointTrackIds = initialReconstruction.landmarks

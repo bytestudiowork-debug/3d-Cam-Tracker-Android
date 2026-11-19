@@ -37,6 +37,41 @@ class InitialPairSelectorTest {
     }
 
     @Test
+    fun seedInitializationFallsBackInRankOrderWhenTheBestCandidateCannotBuildAMap() {
+        val bestButUnusable = candidate(
+            secondFrame = 20,
+            matched = 900,
+            inliers = 500,
+            coverage = 14,
+            medianParallax = 22.0,
+            upperParallax = 28.0,
+            cheirality = 0.92
+        )
+        val nextUsable = candidate(
+            secondFrame = 12,
+            matched = 700,
+            inliers = 360,
+            coverage = 10,
+            medianParallax = 18.0,
+            upperParallax = 23.0,
+            cheirality = 0.78
+        )
+        val attempts = mutableListOf<Int>()
+
+        val initialized = InitialPairSelector.tryRankedCandidates(
+            candidates = listOf(nextUsable, bestButUnusable),
+            policy = InitialPairPolicy.initialization()
+        ) { candidate ->
+            attempts += candidate.secondFrame
+            if (candidate == bestButUnusable) null else "seed-map"
+        }
+
+        assertEquals(listOf(20, 12), attempts)
+        assertEquals(nextUsable, initialized?.first)
+        assertEquals("seed-map", initialized?.second)
+    }
+
+    @Test
     fun rejectsHomographyDominatedPairWithoutParallax() {
         val planar = candidate(
             matched = 800,
