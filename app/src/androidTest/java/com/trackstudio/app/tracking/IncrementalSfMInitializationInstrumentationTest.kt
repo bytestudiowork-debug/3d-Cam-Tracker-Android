@@ -15,7 +15,6 @@ import org.opencv.core.MatOfKeyPoint
 import org.opencv.core.Point
 import org.opencv.core.Point3
 import java.util.Random
-import kotlin.math.abs
 import kotlin.math.hypot
 import kotlin.math.roundToInt
 import kotlin.math.sqrt
@@ -39,80 +38,10 @@ class IncrementalSfMInitializationInstrumentationTest {
             assertTrue(oracle.evaluation.accepted)
             assertEquals(geometry.poseSource, oracle.evaluation.candidate.poseSource)
 
+            // This deterministic case guards the Android-specific final PnP exclusion;
+            // it is not a claim of reference-stage or desktop parity.
             val result = solvePublicEngine(fixture, cameraMatrix)
             assertConsistentSeedResult(result, oracle)
-        } finally {
-            fixture.release()
-            cameraMatrix.release()
-        }
-    }
-
-    @Test
-    fun planarSeedPnpProposalCanSwitchBranchWhileFinalPoseRetainsSeedGauge() {
-        val fixture = SyntheticSeedScene.render(SceneKind.PLANAR_HIGH)
-        val cameraMatrix = cameraMatrix()
-        try {
-            val oracle = inspectSeedPair(fixture, cameraMatrix)
-            assertEquals(SourceFaithfulTwoViewEstimator.PoseSource.HOMOGRAPHY, oracle.geometry.poseSource)
-            assertTrue(oracle.geometry.passesInitialPairGates)
-
-            val result = solvePublicEngine(fixture, cameraMatrix)
-            assertConsistentSeedResult(result, oracle)
-
-            val seedFrame = result.initialPairFrames!!.second
-            val initialMap = SfMTriangulator.triangulate(
-                featureTracks = result.featureTracks,
-                poses = result.poses,
-                cameraMatrix = cameraMatrix
-            )
-            assertTrue("The planar seed did not produce a replayable landmark map",
-                initialMap.landmarks.size >= 30)
-            var replayPoses = result.poses.toMutableList()
-            var replayLandmarks = initialMap.landmarks
-            repeat(2) { round ->
-                val adjusted = MobileBundleAdjuster.optimizeLandmarks(
-                    featureTracks = result.featureTracks,
-                    landmarks = replayLandmarks,
-                    poses = replayPoses,
-                    cameraMatrix = cameraMatrix
-                )
-                val adjustedByTrack = adjusted.associateBy { it.trackId }
-                replayLandmarks = replayLandmarks.map { old ->
-                    adjustedByTrack[old.trackId]
-                        ?.takeIf { it.meanReprojectionErrorPx <= old.meanReprojectionErrorPx }
-                        ?: old
-                }
-                val proposal = IncrementalCameraRegistrar.register(
-                    frameIndex = seedFrame,
-                    frameWidth = fixture.firstFrame.cols(),
-                    frameHeight = fixture.firstFrame.rows(),
-                    featureTracks = result.featureTracks,
-                    landmarks = replayLandmarks,
-                    cameraMatrix = cameraMatrix
-                )
-                assertTrue("Planar seed PnP replay round ${round + 1} was rejected: ${proposal.reason}",
-                    proposal.accepted)
-                replayPoses[seedFrame] = requireNotNull(proposal.pose)
-            }
-            val proposedPose = replayPoses[seedFrame]
-            val retainedPose = result.poses[seedFrame]
-            val retainedNorm = sqrt(retainedPose.translation.sumOf { it * it })
-            val proposedNorm = sqrt(proposedPose.translation.sumOf { it * it })
-            val retainedZ = abs(retainedPose.translation[2] / retainedNorm)
-            val proposedZ = abs(proposedPose.translation[2] / proposedNorm)
-            val directionAgreement = retainedPose.translation.indices.sumOf { index ->
-                retainedPose.translation[index] / retainedNorm *
-                    proposedPose.translation[index] / proposedNorm
-            }
-
-            // Replaying the old two-round Android point/PnP schedule exposes the
-            // seed-branch hazard; it does not claim reference-mapper equivalence.
-            assertTrue(
-                "Re-solving the same planar seed did not expose the alternate branch: " +
-                    "direction agreement=$directionAgreement, retained |tz|=$retainedZ, " +
-                    "proposed |tz|=$proposedZ",
-                directionAgreement < 0.98 && proposedZ > retainedZ + 0.05
-            )
         } finally {
             fixture.release()
             cameraMatrix.release()

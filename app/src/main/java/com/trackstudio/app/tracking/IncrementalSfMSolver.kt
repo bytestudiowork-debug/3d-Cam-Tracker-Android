@@ -1240,8 +1240,8 @@ internal class IncrementalSfMSolver(
             // Two bounded block-coordinate BA rounds alternate robust 3D
             // landmark optimization with registered-camera PnP refinement.
             // This reduces map/pose inconsistency without a large sparse solver.
-            // The initial pair sets the seed pose gauge; re-solving its second camera
-            // from points triangulated by that pair can switch planar PnP branches.
+            // Android-specific safeguard: this final pass is PnP-only and can switch
+            // a planar seed branch; it is not parity with the reference's joint BA.
             val refinementFrames = poseByFrame.indices.filter { index ->
                 index != selected.firstFrame && index != selected.secondFrame &&
                     poseByFrame[index] != null
