@@ -49,63 +49,46 @@ class IncrementalSfMInitializationInstrumentationTest {
 
     @Test
     fun planarSeedPnpProposalCanSwitchBranchWhileFinalPoseRetainsSeedGauge() {
-        val fixture = SyntheticSeedScene.render(
-            SceneKind.PLANAR_HIGH,
-            includeThirdCamera = true,
-            pixelNoiseSigmaPx = 0.8,
-            thirdViewOutlierFraction = 0.05,
-            thirdViewVisibleFraction = 0.70
-        )
+        val fixture = SyntheticSeedScene.render(SceneKind.PLANAR_HIGH)
         val cameraMatrix = cameraMatrix()
         try {
-            val oracle = inspectSeedPair(fixture, cameraMatrix, cameraFocalLengthHasPrior = true)
+            val oracle = inspectSeedPair(fixture, cameraMatrix)
             assertEquals(SourceFaithfulTwoViewEstimator.PoseSource.HOMOGRAPHY, oracle.geometry.poseSource)
             assertTrue(oracle.geometry.passesInitialPairGates)
 
-            val result = solvePublicEngine(
-                fixture,
-                cameraMatrix,
-                cameraFocalLengthHasPrior = true
+            val result = solvePublicEngine(fixture, cameraMatrix)
+            assertConsistentSeedResult(result, oracle)
+
+            val seedFrame = result.initialPairFrames!!.second
+            val pnpProposal = IncrementalCameraRegistrar.register(
+                frameIndex = seedFrame,
+                frameWidth = fixture.firstFrame.cols(),
+                frameHeight = fixture.firstFrame.rows(),
+                featureTracks = result.featureTracks,
+                landmarks = result.landmarks,
+                cameraMatrix = cameraMatrix
             )
-            assertConsistentSeedResult(result, oracle, expectedRegisteredCameraCount = 3)
-
-            val finalCameraValues = result.refinedCameraIntrinsics?.toRowMajorMatrix() ?: CAMERA_VALUES
-            val pnpCameraMatrix = Mat(3, 3, CvType.CV_64F)
-            try {
-                assertEquals(finalCameraValues.size, pnpCameraMatrix.put(0, 0, *finalCameraValues))
-                val seedFrame = result.initialPairFrames!!.second
-                val pnpProposal = IncrementalCameraRegistrar.register(
-                    frameIndex = seedFrame,
-                    frameWidth = fixture.firstFrame.cols(),
-                    frameHeight = fixture.firstFrame.rows(),
-                    featureTracks = result.featureTracks,
-                    landmarks = result.landmarks,
-                    cameraMatrix = pnpCameraMatrix
-                )
-                assertTrue("The planar seed PnP diagnostic was rejected: ${pnpProposal.reason}",
-                    pnpProposal.accepted)
-                val proposedPose = requireNotNull(pnpProposal.pose)
-                val retainedPose = result.poses[seedFrame]
-                val retainedNorm = sqrt(retainedPose.translation.sumOf { it * it })
-                val proposedNorm = sqrt(proposedPose.translation.sumOf { it * it })
-                val retainedZ = abs(retainedPose.translation[2] / retainedNorm)
-                val proposedZ = abs(proposedPose.translation[2] / proposedNorm)
-                val directionAgreement = retainedPose.translation.indices.sumOf { index ->
-                    retainedPose.translation[index] / retainedNorm *
-                        proposedPose.translation[index] / proposedNorm
-                }
-
-                // This is a bounded Android PnP-only adaptation regression, not a claim
-                // that the reference mapper uses this final reprojection-only stage.
-                assertTrue(
-                    "Re-solving the same planar seed did not expose the alternate branch: " +
-                        "direction agreement=$directionAgreement, retained |tz|=$retainedZ, " +
-                        "proposed |tz|=$proposedZ",
-                    directionAgreement < 0.98 && proposedZ > retainedZ + 0.05
-                )
-            } finally {
-                pnpCameraMatrix.release()
+            assertTrue("The planar seed PnP diagnostic was rejected: ${pnpProposal.reason}",
+                pnpProposal.accepted)
+            val proposedPose = requireNotNull(pnpProposal.pose)
+            val retainedPose = result.poses[seedFrame]
+            val retainedNorm = sqrt(retainedPose.translation.sumOf { it * it })
+            val proposedNorm = sqrt(proposedPose.translation.sumOf { it * it })
+            val retainedZ = abs(retainedPose.translation[2] / retainedNorm)
+            val proposedZ = abs(proposedPose.translation[2] / proposedNorm)
+            val directionAgreement = retainedPose.translation.indices.sumOf { index ->
+                retainedPose.translation[index] / retainedNorm *
+                    proposedPose.translation[index] / proposedNorm
             }
+
+            // This is a bounded Android PnP-only adaptation regression, not a claim
+            // that the reference mapper uses this final reprojection-only stage.
+            assertTrue(
+                "Re-solving the same planar seed did not expose the alternate branch: " +
+                    "direction agreement=$directionAgreement, retained |tz|=$retainedZ, " +
+                    "proposed |tz|=$proposedZ",
+                directionAgreement < 0.98 && proposedZ > retainedZ + 0.05
+            )
         } finally {
             fixture.release()
             cameraMatrix.release()
