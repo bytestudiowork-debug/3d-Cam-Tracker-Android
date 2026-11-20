@@ -2,9 +2,23 @@ name: Ceres Android EigenSparse Smoke
 
 on:
   push:
-    branches: ["main", "native/ceres-eigensparse-smoke"]
+    branches: ["main", "android-tracking-engine", "native/ceres-eigensparse-smoke"]
     paths:
       - ".github/workflows/ceres-android-smoke.yml"
+      - "app/src/main/cpp/CMakeLists.txt"
+      - "app/src/main/cpp/global_positioning_core.*"
+      - "app/src/main/cpp/global_bundle_adjuster_core.*"
+      - "app/src/main/cpp/glomap_positioner.cpp"
+      - "app/src/main/cpp/glomap_bundle_adjuster.cpp"
+      - "native/ceres-smoke/**"
+  pull_request:
+    paths:
+      - ".github/workflows/ceres-android-smoke.yml"
+      - "app/src/main/cpp/CMakeLists.txt"
+      - "app/src/main/cpp/global_positioning_core.*"
+      - "app/src/main/cpp/global_bundle_adjuster_core.*"
+      - "app/src/main/cpp/glomap_positioner.cpp"
+      - "app/src/main/cpp/glomap_bundle_adjuster.cpp"
       - "native/ceres-smoke/**"
   workflow_dispatch:
 

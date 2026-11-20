@@ -1,85 +1,51 @@
-# COLMAP + GLOMAP Android integration audit
+# COLMAP and GLOMAP Android integration audit
 
-Audit date: 2026-11-05.
+Audit date: 2026-11-20.
 
 ## Source pins and relationship
 
 - GLOMAP source: `colmap/glomap@99806d0869f802fad218516a2e027793e7ca687d`.
-- COLMAP revision fetched by that GLOMAP source's `thirdparty/CMakeLists.txt`:
-  `colmap/colmap@b6b7b54eca6078070f73a3f0a084f79c629a6f10`
-  (COLMAP 3.14.0 development snapshot, 2025-11-20).
-- Separate later COLMAP reference examined by this project:
-  `colmap/colmap@e6644e744488a13f3aba82958500db9066341205`
-  (4.3.0 development snapshot).
+- COLMAP revision fetched by that GLOMAP source's `thirdparty/CMakeLists.txt`: `colmap/colmap@b6b7b54eca6078070f73a3f0a084f79c629a6f10`.
+- Separate later COLMAP reference examined by this project: `colmap/colmap@e6644e744488a13f3aba82958500db9066341205`.
+- PoseLib: `7e9f5f53372e43f89655040d4dfc4a00e5ace11c`.
 
-Do not combine headers from the later COLMAP revision with libraries built
-from the GLOMAP-matched COLMAP revision. First get the matching pair building;
-then assess whether the later COLMAP source should replace or supplement it.
+The GLOMAP-matched COLMAP revision is the compatibility baseline. Do not combine headers from the later COLMAP reference with libraries built from the matching revision.
 
-## Confirmed blockers and decisions
+## Current implementation boundary
 
-1. **GPL dependency request in upstream GLOMAP build.** The pinned GLOMAP
-   `cmake/FindDependencies.cmake` requires
-   `find_package(Ceres REQUIRED COMPONENTS SuiteSparse)`; its vcpkg manifest
-   requests Ceres' `suitesparse` feature and SuiteSparse itself. Ceres'
-   official documentation states that the required SuiteSparse CHOLMOD
-   supernodal and SPQR components are GPL/commercial. Do not enable this
-   dependency for TrackStudio without a commercial licence.
+TrackStudio is not building either complete desktop application on Android. It ports selected algorithms and data-management components into the existing Kotlin/C++ mobile architecture.
 
-2. **No-GPL sparse backend candidate.** Ceres supports Eigen sparse
-   Cholesky as a backend for `SPARSE_SCHUR`. The proposed build is Ceres
-   `EigenSparse` with GLOMAP's package requirement changed to
-   `EigenSparse`; remove SuiteSparse from the GLOMAP dependency manifest.
-   GLOMAP's track-based path sets `SPARSE_SCHUR` and also assigns
-   `CLUSTER_TRIDIAGONAL`, but Ceres defines that preconditioner for
-   `ITERATIVE_SCHUR` only. GLOMAP explicitly says not to use iterative
-   solvers. Preserve the field assignment for source parity, but test the
-   actual `SPARSE_SCHUR` + EigenSparse path; do not claim the cluster
-   preconditioner is being applied.
+The current Android native CMake configuration builds:
 
-3. **CMake version mismatch.** The app uses Android CMake 3.22.1. The pinned
-   GLOMAP top-level file requires CMake 3.28. Ceres 2.3 requires CMake 3.22+.
-   A build-system decision is needed: install Android CMake 3.28 for the
-   native build, or create a narrowly scoped Android subproject build that
-   avoids GLOMAP's newer top-level configuration. Keep the app's current
-   version unchanged until the chosen route builds in CI.
+- `trackstudio_reconstruction`: Ceres-backed global positioning, relative-pose estimation through the pinned PoseLib dependency, view-graph calibration, and global bundle adjustment.
+- `trackstudio_camera`: native camera-estimation and feature-extraction components.
+- `trackstudio_native`: the proxy engine.
 
-4. **COLMAP is not a single small dependency.** GLOMAP links COLMAP, Eigen,
-   Ceres, PoseLib, OpenMP and Boost. COLMAP's desktop build adds many optional
-   dependencies and targets. Android should compile only the COLMAP core
-   targets needed by GLOMAP; GUI, OpenGL, CUDA, MVS, download support and
-   unused desktop modules should be disabled where the dependency graph
-   permits. Determine the actual transitive target closure from the pinned
-   sources rather than guessing.
+The Kotlin global engine orchestrates the full mobile reconstruction flow and uses selected COLMAP/GLOMAP-derived track, image-selection, filtering, triangulation, view-graph, and reconstruction stages. The custom incremental engine remains available separately. This is an adapted subset, not a drop-in Android build of the full COLMAP/GLOMAP source trees.
 
-5. **Licence boundary.** The pinned COLMAP and GLOMAP projects are BSD-3-Clause.
-   Ceres is BSD-3-Clause. Their dependencies have independent licences and
-   must be inventoried individually. BSD upstream licences do not make a
-   build with GPL dependencies proprietary-safe by themselves. Retain required
-   copyright and licence notices in the app's third-party notices.
+## Dependency and licence decisions
 
-## Build/validation gate
+The app CMake configuration pins Ceres 2.2.0, Eigen 3.4.0, and PoseLib at the revision above. Ceres is configured with EigenSparse enabled and SuiteSparse disabled. CUDA, LAPACK, and unused optional backends are disabled for the Android build.
 
-Before adding native libraries to the production app:
-- record exact commits for COLMAP, GLOMAP, Ceres, Eigen, Abseil, PoseLib and
-  any additional dependencies;
-- generate a dependency/licence inventory and fail CI if a GPL component is
-  included;
-- build each dependency for both `arm64-v8a` and `armeabi-v7a` using the
-  app's NDK/API/STL settings;
-- run the Ceres `SPARSE_SCHUR` + EigenSparse smoke test on both ABIs;
-- build the selected COLMAP core and GLOMAP sources;
-- compare a deterministic fixture against the pinned upstream implementation.
+The pinned upstream GLOMAP desktop build requests SuiteSparse. Its CHOLMOD supernodal and SPQR components carry GPL/commercial licensing conditions. TrackStudio must not enable those components for its proprietary distribution without the appropriate commercial licence. The EigenSparse configuration keeps the selected `SPARSE_SCHUR` solver path without adding SuiteSparse.
 
-## Source files inspected
+Retain all upstream copyright and licence notices for copied or adapted files and all third-party dependencies. BSD licensing of an upstream project does not change the independent licence of its transitive dependencies.
 
-- GLOMAP root `CMakeLists.txt`, `cmake/FindDependencies.cmake`,
-  `thirdparty/CMakeLists.txt`, `glomap/CMakeLists.txt`, and `vcpkg.json`.
-- GLOMAP global-positioning and bundle-adjustment solver option setup.
-- COLMAP root `CMakeLists.txt` at both recorded COLMAP revisions.
-- COLMAP controller target graph at the later reference revision.
-- Ceres official installation, Android build, component and solver guidance.
+## Build and test evidence
 
-This is an integration audit, not a claim that COLMAP/GLOMAP currently build
-inside TrackStudio. The app's current native CMake target still contains only
-the proxy engine.
+The main Android CI workflow runs native numeric tests, Kotlin release unit tests, x86_64 emulator instrumentation tests, and a release APK build. The production ABI filters are `arm64-v8a` and `armeabi-v7a`.
+
+The dedicated Ceres smoke workflow builds a host solver and cross-builds Ceres plus a real sparse-Schur smoke executable for both Android ABIs. Cross-compilation is not the same as running the binary on a physical Android device.
+
+Commit `755aae1ee1d762592d7c3258aa2acf5a7afb0bac` passed the main Android CI workflow on 2026-11-20. This establishes that the current configured CI checks passed; it does not establish full upstream numerical equivalence or physical-device reliability.
+
+## Required release gates
+
+1. Keep the GLOMAP-matched COLMAP revision and all dependency pins explicit.
+2. Maintain a complete transitive dependency/licence inventory and reject prohibited GPL components in CI.
+3. Keep both production ABIs building with the app's NDK, API level, and C++ runtime.
+4. Add deterministic differential fixtures for the adapted estimation, track, positioning, and bundle-adjustment stages.
+5. Validate complete reconstruction on physical Android devices with representative footage; capture accuracy, runtime, and memory metrics.
+6. Preserve the current custom engine as a fallback until the global path passes device validation.
+
+Only port missing functionality from the pinned upstream implementations. Do not substitute unrelated algorithms to make an incomplete stage appear finished.

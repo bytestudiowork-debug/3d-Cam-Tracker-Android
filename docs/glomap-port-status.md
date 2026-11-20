@@ -1,51 +1,77 @@
-# GLOMAP Android port status
+# Android reconstruction port status
 
-Pinned upstream revisions:
-- GLOMAP: `99806d0869f802fad218516a2e027793e7ca687d`
-- COLMAP: `e6644e744488a13f3aba82958500db9066341205`
+Audit date: 2026-11-20.
 
-## Global positioning: random initialization and point-to-camera assembly
+## Current implementation
 
-Upstream initialization source: `GlobalPositioner::InitializeRandomPositions` and the random-point initialization in `AddPointToCameraConstraints` in `glomap/estimators/global_positioning.cc`.
+The Android project contains an integrated global reconstruction path. It is a focused mobile adaptation of selected upstream components, not a build of the complete desktop applications.
 
-Android implementation:
-- `tracking/glomap/GlomapMt19937.kt`: MT19937 engine seeded with the upstream default (1), plus the 53-bit canonical uniform sampling used by the pinned reference build.
-- `tracking/glomap/GlomapGlobalPositioningInitializer.kt`: constrained-frame discovery from valid image pairs and sufficiently long tracks, camera-center initialization, and random 3D point initialization.
+### Global positioning
 
-Preserved initialization behavior:
-- Valid image pairs constrain both endpoint frames.
-- Tracks shorter than 3 observations do not constrain frames or receive random points.
-- Only registered images in eligible tracks add constrained frames.
-- With random position generation and position optimization enabled, constrained frame centers and eligible track points use `100 * uniform[-1,1]` per coordinate; unconstrained frames use their camera center from the existing pose.
-- When random positions are disabled or positions are not optimized, only constrained frames are converted to camera centers.
-- Camera positions and track points consume one shared seeded MT19937 stream in source call order.
-- Input lists preserve caller-provided traversal order. Upstream uses unordered maps, so exact assignment of random samples to IDs requires matching that upstream container iteration order.
+Implemented in native C++ and exposed through JNI:
 
-## Global positioning: point-to-camera problem assembly
+- `global_positioning_core.cpp` builds the point-to-camera BATA objective with one scale parameter per observation.
+- Uses scaled Huber losses with threshold 0.1 and scale lower bound 1e-5.
+- Uses Ceres `SPARSE_SCHUR`, the upstream scale/point/camera parameter ordering, a 100-iteration maximum, and function tolerance 1e-5.
+- Fixes the first active camera center to establish the translation origin and fixes the first active observation scale for the scale gauge.
+- Rejects disconnected active camera components and malformed/non-finite input before solving.
+- `glomap_positioner.cpp` exposes the solver through JNI, including progress and cancellation callbacks.
+- `GlomapNativeSolver.kt` packs stable input order, validates the returned result, and maps solved values back to frame and track IDs.
 
-Upstream sources:
-- `glomap/estimators/global_positioning.h`
-- `glomap/estimators/global_positioning.cc`
-- `glomap/estimators/cost_function.h`
+The Kotlin initializer and problem builder prepare the source-compatible random initialization and point-to-camera observations. They are no longer the end of the positioning path: the native Ceres solve is implemented and called by the global engine.
 
-Android implementation:
-- `tracking/glomap/BataDirectionResidual.kt`: BATA residual, analytic Jacobians and scale initialization.
-- `tracking/glomap/GlomapGlobalPositioningProblemBuilder.kt`: constructs ONLY_POINTS point-to-camera residual inputs from undistorted feature directions and camera-from-world rotations.
+### Relative pose and view-graph calibration
 
-Preserved details:
-- Default minimum track observations: 3.
-- Observation translation: inverse camera rotation multiplied by the undistorted feature direction.
-- Auxiliary scale initial value: 1.0 when scale generation is enabled.
-- When scale generation is disabled and a point is initialized, scale uses max(1e-5, translation dot (point - camera center) / squaredNorm(point - camera center)).
-- BATA residual remains translation observation minus scale times (point - camera center).
-- Scale lower bound: 1e-5.
-- No pairwise camera constraints are added in ONLY_POINTS mode.
+- `glomap_relative_pose_estimator_core.cpp` adapts the pinned relative-pose estimation path and calls the pinned PoseLib dependency.
+- `glomap_view_graph_calibrator.cpp` exposes native Ceres view-graph focal calibration.
+- The global engine uses these components while constructing and filtering its verified view graph.
 
-Not yet ported:
-- Ceres problem/parameter-block ownership and Schur ordering.
-- GLOMAP random initialization using its mt19937 seed and 100 * uniform[-1,1] vectors.
-- Huber loss execution and calibrated/uncalibrated scaled-loss objects.
-- Ceres trust-region solve, gauge fixing, and conversion back to camera poses.
-- The assembled problem is not yet wired into a standalone GlomapReconstructionEngine.
+### Global bundle adjustment
 
-The builder intentionally stops before optimization. It does not substitute a different optimizer or claim to produce camera positions. See [glomap-android-solver-dependencies.md](glomap-android-solver-dependencies.md) for the pinned Ceres Android dependency requirements and the next implementation sequence.
+- `global_bundle_adjuster_core.cpp` implements the native joint reprojection solve for camera rotations, camera centers, 3D points, and shared focal lengths.
+- It supports Huber, Soft-L1, and trivial losses, parameter masks, fixed/refinable rotations and translations, and bounded focal-length optimization.
+- The principal point remains fixed in the current global-engine configuration.
+- The solver uses dense Schur for smaller reconstructions and sparse Schur with Jacobi preconditioning for larger reconstructions. It checks solver usability, cost behavior, finite outputs, valid rotations, and positive-depth observations.
+- `glomap_bundle_adjuster.cpp` and `GlomapGlobalBundleAdjuster.kt` provide the JNI/Kotlin boundary and validate packed results.
+- The global engine schedules bundle-adjustment passes and runs post-retriangulation refinement.
+
+### Engine integration
+
+- `GlobalReconstructionEngine.kt` orchestrates feature extraction, pair verification, view-graph calibration/rotation, track construction and filtering, global positioning, triangulation, bundle adjustment, and post-retriangulation refinement.
+- The global path is exposed through `CameraReconstructionEngine` using `ReconstructionMode.GLOBAL`.
+- The existing incremental engine remains available through `ReconstructionMode.CUSTOM`; it is not replaced by the global path.
+- Selected COLMAP-derived track management, image selection, triangulation, and observation-filtering components remain in the Kotlin tracking packages. Native mobile-specific estimation and solver bridges are kept in the C++ targets.
+
+## Android native dependency configuration
+
+The app CMake target currently:
+
+- Pins Ceres 2.2.0 and builds it for the active Android ABI.
+- Uses Eigen 3.4.0 and the EigenSparse backend.
+- Disables SuiteSparse, CUDA, LAPACK, and other unused optional backends.
+- Pins PoseLib at `7e9f5f53372e43f89655040d4dfc4a00e5ace11c`.
+- Builds the `trackstudio_reconstruction` shared library with Ceres and PoseLib.
+- Builds the separate camera-estimation and proxy libraries.
+
+The app uses Android NDK 27.0.12077973, CMake 3.22.1, C++17, minSdk 26, and the `arm64-v8a` and `armeabi-v7a` production ABIs.
+
+## Validation already present
+
+- Native numeric tests run in the main Android CI workflow.
+- Kotlin release unit tests run in CI.
+- Engine instrumentation tests run on an x86_64 Android emulator.
+- The release APK is built for the configured production ABIs.
+- Instrumentation tests cover the native global solver/JNI path with synthetic scenes, progress callbacks, cost reduction, gauge behavior, and bundle-adjustment constraints.
+- A separate Ceres smoke workflow builds the selected sparse backend on the host and cross-builds Ceres plus the smoke executable for both Android ABIs.
+
+The successful Android CI run for commit `755aae1ee1d762592d7c3258aa2acf5a7afb0bac` confirms the current branch's configured build and test workflow passed. It is not a substitute for real-device reconstruction validation or a complete source-by-source differential test against the upstream executables.
+
+## Remaining work
+
+1. Run repeatable end-to-end footage tests on physical Android devices, including low-memory and 32-bit devices; record reconstruction success, camera/landmark counts, reprojection error, memory, and solve time.
+2. Expand deterministic differential fixtures for the ported geometry, track, positioning, calibration, and bundle-adjustment stages against the exact pinned upstream revisions.
+3. Complete the source-to-upstream revision and licence inventory for every adapted component and transitive dependency. Keep GPL SuiteSparse components disabled.
+4. Profile the full global path on representative phone footage and address measured allocation, threading, and memory bottlenecks without changing the selected algorithms.
+5. Continue migrating only proven hot-path components where native execution materially helps. Keep the current custom engine as a fallback until physical-device validation is complete.
+
+Do not introduce replacement algorithms. Any missing stage must be sourced from the pinned COLMAP/GLOMAP implementation, with only the Android build and platform integration adapted.
