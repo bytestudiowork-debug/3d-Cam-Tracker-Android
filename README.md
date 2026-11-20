@@ -17,13 +17,16 @@ app/build/outputs/apk/release/
 
 ## GitHub Actions
 
-The workflow at `.github/workflows/android-build.yml` runs on pushes to
-`main`, `master`, and `global-reconstruction-engine`, on pull requests
-targeting `main` or `master`, and through manual dispatch.
+The workflow at `.github/workflows/build.yml` runs on pushes, pull requests,
+and manual dispatch. It runs native numeric tests, tracking unit tests,
+Android emulator instrumentation tests, and a release APK build. Successful
+branch and manual runs upload the release APK as a workflow artifact.
 
-It runs the tracking-engine release unit tests, builds the Release APK, and
-uploads the APK as the `trackstudio-release-apk` artifact. Native build logs
-are uploaded when a workflow fails.
+## Device validation
+
+The standard CI workflow runs the engine test suite on an Android 14 emulator. A separate Android 8.1 (API 27) compatibility workflow exercises the instrumentation suite on an older Android runtime.
+
+For hands-on phone testing, see [the device validation checklist](docs/device-validation.md). The release APK is CI-signed for installation testing; it is not a Play Store release.
 
 ## Technical notes
 

@@ -1,0 +1,72 @@
+name: Android API 27 Compatibility
+
+on:
+  push:
+    branches:
+      - android-tracking-engine
+  workflow_dispatch:
+
+concurrency:
+  group: android-api27-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  api27-instrumentation:
+    name: Android 8.1 instrumentation tests
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up JDK 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+
+      - name: Set up Android SDK
+        uses: android-actions/setup-android@v3
+        with:
+          packages: "platform-tools"
+
+      - name: Install compile SDK, NDK, and CMake
+        shell: bash
+        run: |
+          set -euo pipefail
+          yes | sdkmanager --install \
+            "platforms;android-34" \
+            "build-tools;34.0.0" \
+            "ndk;27.0.12077973" \
+            "cmake;3.22.1"
+
+      - name: Set up Gradle
+        uses: gradle/actions/setup-gradle@v4
+
+      - name: Make Gradle Wrapper executable
+        run: chmod +x ./gradlew
+
+      - name: Run instrumentation suite on Android 8.1
+        uses: reactivecircus/android-emulator-runner@v2
+        with:
+          api-level: 27
+          target: google_apis
+          arch: x86_64
+          profile: pixel_2
+          emulator-options: -no-window -gpu swiftshader_indirect -no-snapshot -noaudio -no-boot-anim -camera-back none
+          disable-animations: true
+          script: |
+            set -euo pipefail
+            trap 'adb logcat -d > api27-logcat.txt || true' EXIT
+            adb logcat -c
+            ./gradlew -PemulatorTestAbi=true -PincludeVideoTest=false connectedDebugAndroidTest --stacktrace --no-daemon
+
+      - name: Upload Android 8.1 device logs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: android-api27-logcat
+          path: api27-logcat.txt
+          if-no-files-found: ignore
+          retention-days: 7
