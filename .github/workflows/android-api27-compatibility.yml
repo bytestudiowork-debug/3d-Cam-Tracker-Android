@@ -35,11 +35,13 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
+          set +o pipefail
           yes | sdkmanager --install \
             "platforms;android-34" \
             "build-tools;34.0.0" \
             "ndk;27.0.12077973" \
             "cmake;3.22.1"
+          set -o pipefail
 
       - name: Set up Gradle
         uses: gradle/actions/setup-gradle@v4
