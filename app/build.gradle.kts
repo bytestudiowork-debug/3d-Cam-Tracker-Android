@@ -3,7 +3,7 @@ plugins {
     id("org.jetbrains.kotlin.android")
 }
 
-val emulatorTestAbi = providers.gradleProperty("emulatorTestAbi").orNull == "true"
+val emulatorTestAbi = providers.gradleProperty("emulatorTestAbi").orNull
 val configuredAbiFilters = providers.gradleProperty("PROJECT_ABI_FILTERS")
     .orNull
     ?.split(',')
@@ -34,7 +34,7 @@ android {
 
         ndk {
             // Normal builds target phones; instrumentation selects the emulator ABI only for its test invocation.
-            abiFilters += if (emulatorTestAbi) listOf("x86_64") else configuredAbiFilters
+            abiFilters += emulatorTestAbi?.let(::listOf) ?: configuredAbiFilters
         }
 
         externalNativeBuild {
