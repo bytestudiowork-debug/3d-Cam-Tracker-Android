@@ -274,8 +274,8 @@ class GlobalReconstructionEngine(
                         hasPriorFocalLength = hasPriorFocalLength
                     )
                 }
-            } catch (_: LinkageError) {
-                null
+            } catch (failure: LinkageError) {
+                throw IllegalStateException("The native calibration component could not be loaded.", failure)
             }
             if (calibrationResult != null) {
                 effectiveIntrinsics = calibrationResult.intrinsics
@@ -550,20 +550,18 @@ class GlobalReconstructionEngine(
                         }
                     }
                 )
-            } catch (_: LinkageError) {
-                null
+            } catch (failure: LinkageError) {
+                throw IllegalStateException("The native bundle-adjustment component could not be loaded.", failure)
             }
             val bundleResult = bundleCandidate?.bundleResult?.takeIf {
                 SolverObjective.didNotIncrease(it.initialCost, it.finalCost)
-            }
-            val bundleStatus = when {
-                bundleCandidate == null -> "Unavailable; retained global-positioning result"
-                bundleResult == null -> "Objective increased; retained global-positioning result"
-                else -> "Applied"
-            }
-            var finalCenters = bundleResult?.frameCentersById ?: positionResult.frameCentersById
-            var finalRotations = bundleResult?.rotationsByFrame ?: rotations
-            val finalPoints = bundleResult?.pointsByTrackId ?: positionResult.pointsByTrackId
+            } ?: throw IllegalStateException(
+                "Staged global bundle adjustment did not produce a valid non-increasing solution."
+            )
+            val bundleStatus = "Applied"
+            var finalCenters = bundleResult.frameCentersById
+            var finalRotations = bundleResult.rotationsByFrame
+            val finalPoints = bundleResult.pointsByTrackId
             var finalPointsForLandmarks = finalPoints
             var refinedIntrinsics = bundleResult?.intrinsics
             if (bundleResult != null) {
@@ -805,55 +803,44 @@ class GlobalReconstructionEngine(
                     totalFrames = frameCount
                 )
             )
-            val postRetriangulationRefinement = try {
-                val postRetriangulationBundleAdjuster = GlomapGlobalBundleAdjuster()
-                GlomapPostRetriangulationRefinement.refine(
-                    initialState = postRetriangulationInitialState,
-                    solveBundleAdjustment = { state, solveIndex ->
-                        try {
-                            val stageCameraMatrix = Mat(3, 3, CvType.CV_64F)
-                            try {
-                                stageCameraMatrix.put(0, 0, *state.intrinsics.toRowMajorMatrix())
-                                postRetriangulationBundleAdjuster.solve(
-                                    frameCentersById = state.frameCentersById,
-                                    rotationsByFrame = state.rotationsByFrame,
-                                    pointsByTrackId = state.pointsByTrackId,
-                                    tracks = state.tracks,
-                                    cameraMatrix = stageCameraMatrix,
-                                    imageWidth = frameSizes.single().first,
-                                    imageHeight = frameSizes.single().second,
-                                    optimizeRotations = true,
-                                    optimizeTranslation = true,
-                                    maxIterations = GlomapGlobalBundleAdjuster.MAX_ITERATIONS,
-                                    numThreads = if (activeFrames.size >= 300) 2 else Runtime.getRuntime().availableProcessors().coerceIn(1, 4),
-                                    onIteration = { iteration, total ->
-                                        val solveFraction = (
-                                            solveIndex.toFloat() +
-                                                iteration.toFloat() / total.coerceAtLeast(1)
-                                            ) / 2f
-                                        publishProgress(
-                                            "Post-retriangulation bundle adjustment " +
-                                                (solveIndex + 1) + "/2",
-                                            postRetriangulationProgressStart +
-                                                (postRetriangulationProgressEnd - postRetriangulationProgressStart) *
-                                                solveFraction.coerceIn(0f, 1f)
-                                        )
-                                    }
+            val postRetriangulationBundleAdjuster = GlomapGlobalBundleAdjuster()
+            val postRetriangulationRefinement = GlomapPostRetriangulationRefinement.refine(
+                initialState = postRetriangulationInitialState,
+                solveBundleAdjustment = { state, solveIndex ->
+                    val stageCameraMatrix = Mat(3, 3, CvType.CV_64F)
+                    try {
+                        stageCameraMatrix.put(0, 0, *state.intrinsics.toRowMajorMatrix())
+                        postRetriangulationBundleAdjuster.solve(
+                            frameCentersById = state.frameCentersById,
+                            rotationsByFrame = state.rotationsByFrame,
+                            pointsByTrackId = state.pointsByTrackId,
+                            tracks = state.tracks,
+                            cameraMatrix = stageCameraMatrix,
+                            imageWidth = frameSizes.single().first,
+                            imageHeight = frameSizes.single().second,
+                            optimizeRotations = true,
+                            optimizeTranslation = true,
+                            maxIterations = GlomapGlobalBundleAdjuster.MAX_ITERATIONS,
+                            numThreads = if (activeFrames.size >= 300) 2 else Runtime.getRuntime().availableProcessors().coerceIn(1, 4),
+                            onIteration = { iteration, total ->
+                                val solveFraction = (
+                                    solveIndex.toFloat() +
+                                        iteration.toFloat() / total.coerceAtLeast(1)
+                                    ) / 2f
+                                publishProgress(
+                                    "Post-retriangulation bundle adjustment " +
+                                        (solveIndex + 1) + "/2",
+                                    postRetriangulationProgressStart +
+                                        (postRetriangulationProgressEnd - postRetriangulationProgressStart) *
+                                        solveFraction.coerceIn(0f, 1f)
                                 )
-                            } finally {
-                                stageCameraMatrix.release()
                             }
-                        } catch (_: LinkageError) {
-                            null
-                        }
+                        )
+                    } finally {
+                        stageCameraMatrix.release()
                     }
-                )
-            } catch (_: LinkageError) {
-                GlomapPostRetriangulationRefinement.refine(
-                    initialState = postRetriangulationInitialState,
-                    solveBundleAdjustment = { _, _ -> null }
-                )
-            }
+                }
+            )
             val postFirstAccepted = postRetriangulationRefinement.firstBundleAdjustment
                 ?.takeIf { postRetriangulationRefinement.firstBundleAdjustmentAccepted }
             val postSecondAccepted = postRetriangulationRefinement.secondBundleAdjustment

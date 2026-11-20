@@ -62,7 +62,7 @@ jobs:
             set -euo pipefail
             trap 'adb logcat -d > api27-logcat.txt || true' EXIT
             adb logcat -c
-            ./gradlew -PemulatorTestAbi=true -PincludeVideoTest=false connectedDebugAndroidTest --stacktrace --no-daemon
+            ./gradlew -PemulatorTestAbi=true -PincludeVideoTest=true connectedDebugAndroidTest --stacktrace --no-daemon
 
       - name: Upload Android 8.1 device logs
         if: always()

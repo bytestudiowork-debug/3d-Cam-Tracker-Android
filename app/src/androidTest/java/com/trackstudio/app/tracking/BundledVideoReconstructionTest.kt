@@ -91,6 +91,10 @@ class BundledVideoReconstructionTest {
             assertTrue("Only ${result.featureTracks.size} multi-view tracks were built", result.featureTracks.size >= 20)
             assertTrue("No finite 3D landmarks were produced", result.landmarks.isNotEmpty())
             assertTrue("The global position solve was not applied", result.globalPositioningApplied)
+            assertTrue(
+                "The staged global bundle adjustment was not applied: ${result.globalBundleAdjustmentStatus}",
+                result.globalBundleAdjustmentApplied
+            )
             assertTrue(result.globalPositioningInitialCost.isFinite())
             assertTrue(result.globalPositioningFinalCost.isFinite())
             assertTrue(
