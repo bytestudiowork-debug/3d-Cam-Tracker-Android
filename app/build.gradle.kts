@@ -125,5 +125,7 @@ dependencies {
 
     testImplementation("junit:junit:4.13.2")
     androidTestImplementation("androidx.test:runner:1.5.2")
+    // Use a published compatible annotation artifact for the AndroidX test runtime.
+    androidTestImplementation("com.google.code.findbugs:jsr305:3.0.2")
     androidTestImplementation("androidx.test.ext:junit:1.1.5")
 }
