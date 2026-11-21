@@ -96,6 +96,29 @@ internal object CameraSolveExporter {
             line(if (index == poses.lastIndex) "" else ",")
         }
         line("  ],")
+        val featureTracks = result.featureTracks.mapNotNull { track ->
+            val observations = track.observations.asSequence()
+                .filter { it.frameIndex >= 0 && it.x.isFinite() && it.y.isFinite() }
+                .sortedWith(compareBy<CameraFeatureObservation>({ it.frameIndex }, { it.featureIndex }))
+                .toList()
+            if (observations.isEmpty()) null else track.id to observations
+        }.sortedBy { it.first }
+        line("  \"featureTracks\": [")
+        featureTracks.forEachIndexed { trackIndex, (trackId, observations) ->
+            output.append("    {\"trackId\": $trackId, \"length\": ${observations.size}, \"observations\": [")
+            observations.forEachIndexed { observationIndex, observation ->
+                if (observationIndex > 0) output.append(", ")
+                output.append(
+                    "{\"frameIndex\": ${observation.frameIndex}, " +
+                        "\"featureIndex\": ${observation.featureIndex}, " +
+                        "\"x\": ${jsonNumber(observation.x)}, " +
+                        "\"y\": ${jsonNumber(observation.y)}}"
+                )
+            }
+            output.append("]}")
+            line(if (trackIndex == featureTracks.lastIndex) "" else ",")
+        }
+        line("  ],")
         line("  \"landmarks\": [")
         landmarks.forEachIndexed { index, landmark ->
             output.append("    {\"trackId\": ${landmark.trackId}, \"positionWorld\": ${jsonArray(doubleArrayOf(landmark.position.x, landmark.position.y, landmark.position.z))}, ")
@@ -126,8 +149,8 @@ internal object CameraSolveExporter {
         append('"')
         value.forEach { character ->
             when (character) {
-                '\\' -> append("\\\\")
-                '"' -> append("\\\"")
+                '\\' -> append("\\\")
+                '"' -> append("\\"")
                 '\b' -> append("\\b")
                 '\u000C' -> append("\\f")
                 '\n' -> append("\\n")

@@ -90,6 +90,83 @@ class CameraSolveExporterTest {
     }
 
     @Test
+    fun exportsFeatureTracksWithStableObservationOrdering() {
+        val result = CameraTrackingResult(
+            poses = emptyList(),
+            diagnostics = emptyList(),
+            processedFrames = 3,
+            solvedFramePairs = 0,
+            totalMatches = 0,
+            totalInliers = 0,
+            inlierRatio = 0.0,
+            isCameraMotionEstimated = false,
+            featureTracks = listOf(
+                CameraFeatureTrack(
+                    id = 9,
+                    observations = listOf(
+                        CameraFeatureObservation(2, 22.5, 32.5, 4),
+                        CameraFeatureObservation(0, 10.5, 20.5, 1),
+                        CameraFeatureObservation(1, 16.5, 26.5, 3)
+                    )
+                ),
+                CameraFeatureTrack(
+                    id = 3,
+                    observations = listOf(
+                        CameraFeatureObservation(1, 40.0, 50.0, 7),
+                        CameraFeatureObservation(0, 30.0, 35.0, 5)
+                    )
+                )
+            )
+        )
+
+        val json = CameraSolveExporter.toJson(result)
+
+        assertTrue(json.contains("\"featureTracks\": ["))
+        assertTrue(json.indexOf("\"trackId\": 3") < json.indexOf("\"trackId\": 9"))
+        assertTrue(
+            json.indexOf("\"frameIndex\": 0, \"featureIndex\": 1") <
+                json.indexOf("\"frameIndex\": 1, \"featureIndex\": 3")
+        )
+        assertTrue(json.contains("\"length\": 3"))
+        assertTrue(json.contains("\"x\": 10.5, \"y\": 20.5"))
+        assertTrue(json.contains("\"featureIndex\": 4"))
+    }
+
+    @Test
+    fun excludesInvalidFeatureObservationsFromPortableTrackExport() {
+        val result = CameraTrackingResult(
+            poses = emptyList(),
+            diagnostics = emptyList(),
+            processedFrames = 2,
+            solvedFramePairs = 0,
+            totalMatches = 0,
+            totalInliers = 0,
+            inlierRatio = 0.0,
+            isCameraMotionEstimated = false,
+            featureTracks = listOf(
+                CameraFeatureTrack(
+                    id = 5,
+                    observations = listOf(
+                        CameraFeatureObservation(0, Double.NaN, 1.0, 0),
+                        CameraFeatureObservation(1, 2.0, Double.POSITIVE_INFINITY, 1)
+                    )
+                ),
+                CameraFeatureTrack(
+                    id = 6,
+                    observations = listOf(CameraFeatureObservation(0, 12.0, 13.0, 2))
+                )
+            )
+        )
+
+        val json = CameraSolveExporter.toJson(result)
+
+        assertFalse(json.contains("\"trackId\": 5"))
+        assertTrue(json.contains("\"trackId\": 6"))
+        assertFalse(json.contains("NaN"))
+        assertFalse(json.contains("Infinity"))
+    }
+
+    @Test
     fun refinedIntrinsicsUseOpenCvRowMajorMatrixOrder() {
         val matrix = CameraIntrinsics(700.0, 2.0, 640.0, 710.0, 360.0).toRowMajorMatrix()
 
