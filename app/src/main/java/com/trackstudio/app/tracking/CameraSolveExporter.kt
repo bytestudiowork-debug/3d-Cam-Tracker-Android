@@ -149,8 +149,8 @@ internal object CameraSolveExporter {
         append('"')
         value.forEach { character ->
             when (character) {
-                '\\' -> append("\\\")
-                '"' -> append("\\"")
+                '\\' -> append("\\\\")
+                '"' -> append("\\\"")
                 '\b' -> append("\\b")
                 '\u000C' -> append("\\f")
                 '\n' -> append("\\n")
