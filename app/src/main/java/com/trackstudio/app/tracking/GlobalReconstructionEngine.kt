@@ -1389,7 +1389,9 @@ internal class GlobalTrackGraphBuilder(
                 return@mapNotNull null
             }
             val ordered = values.sortedWith(
-                compareBy<CameraFeatureObservation>({ it.frameIndex }, { it.x }, { it.y })
+                compareBy<CameraFeatureObservation>(
+                    { it.frameIndex }, { it.x }, { it.y }, { it.featureIndex }
+                )
             )
             val consolidated = consolidateFrameObservations(ordered) ?: return@mapNotNull null
             if (consolidated.size !in minimumObservations..maximumObservations) {
@@ -1419,19 +1421,51 @@ internal class GlobalTrackGraphBuilder(
             while (groupEnd < observations.size && observations[groupEnd].frameIndex == frameIndex) {
                 groupEnd++
             }
-            for (firstIndex in groupStart until groupEnd) {
-                for (secondIndex in firstIndex + 1 until groupEnd) {
-                    val dx = observations[firstIndex].x - observations[secondIndex].x
-                    val dy = observations[firstIndex].y - observations[secondIndex].y
-                    if (dx * dx + dy * dy > thresholdSquared) return null
+            val frameObservations = observations.subList(groupStart, groupEnd)
+
+            // A bad cycle can merge several features from one image into the same
+            // component. Choose the strongest local consensus instead of throwing
+            // away every observation in an otherwise useful multi-view track.
+            var representativeSeed: CameraFeatureObservation? = null
+            var bestSupport = -1
+            var bestResidual = Double.POSITIVE_INFINITY
+            for (candidate in frameObservations) {
+                var support = 0
+                var residual = 0.0
+                for (other in frameObservations) {
+                    val dx = candidate.x - other.x
+                    val dy = candidate.y - other.y
+                    val distanceSquared = dx * dx + dy * dy
+                    if (distanceSquared <= thresholdSquared) {
+                        support++
+                        residual += distanceSquared
+                    }
+                }
+                val current = representativeSeed
+                val isBetter = support > bestSupport ||
+                    (support == bestSupport && residual < bestResidual) ||
+                    (support == bestSupport && residual == bestResidual &&
+                        (current == null || candidate.x < current.x ||
+                            (candidate.x == current.x && (candidate.y < current.y ||
+                                (candidate.y == current.y && candidate.featureIndex < current.featureIndex)))))
+                if (isBetter) {
+                    representativeSeed = candidate
+                    bestSupport = support
+                    bestResidual = residual
                 }
             }
-            val frameObservations = observations.subList(groupStart, groupEnd)
-            val medianX = median(frameObservations.map { it.x })
-            val medianY = median(frameObservations.map { it.y })
+
+            val seed = representativeSeed ?: return null
+            val consensus = frameObservations.filter { observation ->
+                val dx = observation.x - seed.x
+                val dy = observation.y - seed.y
+                dx * dx + dy * dy <= thresholdSquared
+            }
+            val medianX = median(consensus.map { it.x })
+            val medianY = median(consensus.map { it.y })
             // Keep an observed keypoint rather than inventing an averaged pixel.
-            // The input ordering makes equal-distance ties deterministic.
-            val representative = frameObservations.minByOrNull { observation ->
+            // The pre-sorted input makes equal-distance ties deterministic.
+            val representative = consensus.minByOrNull { observation ->
                 val dx = observation.x - medianX
                 val dy = observation.y - medianY
                 dx * dx + dy * dy

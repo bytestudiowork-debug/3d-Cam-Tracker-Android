@@ -31,7 +31,7 @@ class GlobalTrackGraphBuilderTest {
     }
 
     @Test
-    fun discardsAConnectedComponentWhenSameFrameObservationsExceedTenPixels() {
+    fun preservesTrackBySelectingOneObservationWhenSameFrameConflictExceedsTenPixels() {
         val builder = joinedRepeatedFrameGraph()
         val tracks = builder.buildFromLocations(
             featureLocationsByFrame = mapOf(
@@ -42,7 +42,34 @@ class GlobalTrackGraphBuilderTest {
             activeFrames = setOf(0, 1, 2)
         )
 
-        assertEquals(emptyList<CameraFeatureTrack>(), tracks)
+        assertEquals(1, tracks.size)
+        assertEquals(listOf(0, 1, 2), tracks.single().observations.map { it.frameIndex })
+        assertEquals(0.0, tracks.single().observations.first().x, 0.0)
+    }
+
+    @Test
+    fun sameFrameConflictKeepsLargestConsistentClusterAndDropsIsolatedOutlier() {
+        val builder = GlobalTrackGraphBuilder()
+        builder.addVerifiedMatches(0, 1, listOf(0 to 0))
+        builder.addVerifiedMatches(1, 2, listOf(0 to 0))
+        builder.addVerifiedMatches(0, 2, listOf(1 to 0, 2 to 0))
+
+        val tracks = builder.buildFromLocations(
+            featureLocationsByFrame = mapOf(
+                0 to listOf(
+                    observation(0, 0.0, 0.0),
+                    observation(0, 1.0, 0.0),
+                    observation(0, 50.0, 0.0)
+                ),
+                1 to listOf(observation(1, 1.0, 0.0)),
+                2 to listOf(observation(2, 2.0, 0.0))
+            ),
+            activeFrames = setOf(0, 1, 2)
+        )
+
+        assertEquals(1, tracks.size)
+        assertEquals(listOf(0, 1, 2), tracks.single().observations.map { it.frameIndex })
+        assertTrue(tracks.single().observations.none { it.frameIndex == 0 && it.x == 50.0 })
     }
 
     @Test
