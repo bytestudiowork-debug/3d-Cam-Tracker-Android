@@ -27,6 +27,16 @@ class CameraSolveExporterTest {
             inlierRatio = 0.88,
             isCameraMotionEstimated = true,
             landmarks = listOf(CameraLandmark(7, Point3(4.0, 5.0, 6.0), 3, 0.75, 14.0)),
+            triangulationStats = TriangulationStats(
+                inputTracks = 120,
+                triangulatedLandmarks = 75,
+                rejectedShortTracks = 8,
+                rejectedMissingPoses = 10,
+                rejectedInvalidGeometry = 17,
+                rejectedReprojection = 10,
+                meanReprojectionErrorPx = 0.82,
+                meanTriangulationAngleDegrees = 11.5
+            ),
             registeredCameraCount = 1,
             globalPositioningApplied = true,
             globalPositioningInitialCost = 15.0,
@@ -70,6 +80,13 @@ class CameraSolveExporterTest {
         assertTrue(json.contains("\"translationWorldToCamera\": [-1.0, 2.0, 3.0]"))
         assertTrue(json.contains("\"centerWorld\": [1.0, -2.0, -3.0]"))
         assertTrue(json.contains("\"positionWorld\": [4.0, 5.0, 6.0]"))
+        assertTrue(json.contains("\"triangulation\": {"))
+        assertTrue(json.contains("\"inputTracks\": 120"))
+        assertTrue(json.contains("\"triangulatedLandmarks\": 75"))
+        assertTrue(json.contains("\"rejectedInvalidGeometry\": 17"))
+        assertTrue(json.contains("\"rejectedReprojection\": 10"))
+        assertTrue(json.contains("\"meanReprojectionErrorPx\": 0.82"))
+        assertTrue(json.contains("\"meanTriangulationAngleDegrees\": 11.5"))
         assertTrue(json.contains("\"viewGraphAcceptedEdgeCount\": 3"))
         assertTrue(json.contains("\"globalBundleAdjustmentApplied\": true"))
         assertTrue(json.contains("\"globalPositioningInitialCost\": 15.0"))
