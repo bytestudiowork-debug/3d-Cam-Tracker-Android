@@ -294,6 +294,37 @@ fun ViewerScreen(
 
         }
 
+        if (state.isAutoTracking) {
+            val progress = state.trackingProgress
+            val fraction = (progress?.fraction ?: 0f).coerceIn(0f, 1f)
+            Box(
+                Modifier.align(Alignment.TopCenter)
+                    .padding(top = 8.dp)
+                    .background(PanelBackground.copy(alpha = 0.96f), RoundedCornerShape(8.dp))
+                    .padding(horizontal = 12.dp, vertical = 8.dp)
+            ) {
+                Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                    Text(
+                        "TRACKING · ${progress?.frameLabel ?: "Preparing"} · ${(fraction * 100).toInt()}%",
+                        color = TextPrimary,
+                        fontSize = 11.sp
+                    )
+                    Box(
+                        Modifier.fillMaxWidth().width(220.dp).height(4.dp)
+                            .clip(RoundedCornerShape(2.dp)).background(PanelBorder)
+                    ) {
+                        Box(Modifier.fillMaxWidth(fraction).height(4.dp).background(AccentPrimary))
+                    }
+                    Text(
+                        progress?.phase ?: "Preparing reconstruction",
+                        color = TextSecondary,
+                        fontSize = 10.sp,
+                        maxLines = 1
+                    )
+                }
+            }
+        }
+
         state.proxyGenerationProgress?.let { progress ->
             val fraction = if (progress.second <= 0) 0f else
                 (progress.first.toFloat() / progress.second).coerceIn(0f, 1f)

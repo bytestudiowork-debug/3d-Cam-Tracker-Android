@@ -218,7 +218,7 @@ class GlobalReconstructionEngine(
             val candidatePairs = buildPairSchedule(frameCount, maxOf(maximumPairCount, frameCount * 2))
             val completedFundamentals = AtomicInteger(0)
             val progressMutex = Mutex()
-            val workerCount = minOf(Runtime.getRuntime().availableProcessors().coerceAtLeast(1), 2, candidatePairs.size.coerceAtLeast(1))
+            val workerCount = minOf(Runtime.getRuntime().availableProcessors().coerceAtLeast(1), 4, candidatePairs.size.coerceAtLeast(1))
             val chunks = candidatePairs.chunked((candidatePairs.size + workerCount - 1) / workerCount)
             val pairCandidates = coroutineScope {
                 chunks.map { chunk ->
@@ -341,7 +341,13 @@ class GlobalReconstructionEngine(
             }
             val firstRotationPass = GlobalRotationAverager.solve(
                 frameIndices = verifiedPairs.flatMap { listOf(it.first, it.second) }.distinct(),
-                edges = rotationEdges
+                edges = rotationEdges,
+                onProgress = { iteration, total ->
+                    publishProgress(
+                        "Global rotation averaging pass 1/2 $iteration/$total",
+                        0.55f + 0.035f * iteration.toFloat() / total.coerceAtLeast(1)
+                    )
+                }
             ) ?: throw IllegalStateException("The verified view graph is disconnected or has insufficient rotation constraints.")
             val firstFilteredGraph = GlomapRotationGraphReducer.keepLargestConnectedComponent(
                 registeredFrameIds = firstRotationPass.rotationsByFrame.keys,
@@ -349,7 +355,13 @@ class GlobalReconstructionEngine(
             ) ?: throw IllegalStateException("No connected cameras remain after first rotation filtering.")
             val rotationPass = GlobalRotationAverager.solve(
                 frameIndices = firstFilteredGraph.frameIds,
-                edges = firstFilteredGraph.edges
+                edges = firstFilteredGraph.edges,
+                onProgress = { iteration, total ->
+                    publishProgress(
+                        "Global rotation averaging pass 2/2 $iteration/$total",
+                        0.585f + 0.035f * iteration.toFloat() / total.coerceAtLeast(1)
+                    )
+                }
             ) ?: throw IllegalStateException("Global rotation refinement failed.")
             val finalFilteredGraph = GlomapRotationGraphReducer.keepLargestConnectedComponent(
                 registeredFrameIds = rotationPass.rotationsByFrame.keys,
@@ -379,8 +391,15 @@ class GlobalReconstructionEngine(
                 )
             )
             val trackBuilder = GlobalTrackGraphBuilder()
-            activePairs.forEach { pair ->
+            activePairs.forEachIndexed { index, pair ->
                 trackBuilder.addVerifiedMatches(pair.first, pair.second, pair.inlierMatches)
+                if (index % 4 == 0 || index == activePairs.lastIndex) {
+                    val completed = index + 1
+                    publishProgress(
+                        "Building multi-view feature tracks $completed/${activePairs.size}",
+                        0.62f + 0.06f * completed.toFloat() / activePairs.size.coerceAtLeast(1)
+                    )
+                }
             }
             // The builder already orders by descending length and stable representative ID,
             // matching GLOMAP's track priority before dense Android IDs are assigned.
@@ -448,7 +467,15 @@ class GlobalReconstructionEngine(
                     initializedPoint = initializer.pointsByTrack[track.id]
                 )
             }
-            val positioningProblem = GlomapGlobalPositioningProblemBuilder.build(positionTracks)
+            val positioningProblem = GlomapGlobalPositioningProblemBuilder.build(
+                positionTracks,
+                onProgress = { completed, total ->
+                    publishProgress(
+                        "Preparing global position constraints $completed/$total",
+                        0.70f + 0.08f * completed.toFloat() / total.coerceAtLeast(1)
+                    )
+                }
+            )
             if (positioningProblem.constraints.size < 60) {
                 throw IllegalStateException("Global positioning has too few valid track observations (${positioningProblem.constraints.size}).")
             }

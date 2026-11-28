@@ -66,7 +66,8 @@ internal object GlomapGlobalPositioningProblemBuilder {
     fun build(
         tracks: List<Track>,
         minimumViews: Int = DEFAULT_MINIMUM_TRACK_VIEWS,
-        generateScales: Boolean = true
+        generateScales: Boolean = true,
+        onProgress: (Int, Int) -> Unit = { _, _ -> }
     ): Problem {
         require(minimumViews >= 2)
         require(tracks.map { it.trackId }.distinct().size == tracks.size) {
@@ -77,7 +78,10 @@ internal object GlomapGlobalPositioningProblemBuilder {
         var invalidObservations = 0
         var acceptedTracks = 0
 
-        for (track in tracks) {
+        for ((trackIndex, track) in tracks.withIndex()) {
+            if (trackIndex % 16 == 0 || trackIndex == tracks.lastIndex) {
+                onProgress(trackIndex + 1, tracks.size)
+            }
             val observationCountsByFrame = track.observations.groupingBy { it.frameIndex }.eachCount()
             val validObservations = track.observations.filter { observation ->
                 val valid = observationCountsByFrame[observation.frameIndex] == 1 &&

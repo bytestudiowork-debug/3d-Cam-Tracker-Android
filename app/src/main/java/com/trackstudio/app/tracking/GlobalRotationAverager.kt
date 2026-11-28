@@ -35,7 +35,8 @@ internal object GlobalRotationAverager {
         l1Iterations: Int = 5,
         irlsIterations: Int = 100,
         sigmaDegrees: Double = 5.0,
-        rotationOutlierDegrees: Double = 10.0
+        rotationOutlierDegrees: Double = 10.0,
+        onProgress: (Int, Int) -> Unit = { _, _ -> }
     ): Result? {
         if (l1Iterations < 0 || irlsIterations < 0 ||
             !sigmaDegrees.isFinite() || sigmaDegrees <= 0.0 ||
@@ -103,6 +104,7 @@ internal object GlobalRotationAverager {
                     ))
                 }
                 iterations++
+                onProgress(iterations, (l1Iterations + irlsIterations).coerceAtLeast(1))
                 val averageStep = averageUpdateMagnitude(deltas)
                 residuals = computeResiduals(activeFrames, activeIndex, edgesToUse, rotations)
                 gaugeResidual = anchorResidual(fixedRotation, rotations.getValue(root))
