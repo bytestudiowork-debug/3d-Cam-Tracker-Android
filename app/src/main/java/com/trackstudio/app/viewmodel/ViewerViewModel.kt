@@ -238,8 +238,10 @@ class ViewerViewModel(
             speed = 1.0
         )
 
-        val initialMode = if (videoUri != null) ReconstructionMode.GLOBAL else _uiState.value.reconstructionMode
-        reconstructionEngine = if (initialMode == ReconstructionMode.GLOBAL) GlobalReconstructionEngine() else customEngine
+        val initialMode = ReconstructionMode.GLOBAL
+        // The viewer has one production tracking path. Keep the incremental engine
+        // out of the user-facing workflow until it is ready for a separate test mode.
+        reconstructionEngine = GlobalReconstructionEngine()
         _uiState.value = ViewerUiState(
             playback = PlaybackState(
                 currentFrame = 0,
@@ -427,15 +429,13 @@ class ViewerViewModel(
     }
 
     fun setReconstructionMode(mode: ReconstructionMode) {
+        // Retained for source compatibility; production tracking always uses the main engine.
         if (_uiState.value.isAutoTracking) return
         anchorProjectionContext = null
-        reconstructionEngine = when (mode) {
-            ReconstructionMode.CUSTOM -> customEngine
-            ReconstructionMode.GLOBAL -> GlobalReconstructionEngine()
-        }
+        reconstructionEngine = GlobalReconstructionEngine()
         _uiState.update {
             it.copy(
-                reconstructionMode = mode,
+                reconstructionMode = ReconstructionMode.GLOBAL,
                 trackingSummary = null,
                 trackingError = null,
                 cameraSolveAvailable = false,
@@ -479,7 +479,7 @@ class ViewerViewModel(
         _uiState.update {
             it.copy(
                 isAutoTracking = true,
-                trackingProgress = CameraTrackingProgress(0, totalFrames, "Preparing reduced-resolution tracking footage", 0f, 0, totalFrames),
+                trackingProgress = CameraTrackingProgress(0, totalFrames, "Starting main tracker", 0.01f, 0, totalFrames),
                 trackingError = null,
                 trackingSummary = null,
                 cameraSolveAvailable = false,
@@ -509,7 +509,15 @@ class ViewerViewModel(
                     uris = (if (useOriginals) trackingFrameUris else frameUris).toList()
                 }
                 decodeLimit = if (videoUri == null && useOriginals) Int.MAX_VALUE else maxDecodeDimension
-                check(OpenCvRuntime.ensureLoaded()) { "OpenCV could not be initialized on this device." }
+                _uiState.update {
+                    it.copy(trackingProgress = CameraTrackingProgress(0, totalFrames, "Checking tracking runtime", 0.02f, 0, totalFrames))
+                }
+                check(OpenCvRuntime.ensureLoaded()) {
+                    "Tracking could not start because the native vision runtime failed to load on this device. Please share the tracking error and device log."
+                }
+                _uiState.update {
+                    it.copy(trackingProgress = CameraTrackingProgress(0, totalFrames, "Preparing source frames", 0.04f, 0, totalFrames))
+                }
                 val dimensions = if (videoUri != null && uris.isEmpty()) {
                     sequentialDecoder = withContext(Dispatchers.IO) {
                         SequentialVideoFrameDecoder(appContext, videoUri, sourceVideoRotation, sourceVideoTrackingScale)
@@ -531,12 +539,18 @@ class ViewerViewModel(
                 val width = dimensions.first
                 val height = dimensions.second
                 require(width > 0 && height > 0) { "The first frame has invalid dimensions." }
+                _uiState.update {
+                    it.copy(trackingProgress = CameraTrackingProgress(0, totalFrames, "Preparing camera calibration", 0.08f, 0, totalFrames))
+                }
                 // Approximate intrinsics until focal length calibration/EXIF support is added.
                 val focal = max(width, height) * 0.9
                 val cameraMatrix = Mat.eye(3, 3, CvType.CV_64F)
                 intrinsics = cameraMatrix
                 cameraMatrix.put(0, 0, focal, 0.0, (width - 1) * 0.5, 0.0, focal, (height - 1) * 0.5, 0.0, 0.0, 1.0)
-                val result = reconstructionEngine.solve(
+                _uiState.update {
+                    it.copy(trackingProgress = CameraTrackingProgress(0, totalFrames, "Starting main reconstruction engine", 0.10f, 0, totalFrames))
+                }
+                val result = GlobalReconstructionEngine().solve(
                     frameCount = totalFrames,
                     cameraMatrix = cameraMatrix,
                     frameProvider = { index ->
@@ -665,7 +679,14 @@ class ViewerViewModel(
                 _uiState.update { it.copy(isAutoTracking = false, isTrackingPaused = false) }
                 throw cancelled
             } catch (failure: Throwable) {
-                _uiState.update { it.copy(isAutoTracking = false, isTrackingPaused = false, trackingError = failure.message ?: "Camera tracking failed.") }
+                _uiState.update {
+                    it.copy(
+                        isAutoTracking = false,
+                        isTrackingPaused = false,
+                        trackingProgress = null,
+                        trackingError = failure.message ?: "Main camera tracking failed."
+                    )
+                }
             } finally {
                 firstTrackingFrame?.recycle()
                 sequentialDecoder?.close()

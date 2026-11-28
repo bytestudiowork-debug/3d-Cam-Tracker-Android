@@ -59,7 +59,6 @@ import com.trackstudio.app.ui.theme.PanelSurfaceRaised
 import com.trackstudio.app.ui.theme.TextPrimary
 import com.trackstudio.app.ui.theme.TextSecondary
 import com.trackstudio.app.tracking.CameraTrackingProgress
-import com.trackstudio.app.tracking.ReconstructionMode
 import com.trackstudio.app.viewmodel.CameraTrackingSummary
 import java.util.Locale
 import kotlin.math.roundToInt
@@ -80,8 +79,6 @@ fun WorkspaceRightPanel(
     hasCameraSolve: Boolean,
     trackingExportMessage: String?,
     onExportCameraSolve: () -> Unit,
-    reconstructionMode: ReconstructionMode,
-    onReconstructionModeChanged: (ReconstructionMode) -> Unit,
     onAutoTrack: () -> Unit,
     onCancelAutoTrack: () -> Unit,
     onToggleTrackingPause: () -> Unit,
@@ -129,7 +126,7 @@ fun WorkspaceRightPanel(
         }
 
         when (selectedTab) {
-            "Tracking" -> TrackingToolsCard(isAutoTracking, isTrackingPaused, trackingProgress, trackingError, trackingSummary, hasCameraSolve, trackingExportMessage, onExportCameraSolve, reconstructionMode, onReconstructionModeChanged, onAutoTrack, onCancelAutoTrack, onToggleTrackingPause)
+            "Tracking" -> TrackingToolsCard(isAutoTracking, isTrackingPaused, trackingProgress, trackingError, trackingSummary, hasCameraSolve, trackingExportMessage, onExportCameraSolve, onAutoTrack, onCancelAutoTrack, onToggleTrackingPause)
             "Tools" -> QuickActionsCard(onOpen3DTest, onOpenTrackerTools, onOpenReconstruction)
             else -> ProjectSummaryCard(projectName, fps, frameCount)
         }
@@ -239,25 +236,6 @@ private fun TrackingToolsCard(
     var detailsExpanded by remember { mutableStateOf(false) }
     PanelCard(modifier = Modifier.fillMaxWidth()) {
         Column(Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
-            Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                ReconstructionMode.values().forEach { mode ->
-                    Box(
-                        Modifier.weight(1f)
-                            .clip(RoundedCornerShape(7.dp))
-                            .background(if (reconstructionMode == mode) AccentPrimary else PanelSurfaceRaised)
-                            .clickable(enabled = !isAutoTracking) { onReconstructionModeChanged(mode) }
-                            .padding(vertical = 9.dp),
-                        contentAlignment = Alignment.Center
-                    ) {
-                        Text(
-                            mode.label,
-                            color = if (reconstructionMode == mode) Color.White else TextSecondary,
-                            fontSize = 12.sp,
-                            fontWeight = FontWeight.SemiBold
-                        )
-                    }
-                }
-            }
             Box(
                 modifier = Modifier.fillMaxWidth().height(48.dp).clip(RoundedCornerShape(8.dp))
                     .background(if (isAutoTracking) PanelSurfaceRaised else AccentPrimary)
