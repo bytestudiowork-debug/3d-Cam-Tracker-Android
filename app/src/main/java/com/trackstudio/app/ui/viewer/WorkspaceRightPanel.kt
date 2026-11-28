@@ -227,8 +227,6 @@ private fun TrackingToolsCard(
     hasCameraSolve: Boolean,
     trackingExportMessage: String?,
     onExportCameraSolve: () -> Unit,
-    reconstructionMode: ReconstructionMode,
-    onReconstructionModeChanged: (ReconstructionMode) -> Unit,
     onAutoTrack: () -> Unit,
     onCancelAutoTrack: () -> Unit,
     onToggleTrackingPause: () -> Unit
